@@ -59,7 +59,6 @@ void PointCloudWidget::drawAxes(float length)
     glLineWidth(1.0);
 }
 
-// ✨ [추가] 그리드 그리기 함수 구현
 void PointCloudWidget::drawGrid(float size, int divisions)
 {
     glLineWidth(1.0f);
@@ -87,17 +86,23 @@ void PointCloudWidget::paintGL()
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluPerspective(60.0, (float)width() / (height() > 0 ? height() : 1), 0.1, 100.0);
+
+    // ✨ [수정] 원근 투영(gluPerspective)을 직교 투영(glOrtho)으로 변경
+    float aspect = (float)width() / (height() > 0 ? height() : 1);
+    float view_size = m_distance * 0.5f; // m_distance를 뷰 크기 조절에 사용
+    glOrtho(-view_size * aspect, view_size * aspect, -view_size, view_size, -100.0, 100.0);
+
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
-    // 카메라 시점 변환
-    glTranslatef(0.0f, 0.0f, -m_distance);
+    // ✨ [수정] 직교 투영에서는 카메라와의 거리를 조절할 필요가 없으므로 이 부분을 제거
+    // glTranslatef(0.0f, 0.0f, -m_distance);
+
+    // 패닝(이동) 및 회전 적용
     glTranslatef(m_panX, m_panY, 0.0f);
     glRotatef(m_pitch, 1.0f, 0.0f, 0.0f);
     glRotatef(m_yaw, 0.0f, 1.0f, 0.0f);
 
-    // ✨ [추가] 로봇 베이스 평면에 그리드 그리기
     drawGrid(2.0f, 20); // 2x2 미터 크기, 10cm 간격
 
     drawAxes(0.2f); // 월드 좌표계 (로봇 베이스)
@@ -124,7 +129,6 @@ void PointCloudWidget::paintGL()
 void PointCloudWidget::initializeGL()
 {
     initializeOpenGLFunctions();
-    // ✨ [수정] 배경색을 흰색으로 변경
     glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -195,15 +199,27 @@ void PointCloudWidget::mousePressEvent(QMouseEvent *event) { m_lastPos = event->
 
 void PointCloudWidget::mouseMoveEvent(QMouseEvent *event) {
     int dx = event->position().x() - m_lastPos.x(); int dy = event->position().y() - m_lastPos.y();
-    if (event->buttons() & Qt::LeftButton) { m_yaw += dx * 0.5f; m_pitch += dy * 0.5f; }
-    else if (event->buttons() & Qt::RightButton) { m_panX += dx * m_distance * 0.001f; m_panY -= dy * m_distance * 0.001f; }
-    m_lastPos = event->pos(); update();
+    if (event->buttons() & Qt::LeftButton) {
+        m_yaw += dx * 0.5f;
+        m_pitch += dy * 0.5f;
+    }
+    else if (event->buttons() & Qt::RightButton) {
+        // ✨ [수정] 패닝이 뷰 크기에 비례하도록 수정
+        m_panX += dx * m_distance * 0.001f;
+        m_panY -= dy * m_distance * 0.001f;
+    }
+    m_lastPos = event->pos();
+    update();
 }
 
 void PointCloudWidget::wheelEvent(QWheelEvent *event) {
-    m_distance *= (event->angleDelta().y() > 0) ? 1.0f / 1.1f : 1.1f;
-    if (m_distance < 0.1f) m_distance = 0.1f;
-    if (m_distance > 10.0f) m_distance = 10.0f;
+    if (event->angleDelta().y() > 0) {
+        m_distance *= 1.0f / 1.1f; // 확대
+    } else {
+        m_distance *= 1.1f; // 축소
+    }
+    if (m_distance < 0.01f) m_distance = 0.01f;
+    if (m_distance > 50.0f) m_distance = 50.0f;
     update();
 }
 
@@ -224,7 +240,7 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event) {
 }
 
 // ===================================================================
-// RealSenseWidget 구현
+// RealSenseWidget 구현 (이하 코드는 변경 없음)
 // ===================================================================
 
 const char* SHM_IMAGE_NAME = "realsense_image";
