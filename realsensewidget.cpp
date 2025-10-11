@@ -49,12 +49,38 @@ void PointCloudWidget::drawAxes(float length)
 {
     glLineWidth(2.0);
     glBegin(GL_LINES);
-    glColor3f(1.0f, 0.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(length, 0.0f, 0.0f); // X
-    glColor3f(0.0f, 1.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(0.0f, length, 0.0f); // Y
-    glColor3f(0.0f, 0.0f, 1.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(0.0f, 0.0f, length); // Z
+    // X축 (Red)
+    glColor3f(1.0f, 0.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(length, 0.0f, 0.0f);
+    // Y축 (Green)
+    glColor3f(0.0f, 1.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(0.0f, length, 0.0f);
+    // Z축 (Blue)
+    glColor3f(0.0f, 0.0f, 1.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(0.0f, 0.0f, length);
     glEnd();
     glLineWidth(1.0);
 }
+
+// ✨ [추가] 그리드 그리기 함수 구현
+void PointCloudWidget::drawGrid(float size, int divisions)
+{
+    glLineWidth(1.0f);
+    glColor3f(0.8f, 0.8f, 0.8f); // 연한 회색
+
+    float step = size / divisions;
+    float halfSize = size / 2.0f;
+
+    glBegin(GL_LINES);
+    for (int i = 0; i <= divisions; ++i) {
+        float pos = -halfSize + i * step;
+        // X축에 평행한 선 (Z=0 평면)
+        glVertex3f(-halfSize, pos, 0.0f);
+        glVertex3f(halfSize, pos, 0.0f);
+        // Y축에 평행한 선 (Z=0 평면)
+        glVertex3f(pos, -halfSize, 0.0f);
+        glVertex3f(pos, halfSize, 0.0f);
+    }
+    glEnd();
+}
+
 
 void PointCloudWidget::paintGL()
 {
@@ -65,12 +91,16 @@ void PointCloudWidget::paintGL()
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
+    // 카메라 시점 변환
     glTranslatef(0.0f, 0.0f, -m_distance);
     glTranslatef(m_panX, m_panY, 0.0f);
     glRotatef(m_pitch, 1.0f, 0.0f, 0.0f);
     glRotatef(m_yaw, 0.0f, 1.0f, 0.0f);
 
-    drawAxes(0.2f); // 월드 좌표계
+    // ✨ [추가] 로봇 베이스 평면에 그리드 그리기
+    drawGrid(2.0f, 20); // 2x2 미터 크기, 10cm 간격
+
+    drawAxes(0.2f); // 월드 좌표계 (로봇 베이스)
 
     glPushMatrix();
     glMultMatrixf(m_baseToTcpTransform.constData()); // 로봇 TCP 위치로 이동
@@ -94,7 +124,8 @@ void PointCloudWidget::paintGL()
 void PointCloudWidget::initializeGL()
 {
     initializeOpenGLFunctions();
-    glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
+    // ✨ [수정] 배경색을 흰색으로 변경
+    glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_PROGRAM_POINT_SIZE);
     glPointSize(1.5f);
@@ -290,6 +321,10 @@ void RealSenseWidget::updateFrame()
         m_pointcloud.map_to(color);
         rs2::points points = m_pointcloud.calculate(depth);
 
+        m_capturedPoints = points;
+        m_capturedBaseToTcpTransform = m_baseToTcpTransform;
+
+
         m_pointCloudWidget->setTransforms(m_baseToTcpTransform, m_tcpToCameraTransform);
 
         QImage maskOverlayImage(color.get_width(), color.get_height(), QImage::Format_ARGB32_Premultiplied);
@@ -312,64 +347,6 @@ void RealSenseWidget::updateFrame()
         }
         m_colorLabel->setPixmap(QPixmap::fromImage(m_currentImage).scaled(m_colorLabel->size(), Qt::KeepAspectRatio));
 
-        if (!m_isProcessing && !m_detectionResults.isEmpty())
-        {
-            m_detectedObjectsPoints.clear();
-            QMatrix4x4 baseToCamTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
-            const rs2::vertex* vertices = points.get_vertices();
-            const int width = color.get_width();
-
-            for (const QJsonValue &cupValue : m_detectionResults) {
-                QJsonObject cupResult = cupValue.toObject();
-                QVector<PlotData> singleCupPoints;
-                QStringList parts = {"body", "handle"};
-                for (const QString &part : parts) {
-                    if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
-
-                    QJsonObject partData = cupResult[part].toObject();
-                    QJsonArray rle = partData["mask_rle"].toArray();
-                    QJsonArray shape = partData["mask_shape"].toArray();
-                    QJsonArray offset = partData["offset"].toArray();
-                    int H = shape[0].toInt(); int W = shape[1].toInt();
-                    int ox = offset[0].toInt(); int oy = offset[1].toInt();
-                    int cls_id = partData["cls_id"].toInt();
-
-                    QVector<uchar> mask_buffer(W * H, 0);
-                    int idx = 0; uchar val = 0;
-                    for(const QJsonValue& run_val : rle) {
-                        int len = run_val.toInt();
-                        if(idx + len > W * H) len = W * H - idx;
-                        if(len > 0) memset(mask_buffer.data() + idx, val, len);
-                        idx += len;
-                        val = (val == 0 ? 255 : 0);
-                        if(idx >= W * H) break;
-                    }
-
-                    for(int y = 0; y < H; ++y) {
-                        for(int x = 0; x < W; ++x) {
-                            if(mask_buffer[y * W + x] == 255) {
-                                int u = ox + x;
-                                int v = oy + y;
-                                const rs2::vertex& p = vertices[v * width + u];
-                                if (p.z > 0) {
-                                    QVector3D p_cam(p.x, p.y, p.z);
-                                    QVector3D p_base = baseToCamTransform * p_cam;
-                                    PlotData plotData;
-                                    plotData.point = QPointF(p_base.x(), p_base.y());
-                                    plotData.label = (cls_id == 1) ? "B" : "H";
-                                    plotData.color = (cls_id == 1) ? Qt::green : Qt::blue;
-                                    singleCupPoints.append(plotData);
-                                }
-                            }
-                        }
-                    }
-                }
-                if(!singleCupPoints.isEmpty()) {
-                    m_detectedObjectsPoints.append(singleCupPoints);
-                }
-            }
-        }
-
         m_pointCloudWidget->update();
 
     } catch (const rs2::error& e) {
@@ -389,6 +366,7 @@ void RealSenseWidget::captureAndProcess()
         return;
     }
     qDebug() << "[INFO] Capture button pressed. Sending frame to Python for processing...";
+
     sendImageToPython(m_latestFrame);
     m_isProcessing = true;
     m_resultTimer->start(100);
@@ -397,14 +375,78 @@ void RealSenseWidget::captureAndProcess()
 void RealSenseWidget::checkProcessingResult()
 {
     if (!m_isProcessing) { m_resultTimer->stop(); return; }
+
     QJsonArray results = receiveResultsFromPython();
     if (!results.isEmpty()) {
         qDebug() << "[INFO] Received" << results.size() << "detection results from Python.";
         m_detectionResults = results;
         m_isProcessing = false;
         m_resultTimer->stop();
+
+        m_detectedObjectsPoints.clear();
+        if (!m_capturedPoints) {
+            qWarning() << "[WARN] Captured points are invalid. Cannot create XY plot.";
+            return;
+        }
+
+        const rs2::vertex* vertices = m_capturedPoints.get_vertices();
+        const int width = IMAGE_WIDTH;
+        QMatrix4x4 baseToCamTransform = m_capturedBaseToTcpTransform * m_tcpToCameraTransform;
+
+        for (const QJsonValue &cupValue : m_detectionResults) {
+            QJsonObject cupResult = cupValue.toObject();
+            QVector<PlotData> singleCupPoints;
+            QStringList parts = {"body", "handle"};
+            for (const QString &part : parts) {
+                if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
+
+                QJsonObject partData = cupResult[part].toObject();
+                QJsonArray rle = partData["mask_rle"].toArray();
+                QJsonArray shape = partData["mask_shape"].toArray();
+                QJsonArray offset = partData["offset"].toArray();
+                int H = shape[0].toInt(); int W = shape[1].toInt();
+                int ox = offset[0].toInt(); int oy = offset[1].toInt();
+                int cls_id = partData["cls_id"].toInt();
+
+                QVector<uchar> mask_buffer(W * H, 0);
+                int idx = 0; uchar val = 0;
+                for(const QJsonValue& run_val : rle) {
+                    int len = run_val.toInt();
+                    if(idx + len > W * H) len = W * H - idx;
+                    if(len > 0) memset(mask_buffer.data() + idx, val, len);
+                    idx += len;
+                    val = (val == 0 ? 255 : 0);
+                    if(idx >= W * H) break;
+                }
+
+                for(int y = 0; y < H; ++y) {
+                    for(int x = 0; x < W; ++x) {
+                        if(mask_buffer[y * W + x] == 255) {
+                            int u = ox + x;
+                            int v = oy + y;
+                            if (u < 0 || u >= IMAGE_WIDTH || v < 0 || v >= IMAGE_HEIGHT) continue;
+
+                            const rs2::vertex& p = vertices[v * width + u];
+                            if (p.z > 0) {
+                                QVector3D p_cam(p.x, p.y, p.z);
+                                QVector3D p_base = baseToCamTransform * p_cam;
+                                PlotData plotData;
+                                plotData.point = QPointF(p_base.x(), p_base.y());
+                                plotData.label = (cls_id == 1) ? "B" : "H";
+                                plotData.color = (cls_id == 1) ? Qt::green : Qt::blue;
+                                singleCupPoints.append(plotData);
+                            }
+                        }
+                    }
+                }
+            }
+            if(!singleCupPoints.isEmpty()) {
+                m_detectedObjectsPoints.append(singleCupPoints);
+            }
+        }
     }
 }
+
 
 void RealSenseWidget::onDenoisingToggled() {
     m_isDenoisingOn = !m_isDenoisingOn;
@@ -487,17 +529,16 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
             QJsonArray rle = partData["mask_rle"].toArray();
             QJsonArray shape = partData["mask_shape"].toArray();
             QJsonArray offset = partData["offset"].toArray();
-            QJsonArray center = partData["center"].toArray(); // ✨ [수정] 중심 좌표 가져오기
+            QJsonArray center = partData["center"].toArray();
 
             int H = shape[0].toInt();
             int W = shape[1].toInt();
             int ox = offset[0].toInt();
             int oy = offset[1].toInt();
-            int centerX = center[0].toInt(); // ✨ [수정]
-            int centerY = center[1].toInt(); // ✨ [수정]
+            int centerX = center[0].toInt();
+            int centerY = center[1].toInt();
             int cls = partData["cls_id"].toInt();
 
-            // RLE 디코딩
             QVector<uchar> mask_buffer(W * H, 0);
             int idx = 0; uchar val = 0;
             for(const QJsonValue& run_val : rle) {
@@ -509,7 +550,6 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
                 if(idx >= W * H) break;
             }
 
-            // 마스크 이미지 생성 및 그리기
             QImage mask_img(mask_buffer.constData(), W, H, W, QImage::Format_Alpha8);
             QColor maskColor = (cls==1) ? QColor(0,255,0,150) : QColor(0,0,255,150);
             QImage colored(W, H, QImage::Format_ARGB32_Premultiplied);
@@ -520,11 +560,10 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
             p.end();
             painter.drawImage(ox, oy, colored);
 
-            // ✨ [수정] 텍스트를 각 부위의 중심에 표시
             painter.setPen(Qt::white);
             painter.setFont(QFont("Arial", 12, QFont::Bold));
             QString label = QString("cup%1: %2").arg(cupIndex).arg(part);
-            painter.drawText(centerX, centerY, label); // 중심 좌표 사용
+            painter.drawText(centerX, centerY, label);
         }
         cupIndex++;
     }

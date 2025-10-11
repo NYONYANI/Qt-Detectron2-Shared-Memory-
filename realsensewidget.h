@@ -54,6 +54,7 @@ protected:
 private:
     void processPoints();
     void drawAxes(float length = 0.1f);
+    void drawGrid(float size, int divisions); // ✨ [추가] 그리드 그리기 함수 선언
 
     std::vector<float> m_vertexData;
     rs2::points m_points;
@@ -108,7 +109,6 @@ private:
     rs2::pointcloud m_pointcloud;
     rs2::align m_align;
 
-    // ✨ [수정] Disparity Transform 필터 추가
     rs2::decimation_filter m_dec_filter;
     rs2::spatial_filter m_spat_filter;
     rs2::disparity_transform m_depth_to_disparity;
@@ -120,6 +120,10 @@ private:
     QTimer *m_resultTimer;
     QImage m_currentImage;
     cv::Mat m_latestFrame;
+
+    rs2::points m_capturedPoints;
+    QMatrix4x4 m_capturedBaseToTcpTransform;
+
 
     int fd_image, fd_result, fd_control;
     void *data_image, *data_result, *data_control;
