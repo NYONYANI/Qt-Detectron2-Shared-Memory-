@@ -27,7 +27,7 @@ PointCloudWidget::PointCloudWidget(QWidget *parent)
     m_panX = 0.0f;
     m_panY = -0.3f;
     m_distance = 1.5f;
-    m_robotPose.setToIdentity();
+    m_baseToTcpTransform.setToIdentity();
 
     // Python 코드 기준 Hand-Eye Calibration 값 적용
     const float r[] = { 0.0f,  1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
@@ -39,27 +39,19 @@ PointCloudWidget::PointCloudWidget(QWidget *parent)
 
 PointCloudWidget::~PointCloudWidget() {}
 
-void PointCloudWidget::setRobotPose(const QMatrix4x4& pose)
+void PointCloudWidget::setTransforms(const QMatrix4x4& baseToTcp, const QMatrix4x4& tcpToCam)
 {
-    m_robotPose = pose;
+    m_baseToTcpTransform = baseToTcp;
+    m_tcpToCameraTransform = tcpToCam;
 }
 
 void PointCloudWidget::drawAxes(float length)
 {
     glLineWidth(2.0);
     glBegin(GL_LINES);
-    // X-axis (Red)
-    glColor3f(1.0f, 0.0f, 0.0f);
-    glVertex3f(0.0f, 0.0f, 0.0f);
-    glVertex3f(length, 0.0f, 0.0f);
-    // Y-axis (Green)
-    glColor3f(0.0f, 1.0f, 0.0f);
-    glVertex3f(0.0f, 0.0f, 0.0f);
-    glVertex3f(0.0f, length, 0.0f);
-    // Z-axis (Blue)
-    glColor3f(0.0f, 0.0f, 1.0f);
-    glVertex3f(0.0f, 0.0f, 0.0f);
-    glVertex3f(0.0f, 0.0f, length);
+    glColor3f(1.0f, 0.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(length, 0.0f, 0.0f); // X
+    glColor3f(0.0f, 1.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(0.0f, length, 0.0f); // Y
+    glColor3f(0.0f, 0.0f, 1.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(0.0f, 0.0f, length); // Z
     glEnd();
     glLineWidth(1.0);
 }
@@ -69,11 +61,10 @@ void PointCloudWidget::paintGL()
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluPerspective(60.0, (float)width() / height(), 0.1, 100.0);
+    gluPerspective(60.0, (float)width() / (height() > 0 ? height() : 1), 0.1, 100.0);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
-    // CAD 프로그램과 유사한 오르빗(Orbit) 카메라 변환 순서
     glTranslatef(0.0f, 0.0f, -m_distance);
     glTranslatef(m_panX, m_panY, 0.0f);
     glRotatef(m_pitch, 1.0f, 0.0f, 0.0f);
@@ -82,7 +73,7 @@ void PointCloudWidget::paintGL()
     drawAxes(0.2f); // 월드 좌표계
 
     glPushMatrix();
-    glMultMatrixf(m_robotPose.constData()); // 로봇 TCP 위치로 이동
+    glMultMatrixf(m_baseToTcpTransform.constData()); // 로봇 TCP 위치로 이동
     drawAxes(0.1f);
 
     glMultMatrixf(m_tcpToCameraTransform.constData()); // TCP -> 카메라 위치로 이동
@@ -132,21 +123,28 @@ void PointCloudWidget::processPoints() {
     int width = m_colorFrame.get_width();
     int height = m_colorFrame.get_height();
     bool useMask = !m_maskOverlay.isNull();
+
     for (size_t i = 0; i < m_points.size(); ++i) {
         if (m_isFloorFiltered && i < m_floorPoints.size() && m_floorPoints[i]) continue;
         if (vertices[i].z == 0) continue;
+
         int u = std::min(std::max(int(tex_coords[i].u * width + .5f), 0), width - 1);
         int v = std::min(std::max(int(tex_coords[i].v * height + .5f), 0), height - 1);
+
         bool isMasked = false;
         QRgb maskPixel = 0;
-        if (useMask && m_maskOverlay.valid(u, v)) {
-            maskPixel = m_maskOverlay.pixel(u, v);
-            if (qAlpha(maskPixel) > 128) isMasked = true;
+        if (useMask && m_maskOverlay.valid(u,v)) {
+            maskPixel = m_maskOverlay.pixel(u,v);
+            if (qAlpha(maskPixel) > 128) {
+                isMasked = true;
+            }
         }
-        if (!m_showOnlyMaskedPoints || (m_showOnlyMaskedPoints && isMasked)) {
+
+        if (!m_showOnlyMaskedPoints || isMasked) {
             m_vertexData.push_back(vertices[i].x);
             m_vertexData.push_back(vertices[i].y);
             m_vertexData.push_back(vertices[i].z);
+
             if (isMasked) {
                 m_vertexData.push_back(qRed(maskPixel) / 255.0f);
                 m_vertexData.push_back(qGreen(maskPixel) / 255.0f);
@@ -165,32 +163,29 @@ void PointCloudWidget::processPoints() {
 void PointCloudWidget::mousePressEvent(QMouseEvent *event) { m_lastPos = event->pos(); }
 
 void PointCloudWidget::mouseMoveEvent(QMouseEvent *event) {
-    int dx = event->position().x() - m_lastPos.x();
-    int dy = event->position().y() - m_lastPos.y();
-    if (event->buttons() & Qt::LeftButton) {
-        m_yaw   += dx * 0.5f;
-        m_pitch += dy * 0.5f;
-    } else if (event->buttons() & Qt::RightButton) {
-        m_panX += dx * m_distance * 0.001f;
-        m_panY -= dy * m_distance * 0.001f;
-    }
-    m_lastPos = event->pos();
-    update();
+    int dx = event->position().x() - m_lastPos.x(); int dy = event->position().y() - m_lastPos.y();
+    if (event->buttons() & Qt::LeftButton) { m_yaw += dx * 0.5f; m_pitch += dy * 0.5f; }
+    else if (event->buttons() & Qt::RightButton) { m_panX += dx * m_distance * 0.001f; m_panY -= dy * m_distance * 0.001f; }
+    m_lastPos = event->pos(); update();
 }
 
 void PointCloudWidget::wheelEvent(QWheelEvent *event) {
-    if (event->angleDelta().y() > 0) {
-        m_distance /= 1.1f;
-    } else {
-        m_distance *= 1.1f;
-    }
+    m_distance *= (event->angleDelta().y() > 0) ? 1.0f / 1.1f : 1.1f;
     if (m_distance < 0.1f) m_distance = 0.1f;
     if (m_distance > 10.0f) m_distance = 10.0f;
     update();
 }
 
 void PointCloudWidget::keyPressEvent(QKeyEvent *event) {
-    if (event->key() == Qt::Key_1) { m_showOnlyMaskedPoints = !m_showOnlyMaskedPoints; processPoints(); }
+    if (event->key() == Qt::Key_1) {
+        if (m_maskOverlay.isNull()) {
+            qDebug() << "[WARN] Key '1' pressed, but no mask data available. Press 'Capture' first.";
+            return;
+        }
+        m_showOnlyMaskedPoints = !m_showOnlyMaskedPoints;
+        qDebug() << "[INFO] Show only masked points toggled to:" << m_showOnlyMaskedPoints;
+        processPoints();
+    }
     else if (event->key() == Qt::Key_2) emit denoisingToggled();
     else if (event->key() == Qt::Key_3) emit floorRemovalToggled();
     else if (event->key() == Qt::Key_4) emit showXYPlotRequested();
@@ -209,86 +204,191 @@ const char* SEM_RESULT_NAME = "/sem_detection_result";
 const char* SEM_CONTROL_NAME = "/sem_detection_control";
 
 RealSenseWidget::RealSenseWidget(QWidget *parent)
-    : QWidget(parent), m_align(RS2_STREAM_COLOR), m_isProcessing(false)
+    : QWidget(parent), m_align(RS2_STREAM_COLOR), m_isProcessing(false),
+      m_depth_to_disparity(true), m_disparity_to_depth(false)
 {
-    if (!initSharedMemory()) {
-        qWarning() << "Shared memory initialization failed!";
-    }
-    m_dec_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE, 2);
-    m_spat_filter.set_option(RS2_OPTION_FILTER_MAGNITUDE, 2);
-    m_spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA, 0.5f);
-    m_spat_filter.set_option(RS2_OPTION_FILTER_SMOOTH_DELTA, 20);
+    initSharedMemory();
     m_config.enable_stream(RS2_STREAM_DEPTH, IMAGE_WIDTH, IMAGE_HEIGHT, RS2_FORMAT_Z16, 30);
     m_config.enable_stream(RS2_STREAM_COLOR, IMAGE_WIDTH, IMAGE_HEIGHT, RS2_FORMAT_BGR8, 30);
-    m_timer = new QTimer(this);
-    connect(m_timer, &QTimer::timeout, this, &RealSenseWidget::updateFrame);
-    m_resultTimer = new QTimer(this);
-    connect(m_resultTimer, &QTimer::timeout, this, &RealSenseWidget::checkProcessingResult);
+    m_timer = new QTimer(this); connect(m_timer, &QTimer::timeout, this, &RealSenseWidget::updateFrame);
+    m_resultTimer = new QTimer(this); connect(m_resultTimer, &QTimer::timeout, this, &RealSenseWidget::checkProcessingResult);
     m_layout = new QHBoxLayout(this);
     m_colorLabel = new QLabel(this);
     m_pointCloudWidget = new PointCloudWidget(this);
     connect(m_pointCloudWidget, &PointCloudWidget::denoisingToggled, this, &RealSenseWidget::onDenoisingToggled);
     connect(m_pointCloudWidget, &PointCloudWidget::floorRemovalToggled, this, &RealSenseWidget::onFloorRemovalToggled);
     connect(m_pointCloudWidget, &PointCloudWidget::showXYPlotRequested, this, &RealSenseWidget::onShowXYPlot);
-    m_colorLabel->setFrameShape(QFrame::Box);
-    m_colorLabel->setAlignment(Qt::AlignCenter);
-    m_colorLabel->setText("Waiting for Color Stream...");
-    m_layout->setContentsMargins(0, 0, 0, 0);
-    m_layout->addWidget(m_colorLabel, 1);
-    m_layout->addWidget(m_pointCloudWidget, 1);
-    setLayout(m_layout);
+    m_layout->addWidget(m_colorLabel, 1); m_layout->addWidget(m_pointCloudWidget, 1); setLayout(m_layout);
+
+    m_baseToTcpTransform.setToIdentity();
+    const float r[] = { 0.0f,  1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+    QMatrix4x4 rotationMatrix(r);
+    QMatrix4x4 translationMatrix;
+    translationMatrix.translate(-0.080, 0.0325, 0.0308);
+    m_tcpToCameraTransform = translationMatrix * rotationMatrix;
+
+    m_pointCloudWidget->setFocus();
     QTimer::singleShot(500, this, &RealSenseWidget::startCameraStream);
 }
 
 RealSenseWidget::~RealSenseWidget()
 {
     if (m_timer && m_timer->isActive()) m_timer->stop();
-    if (m_resultTimer && m_resultTimer->isActive()) m_resultTimer->stop();
-    if (data_control) {
-        sem_wait(sem_control);
-        static_cast<char*>(data_control)[OFFSET_SHUTDOWN] = 1;
-        sem_post(sem_control);
-    }
-    if (data_image) munmap(data_image, IMAGE_SIZE);
-    if (fd_image != -1) { ::close(fd_image); shm_unlink(SHM_IMAGE_NAME); }
-    if (sem_image != SEM_FAILED) { sem_close(sem_image); sem_unlink(SEM_IMAGE_NAME); }
-    if (data_result) munmap(data_result, RESULT_SIZE);
-    if (fd_result != -1) { ::close(fd_result); shm_unlink(SHM_RESULT_NAME); }
-    if (sem_result != SEM_FAILED) { sem_close(sem_result); sem_unlink(SEM_RESULT_NAME); }
-    if (data_control) munmap(data_control, CONTROL_SIZE);
-    if (fd_control != -1) { ::close(fd_control); shm_unlink(SHM_CONTROL_NAME); }
-    if (sem_control != SEM_FAILED) { sem_close(sem_control); sem_unlink(SEM_CONTROL_NAME); }
-    try {
-        m_pipeline.stop();
-    } catch (...) {}
+    if (data_control) { static_cast<char*>(data_control)[OFFSET_SHUTDOWN] = 1; }
+    qDeleteAll(m_plotWidgets);
+    m_plotWidgets.clear();
+    try { m_pipeline.stop(); } catch (...) {}
 }
 
 void RealSenseWidget::onRobotPoseUpdated(const float* pose)
 {
     if (!pose) return;
-
-    QMatrix4x4 transformationMatrix;
-    transformationMatrix.translate(pose[0]/1000.0f, pose[1]/1000.0f, pose[2]/1000.0f);
-    transformationMatrix.rotate(pose[5], 0, 0, 1); // Z (Yaw)
-    transformationMatrix.rotate(pose[4], 0, 1, 0); // Y (Pitch)
-    transformationMatrix.rotate(pose[3], 1, 0, 0); // X (Roll)
-
-    m_pointCloudWidget->setRobotPose(transformationMatrix);
+    m_baseToTcpTransform.setToIdentity();
+    m_baseToTcpTransform.translate(pose[0]/1000.0f, pose[1]/1000.0f, pose[2]/1000.0f);
+    m_baseToTcpTransform.rotate(pose[5], 0, 0, 1);
+    m_baseToTcpTransform.rotate(pose[4], 0, 1, 0);
+    m_baseToTcpTransform.rotate(pose[3], 1, 0, 0);
 }
 
-void RealSenseWidget::startCameraStream()
+void RealSenseWidget::onShowXYPlot()
 {
-    try {
-        m_pipeline.start(m_config);
-        m_timer->start(33);
-    } catch (const rs2::error &e) {
-        qCritical() << "RealSense Error:" << e.what();
+    qDebug() << "[INFO] Key '4' pressed. Attempting to show XY plot...";
+    if (m_detectedObjectsPoints.isEmpty()) {
+        qDebug() << "[WARN] No detected objects to plot. Please press 'Capture' first and ensure objects are detected.";
+        return;
+    }
+
+    for (int i = m_detectedObjectsPoints.size(); i < m_plotWidgets.size(); ++i) {
+        m_plotWidgets[i]->hide();
+    }
+
+    for (int i = 0; i < m_detectedObjectsPoints.size(); ++i) {
+        if (i >= m_plotWidgets.size()) {
+            m_plotWidgets.append(new XYPlotWidget());
+        }
+        m_plotWidgets[i]->updateData(m_detectedObjectsPoints[i]);
+        m_plotWidgets[i]->setWindowTitle(QString("Cup %1 Projection").arg(i + 1));
+        m_plotWidgets[i]->show();
+        m_plotWidgets[i]->activateWindow();
     }
 }
 
+void RealSenseWidget::updateFrame()
+{
+    try {
+        rs2::frameset frames = m_pipeline.wait_for_frames(1000); if (!frames) return;
+        frames = m_align.process(frames);
+        rs2::video_frame color = frames.get_color_frame(); rs2::depth_frame depth = frames.get_depth_frame(); if (!color || !depth) return;
+
+        if (m_isDenoisingOn) {
+            depth = m_dec_filter.process(depth);
+            depth = m_depth_to_disparity.process(depth);
+            depth = m_spat_filter.process(depth);
+            depth = m_disparity_to_depth.process(depth);
+        }
+
+        m_pointcloud.map_to(color);
+        rs2::points points = m_pointcloud.calculate(depth);
+
+        m_pointCloudWidget->setTransforms(m_baseToTcpTransform, m_tcpToCameraTransform);
+
+        QImage maskOverlayImage(color.get_width(), color.get_height(), QImage::Format_ARGB32_Premultiplied);
+        maskOverlayImage.fill(Qt::transparent);
+        if (!m_detectionResults.isEmpty()) {
+            drawMaskOverlay(maskOverlayImage, m_detectionResults);
+        }
+        m_pointCloudWidget->updatePointCloud(points, color, maskOverlayImage);
+
+        m_latestFrame = cv::Mat(cv::Size(IMAGE_WIDTH, IMAGE_HEIGHT), CV_8UC3, (void*)color.get_data(), cv::Mat::AUTO_STEP).clone();
+        m_currentImage = cvMatToQImage(m_latestFrame);
+
+        if (!m_detectionResults.isEmpty()) {
+            drawMaskOverlay(m_currentImage, m_detectionResults);
+        }
+        if(m_isProcessing) {
+            QPainter painter(&m_currentImage);
+            painter.setPen(Qt::yellow);
+            painter.drawText(20, 30, "Processing...");
+        }
+        m_colorLabel->setPixmap(QPixmap::fromImage(m_currentImage).scaled(m_colorLabel->size(), Qt::KeepAspectRatio));
+
+        if (!m_isProcessing && !m_detectionResults.isEmpty())
+        {
+            m_detectedObjectsPoints.clear();
+            QMatrix4x4 baseToCamTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
+            const rs2::vertex* vertices = points.get_vertices();
+            const int width = color.get_width();
+
+            for (const QJsonValue &cupValue : m_detectionResults) {
+                QJsonObject cupResult = cupValue.toObject();
+                QVector<PlotData> singleCupPoints;
+                QStringList parts = {"body", "handle"};
+                for (const QString &part : parts) {
+                    if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
+
+                    QJsonObject partData = cupResult[part].toObject();
+                    QJsonArray rle = partData["mask_rle"].toArray();
+                    QJsonArray shape = partData["mask_shape"].toArray();
+                    QJsonArray offset = partData["offset"].toArray();
+                    int H = shape[0].toInt(); int W = shape[1].toInt();
+                    int ox = offset[0].toInt(); int oy = offset[1].toInt();
+                    int cls_id = partData["cls_id"].toInt();
+
+                    QVector<uchar> mask_buffer(W * H, 0);
+                    int idx = 0; uchar val = 0;
+                    for(const QJsonValue& run_val : rle) {
+                        int len = run_val.toInt();
+                        if(idx + len > W * H) len = W * H - idx;
+                        if(len > 0) memset(mask_buffer.data() + idx, val, len);
+                        idx += len;
+                        val = (val == 0 ? 255 : 0);
+                        if(idx >= W * H) break;
+                    }
+
+                    for(int y = 0; y < H; ++y) {
+                        for(int x = 0; x < W; ++x) {
+                            if(mask_buffer[y * W + x] == 255) {
+                                int u = ox + x;
+                                int v = oy + y;
+                                const rs2::vertex& p = vertices[v * width + u];
+                                if (p.z > 0) {
+                                    QVector3D p_cam(p.x, p.y, p.z);
+                                    QVector3D p_base = baseToCamTransform * p_cam;
+                                    PlotData plotData;
+                                    plotData.point = QPointF(p_base.x(), p_base.y());
+                                    plotData.label = (cls_id == 1) ? "B" : "H";
+                                    plotData.color = (cls_id == 1) ? Qt::green : Qt::blue;
+                                    singleCupPoints.append(plotData);
+                                }
+                            }
+                        }
+                    }
+                }
+                if(!singleCupPoints.isEmpty()) {
+                    m_detectedObjectsPoints.append(singleCupPoints);
+                }
+            }
+        }
+
+        m_pointCloudWidget->update();
+
+    } catch (const rs2::error& e) {
+        qWarning() << "RealSense error:" << e.what();
+    } catch (...) {
+        qWarning() << "Unknown error in updateFrame";
+    }
+}
+
+void RealSenseWidget::startCameraStream() { try { m_pipeline.start(m_config); m_timer->start(33); } catch (const rs2::error &e) { qCritical() << "RealSense Error:" << e.what(); } }
+QImage RealSenseWidget::cvMatToQImage(const cv::Mat &mat){ if(mat.empty()) return QImage(); return QImage(mat.data, mat.cols, mat.rows, mat.step, QImage::Format_BGR888).rgbSwapped(); }
+
 void RealSenseWidget::captureAndProcess()
 {
-    if (m_isProcessing || m_latestFrame.empty()) return;
+    if (m_isProcessing || m_latestFrame.empty()) {
+        qDebug() << "[WARN] Capture failed. Is camera running? Or another process is already running?";
+        return;
+    }
+    qDebug() << "[INFO] Capture button pressed. Sending frame to Python for processing...";
     sendImageToPython(m_latestFrame);
     m_isProcessing = true;
     m_resultTimer->start(100);
@@ -299,17 +399,21 @@ void RealSenseWidget::checkProcessingResult()
     if (!m_isProcessing) { m_resultTimer->stop(); return; }
     QJsonArray results = receiveResultsFromPython();
     if (!results.isEmpty()) {
+        qDebug() << "[INFO] Received" << results.size() << "detection results from Python.";
         m_detectionResults = results;
         m_isProcessing = false;
         m_resultTimer->stop();
     }
 }
 
-void RealSenseWidget::onDenoisingToggled() { m_isDenoisingOn = !m_isDenoisingOn; }
-
-void RealSenseWidget::onFloorRemovalToggled()
-{
+void RealSenseWidget::onDenoisingToggled() {
+    m_isDenoisingOn = !m_isDenoisingOn;
+    qDebug() << "[INFO] Denoising toggled:" << (m_isDenoisingOn ? "ON" : "OFF");
+    updateFrame();
+}
+void RealSenseWidget::onFloorRemovalToggled() {
     m_isFloorRemovalOn = !m_isFloorRemovalOn;
+    qDebug() << "[INFO] Floor removal toggled:" << (m_isFloorRemovalOn ? "ON" : "OFF");
     if (m_isFloorRemovalOn) findFloorPlaneRANSAC();
     else {
         m_pointCloudWidget->m_isFloorFiltered = false;
@@ -317,60 +421,13 @@ void RealSenseWidget::onFloorRemovalToggled()
     }
 }
 
-void RealSenseWidget::onShowXYPlot()
-{
-    if (!m_xyPlotWidget) {
-        m_xyPlotWidget = new XYPlotWidget();
-        m_xyPlotWidget->setWindowTitle("XY Plane Projection");
-        m_xyPlotWidget->resize(500, 500);
-    }
-    m_xyPlotWidget->updateData(m_detectedPoints);
-    m_xyPlotWidget->show();
-    m_xyPlotWidget->activateWindow();
-}
-
-void RealSenseWidget::updateFrame()
-{
-    try {
-        rs2::frameset frames = m_pipeline.wait_for_frames(1000);
-        if (!frames) return;
-        frames = m_align.process(frames);
-        rs2::video_frame color = frames.get_color_frame();
-        rs2::depth_frame depth = frames.get_depth_frame();
-        if (!color || !depth) return;
-        if (m_isDenoisingOn) {
-            depth = m_dec_filter.process(depth).as<rs2::depth_frame>();
-        }
-        m_pointcloud.map_to(color);
-        rs2::points points = m_pointcloud.calculate(depth);
-        m_latestFrame = cv::Mat(cv::Size(IMAGE_WIDTH, IMAGE_HEIGHT), CV_8UC3, (void*)color.get_data(), cv::Mat::AUTO_STEP).clone();
-        m_currentImage = cvMatToQImage(m_latestFrame);
-        QImage maskOverlayImage(m_currentImage.size(), QImage::Format_ARGB32_Premultiplied);
-        maskOverlayImage.fill(Qt::transparent);
-        if (!m_detectionResults.isEmpty()) {
-            drawMaskOverlay(m_currentImage, m_detectionResults);
-            drawMaskOverlay(maskOverlayImage, m_detectionResults);
-        }
-        if(m_isProcessing)
-        {
-            QPainter painter(&m_currentImage);
-            painter.setPen(Qt::yellow);
-            painter.drawText(20, 30, "Processing...");
-        }
-        m_colorLabel->setPixmap(QPixmap::fromImage(m_currentImage).scaled(m_colorLabel->size(), Qt::KeepAspectRatio));
-        m_pointCloudWidget->updatePointCloud(points, color, maskOverlayImage);
-        m_pointCloudWidget->update();
-    } catch (const rs2::error& e) {
-        qWarning() << "RealSense error calling" << e.get_failed_function().c_str() << "(" << e.get_failed_args().c_str() << "):\n    " << e.what();
-    } catch (...) {
-        qWarning() << "An unknown error occurred in updateFrame.";
-    }
-}
-
-void RealSenseWidget::findFloorPlaneRANSAC()
-{
+void RealSenseWidget::findFloorPlaneRANSAC() {
     const rs2::points& points = m_pointCloudWidget->m_points;
-    if (!points || points.size() < 100) { m_pointCloudWidget->m_isFloorFiltered = false; return; }
+    if (!points || points.size() < 100) {
+        qDebug() << "[INFO] Floor removal: Not enough points to find floor.";
+        m_pointCloudWidget->m_isFloorFiltered = false;
+        return;
+    }
     const rs2::vertex* vertices = points.get_vertices();
     const size_t num_points = points.size();
     std::vector<int> best_inliers_indices;
@@ -400,25 +457,20 @@ void RealSenseWidget::findFloorPlaneRANSAC()
             best_inliers_indices = current_inliers;
         }
     }
+
     if (best_inliers_indices.size() > num_points / 4) {
+        qDebug() << "[INFO] Floor removal: Floor plane found with" << best_inliers_indices.size() << "inliers.";
         m_pointCloudWidget->m_floorPoints.assign(num_points, false);
         for (int idx : best_inliers_indices) m_pointCloudWidget->m_floorPoints[idx] = true;
         m_pointCloudWidget->m_isFloorFiltered = true;
     } else {
+        qDebug() << "[INFO] Floor removal: No dominant floor plane found. Best plane only had" << best_inliers_indices.size() << "inliers.";
         m_pointCloudWidget->m_isFloorFiltered = false;
     }
     m_pointCloudWidget->processPoints();
 }
 
-QImage RealSenseWidget::cvMatToQImage(const cv::Mat &mat)
-{
-    if (mat.empty()) return QImage();
-    if (mat.type() == CV_8UC3) return QImage(mat.data, mat.cols, mat.rows, mat.step, QImage::Format_BGR888).rgbSwapped();
-    return QImage();
-}
-
-void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results)
-{
+void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) {
     if (image.isNull()) return;
     QPainter painter(&image);
     painter.setRenderHint(QPainter::Antialiasing, true);
@@ -432,14 +484,11 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results)
             QJsonArray rle = partData["mask_rle"].toArray();
             QJsonArray shape = partData["mask_shape"].toArray();
             QJsonArray offset = partData["offset"].toArray();
-            int H = shape[0].toInt();
-            int W = shape[1].toInt();
-            int ox = offset[0].toInt();
-            int oy = offset[1].toInt();
+            int H = shape[0].toInt(); int W = shape[1].toInt();
+            int ox = offset[0].toInt(); int oy = offset[1].toInt();
             int cls = partData["cls_id"].toInt();
             QVector<uchar> mask_buffer(W * H, 0);
-            int idx = 0;
-            uchar val = 0;
+            int idx = 0; uchar val = 0;
             for(const QJsonValue& run_val : rle) {
                 int len = run_val.toInt();
                 if (idx + len > W*H) len = W*H - idx;
@@ -461,8 +510,7 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results)
     }
 }
 
-bool RealSenseWidget::initSharedMemory()
-{
+bool RealSenseWidget::initSharedMemory() {
     shm_unlink(SHM_IMAGE_NAME); shm_unlink(SHM_RESULT_NAME); shm_unlink(SHM_CONTROL_NAME);
     sem_unlink(SEM_IMAGE_NAME); sem_unlink(SEM_RESULT_NAME); sem_unlink(SEM_CONTROL_NAME);
     auto setup_shm = [&](const char* name, int size, int& fd, void*& data) {
@@ -489,8 +537,7 @@ bool RealSenseWidget::initSharedMemory()
     return true;
 }
 
-void RealSenseWidget::sendImageToPython(const cv::Mat &mat)
-{
+void RealSenseWidget::sendImageToPython(const cv::Mat &mat) {
     if (mat.empty() || !data_image || !sem_image || !data_control || !sem_control) return;
     sem_wait(sem_image);
     memcpy(data_image, mat.data, mat.total() * mat.elemSize());
@@ -500,8 +547,7 @@ void RealSenseWidget::sendImageToPython(const cv::Mat &mat)
     sem_post(sem_control);
 }
 
-QJsonArray RealSenseWidget::receiveResultsFromPython()
-{
+QJsonArray RealSenseWidget::receiveResultsFromPython() {
     QJsonArray results;
     if (!data_result || !sem_result || !data_control || !sem_control) return results;
     sem_wait(sem_control);

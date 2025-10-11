@@ -17,6 +17,7 @@
 #include <QKeyEvent>
 #include <QMatrix4x4>
 #include <QtMath>
+#include <QList>
 #include <librealsense2/rs.hpp>
 #include <opencv2/opencv.hpp>
 #include <vector>
@@ -34,8 +35,7 @@ public:
     ~PointCloudWidget();
 
     void updatePointCloud(const rs2::points& points, const rs2::video_frame& color, const QImage& maskOverlay);
-    // ✨ [수정] 누락되었던 setRobotPose 함수 선언 추가
-    void setRobotPose(const QMatrix4x4& pose);
+    void setTransforms(const QMatrix4x4& baseToTcp, const QMatrix4x4& tcpToCam);
 
 signals:
     void denoisingToggled();
@@ -64,8 +64,7 @@ private:
     std::vector<bool> m_floorPoints;
     friend class RealSenseWidget;
 
-    // ✨ [수정] 누락되었던 멤버 변수 선언 추가
-    QMatrix4x4 m_robotPose;
+    QMatrix4x4 m_baseToTcpTransform;
     QMatrix4x4 m_tcpToCameraTransform;
 
     float m_yaw, m_pitch, m_distance, m_panX, m_panY;
@@ -99,7 +98,7 @@ private:
     QHBoxLayout *m_layout;
     QLabel *m_colorLabel;
     PointCloudWidget *m_pointCloudWidget;
-    XYPlotWidget *m_xyPlotWidget = nullptr;
+    QList<XYPlotWidget*> m_plotWidgets;
 
     QMatrix4x4 m_baseToTcpTransform;
     QMatrix4x4 m_tcpToCameraTransform;
@@ -109,8 +108,11 @@ private:
     rs2::pointcloud m_pointcloud;
     rs2::align m_align;
 
+    // ✨ [수정] Disparity Transform 필터 추가
     rs2::decimation_filter m_dec_filter;
     rs2::spatial_filter m_spat_filter;
+    rs2::disparity_transform m_depth_to_disparity;
+    rs2::disparity_transform m_disparity_to_depth;
     bool m_isDenoisingOn = false;
     bool m_isFloorRemovalOn = false;
 
@@ -124,7 +126,7 @@ private:
     sem_t *sem_image, *sem_result, *sem_control;
 
     QJsonArray m_detectionResults;
-    QVector<PlotData> m_detectedPoints;
+    QList<QVector<PlotData>> m_detectedObjectsPoints;
     bool m_isProcessing;
 
     const int IMAGE_WIDTH = 640;
