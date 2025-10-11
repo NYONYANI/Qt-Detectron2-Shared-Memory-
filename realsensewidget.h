@@ -14,14 +14,14 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QKeyEvent>
 #include <librealsense2/rs.hpp>
 #include <opencv2/opencv.hpp>
-
+#include <vector> // 💡 vector 헤더 추가 확인
 #include <sys/mman.h>
 #include <semaphore.h>
-#include <vector>
 
-// 💡 포인트 클라우드 렌더링을 위한 OpenGL 위젯
+
 class PointCloudWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
     Q_OBJECT
@@ -30,7 +30,11 @@ public:
     explicit PointCloudWidget(QWidget *parent = nullptr);
     ~PointCloudWidget();
 
-    void updatePointCloud(const rs2::points& points, const rs2::video_frame& color);
+    void updatePointCloud(const rs2::points& points, const rs2::video_frame& color, const QImage& maskOverlay);
+
+signals:
+    void denoisingToggled();
+    void floorRemovalToggled(); // 💡 추가: 바닥 제거 토글 시그널
 
 protected:
     void initializeGL() override;
@@ -39,11 +43,23 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
 private:
+    void processPoints();
+
     std::vector<float> m_vertexData;
 
-    // 카메라 제어 변수 (초기값 설정)
+    rs2::points m_points;
+    rs2::video_frame m_colorFrame = rs2::video_frame(nullptr);
+    QImage m_maskOverlay;
+    bool m_showOnlyMaskedPoints = false;
+
+    // 💡 추가: 바닥 필터링 상태와 바닥 포인트 인덱스를 저장할 변수
+    bool m_isFloorFiltered = false;
+    std::vector<bool> m_floorPoints;
+    friend class RealSenseWidget; // 💡 RealSenseWidget에서 접근 허용
+
     float m_yaw = 0.0f;
     float m_pitch = 0.0f;
     float m_zoom = 0.5f;
@@ -66,10 +82,15 @@ public slots:
     void captureAndProcess();
 
 private slots:
+    void onDenoisingToggled();
+    void onFloorRemovalToggled(); // 💡 추가: 바닥 제거 슬롯
     void updateFrame();
     void checkProcessingResult();
 
 private:
+    // 💡 추가: 바닥 평면 감지를 위한 RANSAC 함수
+    void findFloorPlaneRANSAC();
+
     QHBoxLayout *m_layout;
     QLabel *m_colorLabel;
     PointCloudWidget *m_pointCloudWidget;
@@ -79,6 +100,11 @@ private:
     rs2::pointcloud m_pointcloud;
     rs2::align m_align;
 
+    rs2::decimation_filter m_dec_filter;
+    rs2::spatial_filter m_spat_filter;
+    bool m_isDenoisingOn = false;
+    bool m_isFloorRemovalOn = false; // 💡 추가: 바닥 제거 기능 활성화 플래그
+
     QTimer *m_timer;
     QTimer *m_resultTimer;
     QImage m_currentImage;
@@ -87,11 +113,9 @@ private:
     int fd_image = -1;
     void* data_image = nullptr;
     sem_t* sem_image = SEM_FAILED;
-
     int fd_result = -1;
     void* data_result = nullptr;
     sem_t* sem_result = SEM_FAILED;
-
     int fd_control = -1;
     void* data_control = nullptr;
     sem_t* sem_control = SEM_FAILED;
