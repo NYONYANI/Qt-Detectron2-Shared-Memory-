@@ -3,21 +3,26 @@
 RobotMonitor::RobotMonitor(QObject *parent) : QObject(parent)
 {
     m_timer = new QTimer(this);
-    // 500ms(0.5초)마다 checkRobotState 슬롯을 호출하도록 연결
     connect(m_timer, &QTimer::timeout, this, &RobotMonitor::checkRobotState);
 }
 
 void RobotMonitor::startMonitoring()
 {
-    qDebug() << "Robot monitoring thread started (500ms interval).";
-    m_timer->start(500); // 500 밀리초마다 상태 확인
+    qDebug() << "Robot monitoring thread started (100ms interval).";
+    m_timer->start(100);
 }
 
 void RobotMonitor::checkRobotState()
 {
-    // 로봇 API를 통해 현재 로봇 상태를 가져옵니다.
     ROBOT_STATE currentState = GlobalDrfl.GetRobotState();
-
-    // UI 업데이트를 위해 MainWindow로 시그널 전송
     emit robotStateChanged((int)currentState);
+
+    // ✨ get_current_posx()를 인수 없이 호출하여 LPROBOT_TASK_POSE를 받습니다.
+    LPROBOT_TASK_POSE pose_struct = GlobalDrfl.get_current_posx();
+
+    if (pose_struct)
+    {
+        // ✨ 6개 좌표 값(X,Y,Z,Rx,Ry,Rz)이 담긴 _fTargetPos 배열을 시그널로 전송합니다.
+        emit robotPoseUpdated(pose_struct->_fTargetPos);
+    }
 }
