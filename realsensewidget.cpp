@@ -474,19 +474,30 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
     if (image.isNull()) return;
     QPainter painter(&image);
     painter.setRenderHint(QPainter::Antialiasing, true);
+    int cupIndex = 1;
     for (const QJsonValue &value : results) {
         QJsonObject cupResult = value.toObject();
-        QStringList parts = {"body_handle", "body", "handle"};
+        QStringList parts = {"body", "handle"};
         for (const QString &part : parts) {
             if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
+
             QJsonObject partData = cupResult[part].toObject();
-            if (!partData.contains("mask_rle")) continue;
+            if (!partData.contains("mask_rle") || !partData.contains("center")) continue;
+
             QJsonArray rle = partData["mask_rle"].toArray();
             QJsonArray shape = partData["mask_shape"].toArray();
             QJsonArray offset = partData["offset"].toArray();
-            int H = shape[0].toInt(); int W = shape[1].toInt();
-            int ox = offset[0].toInt(); int oy = offset[1].toInt();
+            QJsonArray center = partData["center"].toArray(); // ✨ [수정] 중심 좌표 가져오기
+
+            int H = shape[0].toInt();
+            int W = shape[1].toInt();
+            int ox = offset[0].toInt();
+            int oy = offset[1].toInt();
+            int centerX = center[0].toInt(); // ✨ [수정]
+            int centerY = center[1].toInt(); // ✨ [수정]
             int cls = partData["cls_id"].toInt();
+
+            // RLE 디코딩
             QVector<uchar> mask_buffer(W * H, 0);
             int idx = 0; uchar val = 0;
             for(const QJsonValue& run_val : rle) {
@@ -497,8 +508,10 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
                 val = (val == 0 ? 255 : 0);
                 if(idx >= W * H) break;
             }
+
+            // 마스크 이미지 생성 및 그리기
             QImage mask_img(mask_buffer.constData(), W, H, W, QImage::Format_Alpha8);
-            QColor maskColor = (cls==0) ? QColor(255,0,0,150) : (cls==1) ? QColor(0,255,0,150) : QColor(0,0,255,150);
+            QColor maskColor = (cls==1) ? QColor(0,255,0,150) : QColor(0,0,255,150);
             QImage colored(W, H, QImage::Format_ARGB32_Premultiplied);
             colored.fill(maskColor);
             QPainter p(&colored);
@@ -506,9 +519,17 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
             p.drawImage(0, 0, mask_img);
             p.end();
             painter.drawImage(ox, oy, colored);
+
+            // ✨ [수정] 텍스트를 각 부위의 중심에 표시
+            painter.setPen(Qt::white);
+            painter.setFont(QFont("Arial", 12, QFont::Bold));
+            QString label = QString("cup%1: %2").arg(cupIndex).arg(part);
+            painter.drawText(centerX, centerY, label); // 중심 좌표 사용
         }
+        cupIndex++;
     }
 }
+
 
 bool RealSenseWidget::initSharedMemory() {
     shm_unlink(SHM_IMAGE_NAME); shm_unlink(SHM_RESULT_NAME); shm_unlink(SHM_CONTROL_NAME);
