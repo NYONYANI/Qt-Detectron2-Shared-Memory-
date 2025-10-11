@@ -15,12 +15,15 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QKeyEvent>
+#include <QMatrix4x4>
+#include <QtMath>
 #include <librealsense2/rs.hpp>
 #include <opencv2/opencv.hpp>
-#include <vector> // 💡 vector 헤더 추가 확인
+#include <vector>
 #include <sys/mman.h>
 #include <semaphore.h>
-
+#include "xyplotwidget.h"
+#include <GL/glu.h>
 
 class PointCloudWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
@@ -31,10 +34,13 @@ public:
     ~PointCloudWidget();
 
     void updatePointCloud(const rs2::points& points, const rs2::video_frame& color, const QImage& maskOverlay);
+    // ✨ [수정] 누락되었던 setRobotPose 함수 선언 추가
+    void setRobotPose(const QMatrix4x4& pose);
 
 signals:
     void denoisingToggled();
-    void floorRemovalToggled(); // 💡 추가: 바닥 제거 토글 시그널
+    void floorRemovalToggled();
+    void showXYPlotRequested();
 
 protected:
     void initializeGL() override;
@@ -47,24 +53,22 @@ protected:
 
 private:
     void processPoints();
+    void drawAxes(float length = 0.1f);
 
     std::vector<float> m_vertexData;
-
     rs2::points m_points;
-    rs2::video_frame m_colorFrame = rs2::video_frame(nullptr);
+    rs2::video_frame m_colorFrame;
     QImage m_maskOverlay;
     bool m_showOnlyMaskedPoints = false;
-
-    // 💡 추가: 바닥 필터링 상태와 바닥 포인트 인덱스를 저장할 변수
     bool m_isFloorFiltered = false;
     std::vector<bool> m_floorPoints;
-    friend class RealSenseWidget; // 💡 RealSenseWidget에서 접근 허용
+    friend class RealSenseWidget;
 
-    float m_yaw = 0.0f;
-    float m_pitch = 0.0f;
-    float m_zoom = 0.5f;
-    float m_panX = 0.0f;
-    float m_panY = 0.0f;
+    // ✨ [수정] 누락되었던 멤버 변수 선언 추가
+    QMatrix4x4 m_robotPose;
+    QMatrix4x4 m_tcpToCameraTransform;
+
+    float m_yaw, m_pitch, m_distance, m_panX, m_panY;
     QPoint m_lastPos;
 };
 
@@ -80,20 +84,25 @@ public:
 public slots:
     void startCameraStream();
     void captureAndProcess();
+    void onRobotPoseUpdated(const float* pose);
 
 private slots:
     void onDenoisingToggled();
-    void onFloorRemovalToggled(); // 💡 추가: 바닥 제거 슬롯
+    void onFloorRemovalToggled();
+    void onShowXYPlot();
     void updateFrame();
     void checkProcessingResult();
 
 private:
-    // 💡 추가: 바닥 평면 감지를 위한 RANSAC 함수
     void findFloorPlaneRANSAC();
 
     QHBoxLayout *m_layout;
     QLabel *m_colorLabel;
     PointCloudWidget *m_pointCloudWidget;
+    XYPlotWidget *m_xyPlotWidget = nullptr;
+
+    QMatrix4x4 m_baseToTcpTransform;
+    QMatrix4x4 m_tcpToCameraTransform;
 
     rs2::pipeline m_pipeline;
     rs2::config m_config;
@@ -103,24 +112,19 @@ private:
     rs2::decimation_filter m_dec_filter;
     rs2::spatial_filter m_spat_filter;
     bool m_isDenoisingOn = false;
-    bool m_isFloorRemovalOn = false; // 💡 추가: 바닥 제거 기능 활성화 플래그
+    bool m_isFloorRemovalOn = false;
 
     QTimer *m_timer;
     QTimer *m_resultTimer;
     QImage m_currentImage;
     cv::Mat m_latestFrame;
 
-    int fd_image = -1;
-    void* data_image = nullptr;
-    sem_t* sem_image = SEM_FAILED;
-    int fd_result = -1;
-    void* data_result = nullptr;
-    sem_t* sem_result = SEM_FAILED;
-    int fd_control = -1;
-    void* data_control = nullptr;
-    sem_t* sem_control = SEM_FAILED;
+    int fd_image, fd_result, fd_control;
+    void *data_image, *data_result, *data_control;
+    sem_t *sem_image, *sem_result, *sem_control;
 
     QJsonArray m_detectionResults;
+    QVector<PlotData> m_detectedPoints;
     bool m_isProcessing;
 
     const int IMAGE_WIDTH = 640;
@@ -142,5 +146,4 @@ private:
     QJsonArray receiveResultsFromPython();
     void drawMaskOverlay(QImage &image, const QJsonArray &results);
 };
-
 #endif // REALSENSEWIDGET_H

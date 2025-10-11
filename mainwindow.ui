@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1343</width>
-    <height>717</height>
+    <width>1315</width>
+    <height>686</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -63,13 +63,26 @@
      <string>Capture</string>
     </property>
    </widget>
+   <widget class="QLabel" name="RobotPos">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>10</y>
+      <width>511</width>
+      <height>17</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Robot pos</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>1343</width>
+     <width>1315</width>
      <height>22</height>
     </rect>
    </property>

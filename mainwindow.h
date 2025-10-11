@@ -4,11 +4,11 @@
 #include <QMainWindow>
 #include <QDebug>
 #include <QLabel>
-#include <QThread> // QThread 사용을 위해 추가
+#include <QThread>
 #include "DRFL.h"
 #include "DRFLEx.h"
-#include "robotmonitor.h" // RobotMonitor 클래스 사용을 위해 추가
-using namespace DRAFramework;
+#include "robotmonitor.h"
+#include "realsensewidget.h" // RealSenseWidget 헤더 포함
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -24,16 +24,15 @@ public:
 
 private slots:
     void on_RobotInit_clicked();
-    // 모니터 스레드로부터 상태 업데이트 시그널을 받을 슬롯
     void updateRobotStateLabel(int state);
+    void updateRobotPoseLabel(const float* pose);
 
-public: // 👈 전역 콜백 접근을 위해 Public으로 유지
+public:
+    // 다른 파일에서 UI 라벨에 접근할 수 있도록 static으로 선언
     static QLabel* s_robotStateLabel;
 
 private:
     Ui::MainWindow *ui;
-
-    // 💡 누락된 멤버 변수 선언 추가
     QThread *m_monitorThread;
     RobotMonitor *m_robotMonitor;
 };
