@@ -28,11 +28,13 @@
 #include <GL/glu.h>
 #include "DBSCAN.h"
 
-// 파지 지점의 위치와 방향 정보를 함께 저장하는 구조체
+// ✨ [수정] 파지 방향 계산을 위해 원 중심과 손잡이 중심 정보 추가
 struct GraspingTarget
 {
     QVector3D point;      // 3D 파지 포인트 (빨간 구의 중심)
     QVector3D direction;  // 파지 방향 (점선의 방향 벡터)
+    QPointF circleCenter; // 2D 원의 중심
+    QPointF handleCentroid; // 2D 손잡이의 중심
 };
 
 class PointCloudWidget : public QOpenGLWidget, protected QOpenGLFunctions

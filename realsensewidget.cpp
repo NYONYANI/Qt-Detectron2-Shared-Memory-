@@ -516,9 +516,16 @@ void RealSenseWidget::onCalculateTargetPose()
     m_calculatedTargetPos_m = bestTarget.point + QVector3D(0, 0, gripper_z_offset);
 
     // 2. 파지 방향(손잡이 방향)으로부터 Rz(Yaw) 각도를 계산합니다.
-    float yaw_rad = atan2(bestTarget.direction.y(), bestTarget.direction.x());
-    float yaw_deg = qRadiansToDegrees(yaw_rad);
-    float target_rz = yaw_deg - 90.0f; // 그리퍼 방향 보정
+    // bestTarget.direction (N)은 컵 중심을 향하는 법선 벡터(Normal vector)입니다.
+    const QVector3D& N = bestTarget.direction;
+
+    // Rz_old = atan2(Ny, -Nx)는 TCP X축을 접선(Tangent)에 맞춥니다.
+    float rz_for_tangent_x_axis = atan2(N.y(), -N.x());
+
+    // ✨ [수정] TCP Y축(파란색 축)을 접선(Tangent)에 맞추기 위해 90도 회전합니다.
+    // Rz_new = Rz_old + 90도 (라디안)
+    float target_rz_rad = rz_for_tangent_x_axis + qDegreesToRadians(90.0f);
+
 
     // 3. 사용자가 요청한 고정 각도를 설정합니다. (Rx=0, Ry=180)
     float target_rx = 0.0f;
@@ -526,17 +533,18 @@ void RealSenseWidget::onCalculateTargetPose()
 
 
     // 4. 계산된 오일러 각도를 멤버 변수에 저장합니다.
-    m_calculatedTargetOri_deg = QVector3D(target_rx, target_ry, target_rz);
+    m_calculatedTargetOri_deg = QVector3D(
+        target_rx,
+        target_ry,
+        qRadiansToDegrees(target_rz_rad)
+        );
 
     // 5. 시각화를 위해 오일러 각도로부터 4x4 행렬을 생성합니다.
     QMatrix4x4 vizMatrix;
     vizMatrix.setToIdentity();
     vizMatrix.translate(m_calculatedTargetPos_m);
 
-    // ✨ [수정] 로봇 컨트롤러의 해석 순서와 일치시키기 위해 회전 순서를 Rx -> Ry -> Rz로 변경
-    // QMatrix4x4::rotate는 후행 곱셈(post-multiplication)이므로,
-    // translate(T) 후 rotate(Rx), rotate(Ry), rotate(Rz)를 순서대로 호출하면
-    // 최종 변환은 T * Rx * Ry * Rz 가 됩니다.
+    // QMatrix4x4::rotate는 후행 곱셈(post-multiplication)이므로, 최종 변환은 T * Rx * Ry * Rz 가 됩니다.
     vizMatrix.rotate(m_calculatedTargetOri_deg.x(), 1, 0, 0); // Roll (Rx)
     vizMatrix.rotate(m_calculatedTargetOri_deg.y(), 0, 1, 0); // Pitch (Ry)
     vizMatrix.rotate(m_calculatedTargetOri_deg.z(), 0, 0, 1); // Yaw (Rz)
