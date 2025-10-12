@@ -16,10 +16,8 @@
 #include <map>
 #include <limits>
 
+// PointCloudWidget 구현 (변경 없음, 이전과 동일)
 // ===================================================================
-// PointCloudWidget 구현
-// ===================================================================
-
 PointCloudWidget::PointCloudWidget(QWidget *parent)
     : QOpenGLWidget(parent), m_colorFrame(nullptr)
 {
@@ -150,7 +148,6 @@ void PointCloudWidget::processPoints(const std::vector<int>& clusterIds) {
     if (useClusters) {
         int maxClusterId = 0;
         for (int id : clusterIds) { if (id > maxClusterId) maxClusterId = id; }
-        // ✨ [오류 수정] mt19373 -> mt19937
         std::mt19937 gen(12345);
         std::uniform_real_distribution<float> distrib(0.0, 1.0);
         for (int i = 1; i <= maxClusterId; ++i) { clusterColors[i] = QVector3D(distrib(gen), distrib(gen), distrib(gen)); }
@@ -492,6 +489,7 @@ void RealSenseWidget::onShowXYPlot()
     }
 }
 
+// ================== ✨ [수정된 함수 시작] ✨ ==================
 void RealSenseWidget::onCalculateTargetPose()
 {
     qDebug() << "[INFO] Key '5' pressed. Calculating target pose...";
@@ -501,11 +499,10 @@ void RealSenseWidget::onCalculateTargetPose()
         return;
     }
 
+    // 가장 가까운 파지점을 선택
     QVector3D currentTcpPos = m_baseToTcpTransform.column(3).toVector3D();
-
     float minDistance = std::numeric_limits<float>::max();
     GraspingTarget bestTarget;
-
     for (const auto& target : m_graspingTargets) {
         float distance = currentTcpPos.distanceToPoint(target.point);
         if (distance < minDistance) {
@@ -514,38 +511,59 @@ void RealSenseWidget::onCalculateTargetPose()
         }
     }
 
+    // 1. 목표 위치(미터 단위)를 계산합니다.
     const float gripper_z_offset = 0.146f;
-    QVector3D target_z_axis(0, 0, -1);
-    QVector3D targetTcpPos = bestTarget.point - gripper_z_offset * target_z_axis;
+    m_calculatedTargetPos_m = bestTarget.point + QVector3D(0, 0, gripper_z_offset);
 
-    QVector3D target_y_axis = bestTarget.direction.normalized();
-    QVector3D target_x_axis = QVector3D::crossProduct(target_y_axis, target_z_axis).normalized();
+    // 2. 파지 방향(손잡이 방향)으로부터 Rz(Yaw) 각도를 계산합니다.
+    float yaw_rad = atan2(bestTarget.direction.y(), bestTarget.direction.x());
+    float yaw_deg = qRadiansToDegrees(yaw_rad);
+    float target_rz = yaw_deg - 90.0f; // 그리퍼 방향 보정
 
-    m_calculatedTargetPose.setToIdentity();
-    m_calculatedTargetPose.setColumn(0, QVector4D(target_x_axis, 0));
-    m_calculatedTargetPose.setColumn(1, QVector4D(target_y_axis, 0));
-    m_calculatedTargetPose.setColumn(2, QVector4D(target_z_axis, 0));
-    m_calculatedTargetPose.setColumn(3, QVector4D(targetTcpPos, 1));
+    // 3. 사용자가 요청한 고정 각도를 설정합니다. (Rx=0, Ry=180)
+    float target_rx = 0.0f;
+    float target_ry = 180.0f;
 
-    qDebug() << "Target Pose Calculated:" << m_calculatedTargetPose;
+    // 4. 계산된 오일러 각도를 멤버 변수에 저장합니다.
+    m_calculatedTargetOri_deg = QVector3D(target_rx, target_ry, target_rz);
+
+    // 5. 시각화를 위해 오일러 각도로부터 4x4 행렬을 생성합니다.
+    // QMatrix4x4::rotate는 Post-multiplication(후행 곱셈) 입니다.
+    // 즉, T * Rz * Ry * Rx 순서의 변환을 만들려면 Z, Y, X 순으로 호출해야 합니다.
+    QMatrix4x4 vizMatrix;
+    vizMatrix.setToIdentity();
+    vizMatrix.translate(m_calculatedTargetPos_m);
+    vizMatrix.rotate(m_calculatedTargetOri_deg.z(), 0, 0, 1); // Yaw (Rz)
+    vizMatrix.rotate(m_calculatedTargetOri_deg.y(), 0, 1, 0); // Pitch (Ry)
+    vizMatrix.rotate(m_calculatedTargetOri_deg.x(), 1, 0, 0); // Roll (Rx)
+
+    m_calculatedTargetPose = vizMatrix;
+
+    qDebug() << "Target Pose Calculated: Pos(m):" << m_calculatedTargetPos_m << "Ori(deg):" << m_calculatedTargetOri_deg;
 
     m_pointCloudWidget->updateTargetPose(m_calculatedTargetPose, !m_pointCloudWidget->m_showTargetPose);
 }
+// ================== ✨ [수정된 함수 끝] ✨ ====================
+
 
 void RealSenseWidget::onMoveRobotToPreGraspPose()
 {
     qDebug() << "[INFO] Key 'M' pressed. Requesting robot move...";
-    if (m_calculatedTargetPose.isIdentity()) {
+    if (m_calculatedTargetPos_m.isNull() || m_calculatedTargetOri_deg.isNull()) {
         qDebug() << "[WARN] No target pose has been calculated. Press '5' first.";
         return;
     }
 
-    QMatrix4x4 preGraspPose = m_calculatedTargetPose;
-    preGraspPose.translate(0, 0, 0.20);
+    // Pre-grasp 위치는 목표 위치(베이스 좌표계 기준)에서 Z축으로 15cm 위입니다.
+    QVector3D preGraspPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, 0.15);
 
-    qDebug() << "Requesting move to Pre-Grasp Pose Matrix:" << preGraspPose;
+    // 로봇에게 전달하기 위해 미터 단위를 밀리미터 단위로 변환합니다.
+    QVector3D preGraspPos_mm = preGraspPos_m * 1000.0f;
 
-    emit requestRobotMove(preGraspPose);
+    qDebug() << "Requesting move to Pre-Grasp Pose: Pos(mm):" << preGraspPos_mm << "Ori(deg):" << m_calculatedTargetOri_deg;
+
+    // 계산된 위치(mm)와 각도(deg)를 직접 시그널로 전달합니다.
+    emit requestRobotMove(preGraspPos_mm, m_calculatedTargetOri_deg);
 }
 
 
@@ -692,7 +710,6 @@ void RealSenseWidget::findFloorPlaneRANSAC() {
     const size_t num_points = points.size();
     std::vector<int> best_inliers_indices;
     std::random_device rd;
-    // ✨ [오류 수정] mt19373 -> mt19937
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> distrib(0, num_points - 1);
     for (int i = 0; i < 100; ++i) {

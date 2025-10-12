@@ -5,7 +5,8 @@
 #include <QDebug>
 #include <QLabel>
 #include <QThread>
-#include <QMatrix4x4> // ✨ [추가] QMatrix4x4 헤더 포함
+#include <QMatrix4x4>
+#include <QVector3D>
 #include "DRFL.h"
 #include "DRFLEx.h"
 #include "robotmonitor.h"
@@ -27,8 +28,8 @@ private slots:
     void on_RobotInit_clicked();
     void updateRobotStateLabel(int state);
     void updateRobotPoseLabel(const float* pose);
-    // ✨ [수정] onMoveRobot 슬롯의 선언을 cpp 파일과 일치시킵니다.
-    void onMoveRobot(const QMatrix4x4& poseMatrix);
+    void onMoveRobot(const QVector3D& position_mm, const QVector3D& orientation_deg);
+    void on_ResetPosButton_clicked(); // ✨ [추가] 리셋 버튼 슬롯
 
 public:
     static QLabel* s_robotStateLabel;

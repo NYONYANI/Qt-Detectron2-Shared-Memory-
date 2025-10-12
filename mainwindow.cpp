@@ -5,8 +5,7 @@
 #include <QThread>
 #include <QtMath>
 
-// ----------------------------------------------------
-// 전역 변수 및 객체 정의
+// 전역 변수 및 콜백 함수 (변경 없음, 이전과 동일)
 // ----------------------------------------------------
 using namespace DRAFramework;
 
@@ -16,9 +15,6 @@ bool g_bServoOnAttempted = false;
 bool g_TpInitailizingComplted = false;
 QLabel* MainWindow::s_robotStateLabel = nullptr;
 
-// ----------------------------------------------------
-// 전역 콜백 함수 정의
-// ----------------------------------------------------
 void OnMonitoringStateCB(const ROBOT_STATE eState) {
     if (!g_bHasControlAuthority) {
         return;
@@ -91,8 +87,8 @@ void OnMonitroingAccessControlCB(const MONITORING_ACCESS_CONTROL eTrasnsitContro
         break;
     }
 }
-
 // ----------------------------------------------------
+
 // MainWindow 클래스 멤버 함수 구현
 // ----------------------------------------------------
 
@@ -106,7 +102,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(ui->CaptureButton, &QPushButton::clicked,
             ui->widget, &RealSenseWidget::captureAndProcess);
-
+    connect(ui->ResetPosButton, &QPushButton::clicked, this, &MainWindow::on_ResetPosButton_clicked);
     m_monitorThread = new QThread(this);
     m_robotMonitor = new RobotMonitor();
     m_robotMonitor->moveToThread(m_monitorThread);
@@ -116,10 +112,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_robotMonitor, &RobotMonitor::robotPoseUpdated, this, &MainWindow::updateRobotPoseLabel);
     connect(m_monitorThread, &QThread::finished, m_robotMonitor, &QObject::deleteLater);
 
-    // ✨ [수정] 3D 위젯이 새로운 시그널(robotTransformUpdated)을 받도록 connect 구문 변경
     connect(m_robotMonitor, &RobotMonitor::robotTransformUpdated,
             ui->widget, &RealSenseWidget::onRobotTransformUpdated);
 
+    // ✨ [수정] 변경된 시그널/슬롯에 맞게 connect 구문 업데이트
     connect(ui->widget, &RealSenseWidget::requestRobotMove,
             this, &MainWindow::onMoveRobot);
 
@@ -164,7 +160,8 @@ void MainWindow::on_RobotInit_clicked()
     }
 }
 
-void MainWindow::onMoveRobot(const QMatrix4x4 &poseMatrix)
+// ================== ✨ [수정된 함수 시작] ✨ ==================
+void MainWindow::onMoveRobot(const QVector3D& position_mm, const QVector3D& orientation_deg)
 {
     if (!g_bHasControlAuthority) {
         qWarning() << "[ROBOT] Cannot move: No control authority.";
@@ -178,33 +175,24 @@ void MainWindow::onMoveRobot(const QMatrix4x4 &poseMatrix)
 
     qInfo() << "[ROBOT] Received move request. Executing movel command.";
 
+    // 전달받은 위치(mm)와 각도(deg)를 로봇 명령 배열에 직접 할당합니다.
     float target_posx[6];
-    target_posx[0] = poseMatrix.column(3).x() * 1000.0f;
-    target_posx[1] = poseMatrix.column(3).y() * 1000.0f;
-    target_posx[2] = poseMatrix.column(3).z() * 1000.0f;
-
-    const float *m = poseMatrix.constData();
-    float sy = sqrt(m[0] * m[0] +  m[4] * m[4]);
-    bool singular = sy < 1e-6;
-    float x, y, z;
-    if (!singular) {
-        x = atan2(m[9], m[10]);
-        y = atan2(-m[8], sy);
-        z = atan2(m[4], m[0]);
-    } else {
-        x = atan2(-m[6], m[5]);
-        y = atan2(-m[8], sy);
-        z = 0;
-    }
-    target_posx[3] = qRadiansToDegrees(x);
-    target_posx[4] = qRadiansToDegrees(y);
-    target_posx[5] = qRadiansToDegrees(z);
+    target_posx[0] = position_mm.x();
+    target_posx[1] = position_mm.y();
+    target_posx[2] = position_mm.z();
+    target_posx[3] = orientation_deg.x(); // A (Rx)
+    target_posx[4] = orientation_deg.y(); // B (Ry)
+    target_posx[5] = orientation_deg.z(); // C (Rz)
 
     float velx[2] = {100.0f, 60.0f};
     float accx[2] = {200.0f, 120.0f};
 
+    qDebug() << "[ROBOT] Moving to Pos(mm):" << target_posx[0] << target_posx[1] << target_posx[2]
+             << "Rot(deg):" << target_posx[3] << target_posx[4] << target_posx[5];
+
     GlobalDrfl.movel(target_posx, velx, accx);
 }
+// ================== ✨ [수정된 함수 끝] ✨ ====================
 
 
 void MainWindow::updateRobotStateLabel(int state)
@@ -230,6 +218,32 @@ void MainWindow::updateRobotStateLabel(int state)
         s_robotStateLabel->setText("Status: " + stateText + controlStatus);
         s_robotStateLabel->adjustSize();
     }
+}
+void MainWindow::on_ResetPosButton_clicked()
+{
+    if (!g_bHasControlAuthority) {
+        qWarning() << "[ROBOT] Cannot move: No control authority.";
+        return;
+    }
+
+    if (GlobalDrfl.GetRobotState() != STATE_STANDBY) {
+        qWarning() << "[ROBOT] Cannot move: Robot is not in STANDBY state.";
+        return;
+    }
+
+    qInfo() << "[ROBOT] Moving to Reset Position.";
+
+    // 요청하신 좌표 (X, Y, Z, A, B, C)
+    float target_posx[6] = {349.0f, 9.21f, 378.46f, 172.0f, -139.0f, -179.0f};
+
+    // 이동 속도 및 가속도 설정
+    float velx[2] = {150.0f, 90.0f}; // 선속도, 각속도
+    float accx[2] = {300.0f, 180.0f}; // 선가속도, 각가속도
+
+    qDebug() << "[ROBOT] Moving to Pos(mm):" << target_posx[0] << target_posx[1] << target_posx[2]
+             << "Rot(deg):" << target_posx[3] << target_posx[4] << target_posx[5];
+
+    GlobalDrfl.movel(target_posx, velx, accx);
 }
 
 void MainWindow::updateRobotPoseLabel(const float* pose)

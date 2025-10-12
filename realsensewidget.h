@@ -107,12 +107,11 @@ public:
 public slots:
     void startCameraStream();
     void captureAndProcess();
-    // ✨ [수정] QMatrix4x4를 직접 받는 슬롯으로 변경
     void onRobotTransformUpdated(const QMatrix4x4 &transform);
 
 signals:
-    // QMatrix4x4를 직접 전달하도록 시그널 변경
-    void requestRobotMove(const QMatrix4x4& poseMatrix);
+    // ✨ [수정] 4x4 행렬 대신 위치(mm)와 오일러 각도(deg)를 직접 전달하도록 시그널 변경
+    void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
 
 private slots:
     void onDenoisingToggled();
@@ -163,7 +162,10 @@ private:
     bool m_showPlotWindow;
 
     QVector<GraspingTarget> m_graspingTargets;
-    QMatrix4x4 m_calculatedTargetPose; // 계산된 목표 자세를 저장할 변수
+    // ✨ [추가] 계산된 목표 위치와 각도를 저장할 멤버 변수
+    QMatrix4x4 m_calculatedTargetPose; // 시각화용
+    QVector3D m_calculatedTargetPos_m;      // 로봇 전달용 (미터 단위)
+    QVector3D m_calculatedTargetOri_deg;    // 로봇 전달용 (도 단위)
     std::vector<int> m_clusterIds;
 
     const int IMAGE_WIDTH = 640;
