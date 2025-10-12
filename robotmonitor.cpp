@@ -17,12 +17,27 @@ void RobotMonitor::checkRobotState()
     ROBOT_STATE currentState = GlobalDrfl.GetRobotState();
     emit robotStateChanged((int)currentState);
 
-    // ✨ get_current_posx()를 인수 없이 호출하여 LPROBOT_TASK_POSE를 받습니다.
+    // 위치와 오일러 각도 값을 포함한 구조체 가져오기
     LPROBOT_TASK_POSE pose_struct = GlobalDrfl.get_current_posx();
 
-    if (pose_struct)
+    // ✨ [추가] 3x3 회전 행렬 직접 가져오기
+    float(*rotation_matrix)[3] = GlobalDrfl.get_current_rotm();
+
+    if (pose_struct && rotation_matrix)
     {
-        // ✨ 6개 좌표 값(X,Y,Z,Rx,Ry,Rz)이 담긴 _fTargetPos 배열을 시그널로 전송합니다.
+        // 기존 UI 라벨 업데이트를 위해 pose 배열 시그널 전송 (유지)
         emit robotPoseUpdated(pose_struct->_fTargetPos);
+
+        // ✨ [추가] Python과 동일하게 위치 벡터와 회전 행렬로 4x4 변환 행렬 생성
+        const float* pos = pose_struct->_fTargetPos; // X, Y, Z 위치
+        QMatrix4x4 transform(
+            rotation_matrix[0][0], rotation_matrix[0][1], rotation_matrix[0][2], pos[0] / 1000.0f,
+            rotation_matrix[1][0], rotation_matrix[1][1], rotation_matrix[1][2], pos[1] / 1000.0f,
+            rotation_matrix[2][0], rotation_matrix[2][1], rotation_matrix[2][2], pos[2] / 1000.0f,
+            0.0f,                  0.0f,                  0.0f,                  1.0f
+            );
+
+        // ✨ [추가] 생성된 변환 행렬을 새로운 시그널로 전송
+        emit robotTransformUpdated(transform);
     }
 }

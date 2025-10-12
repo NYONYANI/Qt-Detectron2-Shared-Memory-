@@ -107,7 +107,8 @@ public:
 public slots:
     void startCameraStream();
     void captureAndProcess();
-    void onRobotPoseUpdated(const float* pose);
+    // ✨ [수정] QMatrix4x4를 직접 받는 슬롯으로 변경
+    void onRobotTransformUpdated(const QMatrix4x4 &transform);
 
 signals:
     // QMatrix4x4를 직접 전달하도록 시그널 변경

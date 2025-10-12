@@ -5,6 +5,7 @@
 #include <QTimer>
 #include <QDebug>
 #include <QString>
+#include <QMatrix4x4> // QMatrix4x4 사용을 위해 추가
 #include "DRFLEx.h"
 using namespace DRAFramework;
 
@@ -18,9 +19,13 @@ public:
     explicit RobotMonitor(QObject *parent = nullptr);
 
 signals:
+    // 기존 UI 라벨 업데이트를 위한 시그널 (유지)
     void robotStateChanged(int state);
-    // ✨ [수정] 4x4 변환 행렬(float[16])을 전달하도록 시그널 수정
     void robotPoseUpdated(const float* poseMatrix);
+
+    // ✨ [추가] 3D 위젯의 변환 행렬 업데이트를 위한 새로운 시그널
+    void robotTransformUpdated(const QMatrix4x4 &transform);
+
 
 public slots:
     void startMonitoring();

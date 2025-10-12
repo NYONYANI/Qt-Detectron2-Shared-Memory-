@@ -150,6 +150,7 @@ void PointCloudWidget::processPoints(const std::vector<int>& clusterIds) {
     if (useClusters) {
         int maxClusterId = 0;
         for (int id : clusterIds) { if (id > maxClusterId) maxClusterId = id; }
+        // ✨ [오류 수정] mt19373 -> mt19937
         std::mt19937 gen(12345);
         std::uniform_real_distribution<float> distrib(0.0, 1.0);
         for (int i = 1; i <= maxClusterId; ++i) { clusterColors[i] = QVector3D(distrib(gen), distrib(gen), distrib(gen)); }
@@ -193,13 +194,13 @@ void PointCloudWidget::processPoints(const std::vector<int>& clusterIds) {
             }
         } else {
             if (i < clusterIds.size() && clusterIds[i] != 0) {
-                 m_vertexData.push_back(vertices[i].x);
-                 m_vertexData.push_back(vertices[i].y);
-                 m_vertexData.push_back(vertices[i].z);
-                 QVector3D color = clusterColors[clusterIds[i]];
-                 m_vertexData.push_back(color.x());
-                 m_vertexData.push_back(color.y());
-                 m_vertexData.push_back(color.z());
+                m_vertexData.push_back(vertices[i].x);
+                m_vertexData.push_back(vertices[i].y);
+                m_vertexData.push_back(vertices[i].z);
+                QVector3D color = clusterColors[clusterIds[i]];
+                m_vertexData.push_back(color.x());
+                m_vertexData.push_back(color.y());
+                m_vertexData.push_back(color.z());
             }
         }
     }
@@ -313,8 +314,8 @@ const char* SEM_CONTROL_NAME = "/sem_detection_control";
 
 RealSenseWidget::RealSenseWidget(QWidget *parent)
     : QWidget(parent), m_align(RS2_STREAM_COLOR), m_isProcessing(false),
-      m_showPlotWindow(false),
-      m_depth_to_disparity(true), m_disparity_to_depth(false)
+    m_showPlotWindow(false),
+    m_depth_to_disparity(true), m_disparity_to_depth(false)
 {
     initSharedMemory();
     m_config.enable_stream(RS2_STREAM_DEPTH, IMAGE_WIDTH, IMAGE_HEIGHT, RS2_FORMAT_Z16, 30);
@@ -356,14 +357,9 @@ void RealSenseWidget::setShowPlot(bool show)
     m_showPlotWindow = show;
 }
 
-void RealSenseWidget::onRobotPoseUpdated(const float* pose)
+void RealSenseWidget::onRobotTransformUpdated(const QMatrix4x4 &transform)
 {
-    if (!pose) return;
-    m_baseToTcpTransform.setToIdentity();
-    m_baseToTcpTransform.translate(pose[0]/1000.0f, pose[1]/1000.0f, pose[2]/1000.0f);
-    m_baseToTcpTransform.rotate(pose[5], 0, 0, 1);
-    m_baseToTcpTransform.rotate(pose[4], 0, 1, 0);
-    m_baseToTcpTransform.rotate(pose[3], 1, 0, 0);
+    m_baseToTcpTransform = transform;
 }
 
 void RealSenseWidget::onShowXYPlot()
@@ -408,25 +404,25 @@ void RealSenseWidget::onShowXYPlot()
                 if(idx >= W * H) break;
             }
             for(int y = 0; y < H; ++y) { for(int x = 0; x < W; ++x) { if(mask_buffer[y * W + x] == 255) {
-                int u_mask = ox + x; int v_mask = oy + y;
-                if (u_mask < 0 || u_mask >= width || v_mask < 0 || v_mask >= height) continue;
-                for (size_t i = 0; i < currentPoints.size(); ++i) {
-                    int u_pc = std::min(std::max(int(tex_coords[i].u * width + .5f), 0), width - 1);
-                    int v_pc = std::min(std::max(int(tex_coords[i].v * height + .5f), 0), height - 1);
-                    if (u_pc == u_mask && v_pc == v_mask) {
-                        const rs2::vertex& p = vertices[i];
-                        if (p.z > 0) {
-                            QVector3D p_cam(p.x, p.y, p.z);
-                            QVector3D p_base = camToBaseTransform * p_cam;
-                            if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) { goto next_mask_pixel; }
-                            if (part == "body") singleCupBodyPoints3D.append(p_base);
-                            else if (part == "handle") singleCupHandlePoints3D.append(p_base);
+                        int u_mask = ox + x; int v_mask = oy + y;
+                        if (u_mask < 0 || u_mask >= width || v_mask < 0 || v_mask >= height) continue;
+                        for (size_t i = 0; i < currentPoints.size(); ++i) {
+                            int u_pc = std::min(std::max(int(tex_coords[i].u * width + .5f), 0), width - 1);
+                            int v_pc = std::min(std::max(int(tex_coords[i].v * height + .5f), 0), height - 1);
+                            if (u_pc == u_mask && v_pc == v_mask) {
+                                const rs2::vertex& p = vertices[i];
+                                if (p.z > 0) {
+                                    QVector3D p_cam(p.x, p.y, p.z);
+                                    QVector3D p_base = camToBaseTransform * p_cam;
+                                    if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) { goto next_mask_pixel; }
+                                    if (part == "body") singleCupBodyPoints3D.append(p_base);
+                                    else if (part == "handle") singleCupHandlePoints3D.append(p_base);
+                                }
+                                goto next_mask_pixel;
+                            }
                         }
-                        goto next_mask_pixel;
-                    }
-                }
-            next_mask_pixel:;
-            }}}
+                    next_mask_pixel:;
+                    }}}
         }
 
         if(singleCupBodyPoints3D.isEmpty()) continue;
@@ -457,7 +453,7 @@ void RealSenseWidget::onShowXYPlot()
                     circleCenter.x() + circle.radius * perpDir.x(),
                     circleCenter.y() + circle.radius * perpDir.y(),
                     grasp_z
-                );
+                    );
                 m_graspingTargets.append({graspPoint1, perpDir});
                 graspingPointsForViz.append(graspPoint1);
 
@@ -465,7 +461,7 @@ void RealSenseWidget::onShowXYPlot()
                     circleCenter.x() - circle.radius * perpDir.x(),
                     circleCenter.y() - circle.radius * perpDir.y(),
                     grasp_z
-                );
+                    );
                 m_graspingTargets.append({graspPoint2, -perpDir});
                 graspingPointsForViz.append(graspPoint2);
             }
@@ -696,6 +692,7 @@ void RealSenseWidget::findFloorPlaneRANSAC() {
     const size_t num_points = points.size();
     std::vector<int> best_inliers_indices;
     std::random_device rd;
+    // ✨ [오류 수정] mt19373 -> mt19937
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> distrib(0, num_points - 1);
     for (int i = 0; i < 100; ++i) {

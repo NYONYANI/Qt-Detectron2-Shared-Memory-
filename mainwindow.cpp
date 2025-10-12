@@ -24,33 +24,33 @@ void OnMonitoringStateCB(const ROBOT_STATE eState) {
         return;
     }
     switch (eState) {
-        case STATE_SAFE_STOP:
-            qDebug() << "[ROBOT] In STATE_SAFE_STOP, resetting safe stop.";
-            GlobalDrfl.SetSafeStopResetType(SAFE_STOP_RESET_TYPE_DEFAULT);
-            GlobalDrfl.SetRobotControl(CONTROL_RESET_SAFET_STOP);
-            break;
-        case STATE_SAFE_STOP2:
-            qDebug() << "[ROBOT] In STATE_SAFE_STOP2, recovering safe stop.";
-            GlobalDrfl.SetRobotControl(CONTROL_RECOVERY_SAFE_STOP);
-            break;
-        case STATE_SAFE_OFF2:
-             qDebug() << "[ROBOT] In STATE_SAFE_OFF2, recovering safe off.";
-            GlobalDrfl.SetRobotControl(CONTROL_RECOVERY_SAFE_OFF);
-            break;
-        case STATE_SAFE_OFF:
-            qDebug() << "[ROBOT] In STATE_SAFE_OFF, attempting to turn servo ON.";
-            GlobalDrfl.SetRobotControl(CONTROL_SERVO_ON);
-            break;
-        case STATE_STANDBY:
-             if (!g_bServoOnAttempted) {
-                qDebug() << "[ROBOT] In STATE_STANDBY, attempting to turn servo ON for the first time.";
-                if (GlobalDrfl.SetRobotControl(CONTROL_SERVO_ON)) {
-                    g_bServoOnAttempted = true;
-                }
+    case STATE_SAFE_STOP:
+        qDebug() << "[ROBOT] In STATE_SAFE_STOP, resetting safe stop.";
+        GlobalDrfl.SetSafeStopResetType(SAFE_STOP_RESET_TYPE_DEFAULT);
+        GlobalDrfl.SetRobotControl(CONTROL_RESET_SAFET_STOP);
+        break;
+    case STATE_SAFE_STOP2:
+        qDebug() << "[ROBOT] In STATE_SAFE_STOP2, recovering safe stop.";
+        GlobalDrfl.SetRobotControl(CONTROL_RECOVERY_SAFE_STOP);
+        break;
+    case STATE_SAFE_OFF2:
+        qDebug() << "[ROBOT] In STATE_SAFE_OFF2, recovering safe off.";
+        GlobalDrfl.SetRobotControl(CONTROL_RECOVERY_SAFE_OFF);
+        break;
+    case STATE_SAFE_OFF:
+        qDebug() << "[ROBOT] In STATE_SAFE_OFF, attempting to turn servo ON.";
+        GlobalDrfl.SetRobotControl(CONTROL_SERVO_ON);
+        break;
+    case STATE_STANDBY:
+        if (!g_bServoOnAttempted) {
+            qDebug() << "[ROBOT] In STATE_STANDBY, attempting to turn servo ON for the first time.";
+            if (GlobalDrfl.SetRobotControl(CONTROL_SERVO_ON)) {
+                g_bServoOnAttempted = true;
             }
-            break;
-        default:
-            break;
+        }
+        break;
+    default:
+        break;
     }
 }
 
@@ -70,25 +70,25 @@ void OnDisConnected() {
 
 void OnMonitroingAccessControlCB(const MONITORING_ACCESS_CONTROL eTrasnsitControl) {
     switch (eTrasnsitControl) {
-        case MONITORING_ACCESS_CONTROL_REQUEST:
-            GlobalDrfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_RESPONSE_YES);
-            break;
-        case MONITORING_ACCESS_CONTROL_GRANT:
-            qDebug() << "[ROBOT] Control Authority Granted.";
-            g_bHasControlAuthority = true;
-            OnMonitoringStateCB(GlobalDrfl.GetRobotState());
-            break;
-        case MONITORING_ACCESS_CONTROL_DENY:
-        case MONITORING_ACCESS_CONTROL_LOSS:
-            qDebug() << "[ROBOT] Control Authority Lost or Denied.";
-            g_bHasControlAuthority = false;
-            g_bServoOnAttempted = false;
-            if (g_TpInitailizingComplted) {
-                GlobalDrfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_FORCE_REQUEST);
-            }
-            break;
-        default:
-            break;
+    case MONITORING_ACCESS_CONTROL_REQUEST:
+        GlobalDrfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_RESPONSE_YES);
+        break;
+    case MONITORING_ACCESS_CONTROL_GRANT:
+        qDebug() << "[ROBOT] Control Authority Granted.";
+        g_bHasControlAuthority = true;
+        OnMonitoringStateCB(GlobalDrfl.GetRobotState());
+        break;
+    case MONITORING_ACCESS_CONTROL_DENY:
+    case MONITORING_ACCESS_CONTROL_LOSS:
+        qDebug() << "[ROBOT] Control Authority Lost or Denied.";
+        g_bHasControlAuthority = false;
+        g_bServoOnAttempted = false;
+        if (g_TpInitailizingComplted) {
+            GlobalDrfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_FORCE_REQUEST);
+        }
+        break;
+    default:
+        break;
     }
 }
 
@@ -116,10 +116,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_robotMonitor, &RobotMonitor::robotPoseUpdated, this, &MainWindow::updateRobotPoseLabel);
     connect(m_monitorThread, &QThread::finished, m_robotMonitor, &QObject::deleteLater);
 
-    connect(m_robotMonitor, &RobotMonitor::robotPoseUpdated,
-            ui->widget, &RealSenseWidget::onRobotPoseUpdated);
+    // ✨ [수정] 3D 위젯이 새로운 시그널(robotTransformUpdated)을 받도록 connect 구문 변경
+    connect(m_robotMonitor, &RobotMonitor::robotTransformUpdated,
+            ui->widget, &RealSenseWidget::onRobotTransformUpdated);
 
-    // ✨ [수정] 시그널과 슬롯의 인자 타입이 QMatrix4x4로 일치하도록 수정
     connect(ui->widget, &RealSenseWidget::requestRobotMove,
             this, &MainWindow::onMoveRobot);
 
@@ -203,7 +203,6 @@ void MainWindow::onMoveRobot(const QMatrix4x4 &poseMatrix)
     float velx[2] = {100.0f, 60.0f};
     float accx[2] = {200.0f, 120.0f};
 
-    // ✨ [오류 수정] API 시그니처에 맞게 인자 타입과 개수를 수정합니다.
     GlobalDrfl.movel(target_posx, velx, accx);
 }
 
@@ -215,18 +214,18 @@ void MainWindow::updateRobotStateLabel(int state)
         QString stateText;
         QString controlStatus = g_bHasControlAuthority ? " [Ctrl O]" : " [Ctrl X]";
         switch (eState) {
-            case STATE_NOT_READY:        stateText = "Not Ready"; break;
-            case STATE_INITIALIZING:     stateText = "Initializing"; break;
-            case STATE_STANDBY:          stateText = "✅ Standby"; break;
-            case STATE_MOVING:           stateText = "Moving"; break;
-            case STATE_EMERGENCY_STOP:   stateText = "🚨 E-Stop"; break;
-            case STATE_SAFE_STOP:        stateText = "⚠️ Safe Stop"; break;
-            case STATE_SAFE_OFF:         stateText = "⚠️ Safe Off"; break;
-            case STATE_SAFE_STOP2:       stateText = "⚠️ Safe Stop 2"; break;
-            case STATE_SAFE_OFF2:        stateText = "Safe Off 2"; break;
-            case STATE_RECOVERY:         stateText = "Recovery"; break;
-            case STATE_TEACHING:         stateText = "Teaching"; break;
-            default:                     stateText = QString("Unknown (%1)").arg(eState); break;
+        case STATE_NOT_READY:        stateText = "Not Ready"; break;
+        case STATE_INITIALIZING:     stateText = "Initializing"; break;
+        case STATE_STANDBY:          stateText = "✅ Standby"; break;
+        case STATE_MOVING:           stateText = "Moving"; break;
+        case STATE_EMERGENCY_STOP:   stateText = "🚨 E-Stop"; break;
+        case STATE_SAFE_STOP:        stateText = "⚠️ Safe Stop"; break;
+        case STATE_SAFE_OFF:         stateText = "⚠️ Safe Off"; break;
+        case STATE_SAFE_STOP2:       stateText = "⚠️ Safe Stop 2"; break;
+        case STATE_SAFE_OFF2:        stateText = "Safe Off 2"; break;
+        case STATE_RECOVERY:         stateText = "Recovery"; break;
+        case STATE_TEACHING:         stateText = "Teaching"; break;
+        default:                     stateText = QString("Unknown (%1)").arg(eState); break;
         }
         s_robotStateLabel->setText("Status: " + stateText + controlStatus);
         s_robotStateLabel->adjustSize();
@@ -237,12 +236,12 @@ void MainWindow::updateRobotPoseLabel(const float* pose)
 {
     if (ui->RobotPos && pose) {
         QString pose_str = QString("Pose: X:%1 Y:%2 Z:%3 | A:%4 B:%5 C:%6")
-                               .arg(pose[0], 0, 'f', 1)
-                               .arg(pose[1], 0, 'f', 1)
-                               .arg(pose[2], 0, 'f', 1)
-                               .arg(pose[3], 0, 'f', 1)
-                               .arg(pose[4], 0, 'f', 1)
-                               .arg(pose[5], 0, 'f', 1);
+        .arg(pose[0], 0, 'f', 1)
+            .arg(pose[1], 0, 'f', 1)
+            .arg(pose[2], 0, 'f', 1)
+            .arg(pose[3], 0, 'f', 1)
+            .arg(pose[4], 0, 'f', 1)
+            .arg(pose[5], 0, 'f', 1);
         ui->RobotPos->setText(pose_str);
     }
 }
