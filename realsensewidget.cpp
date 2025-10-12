@@ -489,7 +489,6 @@ void RealSenseWidget::onShowXYPlot()
     }
 }
 
-// ================== ✨ [수정된 함수 시작] ✨ ==================
 void RealSenseWidget::onCalculateTargetPose()
 {
     qDebug() << "[INFO] Key '5' pressed. Calculating target pose...";
@@ -519,18 +518,14 @@ void RealSenseWidget::onCalculateTargetPose()
     // bestTarget.direction (N)은 컵 중심을 향하는 법선 벡터(Normal vector)입니다.
     const QVector3D& N = bestTarget.direction;
 
-    // Rz_old = atan2(Ny, -Nx)는 TCP X축을 접선(Tangent)에 맞춥니다.
-    float rz_for_tangent_x_axis = atan2(N.y(), -N.x());
-
-    // ✨ [수정] TCP Y축(파란색 축)을 접선(Tangent)에 맞추기 위해 90도 회전합니다.
-    // Rz_new = Rz_old + 90도 (라디안)
-    float target_rz_rad = rz_for_tangent_x_axis + qDegreesToRadians(90.0f);
-
+    // ✨ [수정] TCP -Y축이 원의 중심(법선 방향)을 향하도록 설정
+    // N이 원 중심을 향하는 방향이므로, -Y축이 N 방향이 되려면:
+    // Rz = atan2(Nx, Ny)
+    float target_rz_rad = atan2(N.x(), N.y());
 
     // 3. 사용자가 요청한 고정 각도를 설정합니다. (Rx=0, Ry=180)
     float target_rx = 0.0f;
     float target_ry = 179.9f; // 특이점을 피하기 위해 180 대신 179.9 사용
-
 
     // 4. 계산된 오일러 각도를 멤버 변수에 저장합니다.
     m_calculatedTargetOri_deg = QVector3D(
@@ -556,13 +551,10 @@ void RealSenseWidget::onCalculateTargetPose()
              << m_calculatedTargetOri_deg.y()
              << m_calculatedTargetOri_deg.z();
 
-
     qDebug() << "Target Pose Calculated: Pos(m):" << m_calculatedTargetPos_m << "Ori(deg):" << m_calculatedTargetOri_deg;
 
     m_pointCloudWidget->updateTargetPose(m_calculatedTargetPose, !m_pointCloudWidget->m_showTargetPose);
 }
-// ================== ✨ [수정된 함수 끝] ✨ ====================
-
 
 void RealSenseWidget::onMoveRobotToPreGraspPose()
 {
