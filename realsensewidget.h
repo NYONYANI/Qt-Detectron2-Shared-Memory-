@@ -25,7 +25,7 @@
 #include <semaphore.h>
 #include "xyplotwidget.h"
 #include <GL/glu.h>
-#include "DBSCAN.h" // DBSCAN.h 포함
+#include "DBSCAN.h"
 
 class PointCloudWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
@@ -40,7 +40,7 @@ public:
 
 signals:
     void denoisingToggled();
-    void floorRemovalToggled();
+    void zFilterToggled();
     void showXYPlotRequested();
 
 protected:
@@ -54,7 +54,6 @@ protected:
 
 private:
     void processPoints(const std::vector<int>& clusterIds = {});
-    // ✨ [수정] 누락되었던 함수 선언 추가
     void drawAxes(float length = 0.1f);
     void drawGrid(float size, int divisions);
 
@@ -63,7 +62,11 @@ private:
     rs2::video_frame m_colorFrame;
     QImage m_maskOverlay;
     bool m_showOnlyMaskedPoints = false;
-    bool m_isFloorFiltered = false;
+
+    // ✨ [수정] 두 개의 필터 플래그를 모두 유지합니다.
+    bool m_isZFiltered = false;       // '3'번 키로 제어되는 Z 필터
+    bool m_isFloorFiltered = false;   // RANSAC 함수에서 사용하는 바닥 필터
+
     std::vector<bool> m_floorPoints;
     friend class RealSenseWidget;
 
@@ -90,7 +93,7 @@ public slots:
 
 private slots:
     void onDenoisingToggled();
-    void onFloorRemovalToggled(); // RANSAC + DBSCAN 실행 슬롯
+    void onZFilterToggled();
     void onShowXYPlot();
     void updateFrame();
     void checkProcessingResult();
@@ -117,7 +120,6 @@ private:
     rs2::disparity_transform m_depth_to_disparity;
     rs2::disparity_transform m_disparity_to_depth;
     bool m_isDenoisingOn = false;
-    bool m_isFloorRemovalOn = false;
 
     QTimer *m_timer;
     QTimer *m_resultTimer;
@@ -126,7 +128,6 @@ private:
 
     rs2::points m_capturedPoints;
     QMatrix4x4 m_capturedBaseToTcpTransform;
-
 
     int fd_image, fd_result, fd_control;
     void *data_image, *data_result, *data_control;

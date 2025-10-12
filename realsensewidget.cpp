@@ -13,7 +13,7 @@
 #include <QKeyEvent>
 #include <random>
 #include <GL/glu.h>
-#include <map> // For cluster colors
+#include <map>
 
 // ===================================================================
 // PointCloudWidget 구현
@@ -49,11 +49,8 @@ void PointCloudWidget::drawAxes(float length)
 {
     glLineWidth(2.0);
     glBegin(GL_LINES);
-    // X축 (Red)
     glColor3f(1.0f, 0.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(length, 0.0f, 0.0f);
-    // Y축 (Green)
     glColor3f(0.0f, 1.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(0.0f, length, 0.0f);
-    // Z축 (Blue)
     glColor3f(0.0f, 0.0f, 1.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(0.0f, 0.0f, length);
     glEnd();
     glLineWidth(1.0);
@@ -62,7 +59,7 @@ void PointCloudWidget::drawAxes(float length)
 void PointCloudWidget::drawGrid(float size, int divisions)
 {
     glLineWidth(1.0f);
-    glColor3f(0.8f, 0.8f, 0.8f); // 연한 회색
+    glColor3f(0.8f, 0.8f, 0.8f);
 
     float step = size / divisions;
     float halfSize = size / 2.0f;
@@ -70,10 +67,8 @@ void PointCloudWidget::drawGrid(float size, int divisions)
     glBegin(GL_LINES);
     for (int i = 0; i <= divisions; ++i) {
         float pos = -halfSize + i * step;
-        // X축에 평행한 선 (Z=0 평면)
         glVertex3f(-halfSize, pos, 0.0f);
         glVertex3f(halfSize, pos, 0.0f);
-        // Y축에 평행한 선 (Z=0 평면)
         glVertex3f(pos, -halfSize, 0.0f);
         glVertex3f(pos, halfSize, 0.0f);
     }
@@ -100,13 +95,13 @@ void PointCloudWidget::paintGL()
 
     drawGrid(2.0f, 20);
 
-    drawAxes(0.2f);
+    drawAxes(0.2f); // World (Robot Base)
 
     glPushMatrix();
-    glMultMatrixf(m_baseToTcpTransform.constData());
+    glMultMatrixf(m_baseToTcpTransform.constData()); // Move to Robot TCP
     drawAxes(0.1f);
 
-    glMultMatrixf(m_tcpToCameraTransform.constData());
+    glMultMatrixf(m_tcpToCameraTransform.constData()); // Move to Camera from TCP
     drawAxes(0.05f);
 
     if (!m_vertexData.empty()) {
@@ -155,6 +150,8 @@ void PointCloudWidget::processPoints(const std::vector<int>& clusterIds) {
     bool useMask = !m_maskOverlay.isNull();
     bool useClusters = !clusterIds.empty();
 
+    QMatrix4x4 cameraToBaseTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
+
     std::map<int, QVector3D> clusterColors;
     if (useClusters) {
         int maxClusterId = 0;
@@ -166,8 +163,15 @@ void PointCloudWidget::processPoints(const std::vector<int>& clusterIds) {
     }
 
     for (size_t i = 0; i < m_points.size(); ++i) {
-        if (m_isFloorFiltered && i < m_floorPoints.size() && m_floorPoints[i]) continue;
         if (vertices[i].z == 0) continue;
+
+        if (m_isZFiltered) {
+            QVector3D p_cam(vertices[i].x, vertices[i].y, vertices[i].z);
+            QVector3D p_base = cameraToBaseTransform * p_cam;
+            if (p_base.z() <= 0) continue;
+        }
+
+        if (m_isFloorFiltered && i < m_floorPoints.size() && m_floorPoints[i]) continue;
 
         if (!useClusters) {
             int u = std::min(std::max(int(tex_coords[i].u * width + .5f), 0), width - 1);
@@ -226,11 +230,8 @@ void PointCloudWidget::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void PointCloudWidget::wheelEvent(QWheelEvent *event) {
-    if (event->angleDelta().y() > 0) {
-        m_distance *= 1.0f / 1.1f;
-    } else {
-        m_distance *= 1.1f;
-    }
+    if (event->angleDelta().y() > 0) m_distance *= 1.0f / 1.1f;
+    else m_distance *= 1.1f;
     if (m_distance < 0.01f) m_distance = 0.01f;
     if (m_distance > 50.0f) m_distance = 50.0f;
     update();
@@ -239,7 +240,7 @@ void PointCloudWidget::wheelEvent(QWheelEvent *event) {
 void PointCloudWidget::keyPressEvent(QKeyEvent *event) {
     if (event->key() == Qt::Key_1) {
         if (m_maskOverlay.isNull()) {
-            qDebug() << "[WARN] Key '1' pressed, but no mask data available. Press 'Capture' first.";
+            qDebug() << "[WARN] Key '1' pressed, but no mask data available.";
             return;
         }
         m_showOnlyMaskedPoints = !m_showOnlyMaskedPoints;
@@ -247,7 +248,7 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event) {
         processPoints();
     }
     else if (event->key() == Qt::Key_2) emit denoisingToggled();
-    else if (event->key() == Qt::Key_3) emit floorRemovalToggled();
+    else if (event->key() == Qt::Key_3) emit zFilterToggled();
     else if (event->key() == Qt::Key_4) emit showXYPlotRequested();
     else QOpenGLWidget::keyPressEvent(event);
 }
@@ -276,7 +277,7 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     m_colorLabel = new QLabel(this);
     m_pointCloudWidget = new PointCloudWidget(this);
     connect(m_pointCloudWidget, &PointCloudWidget::denoisingToggled, this, &RealSenseWidget::onDenoisingToggled);
-    connect(m_pointCloudWidget, &PointCloudWidget::floorRemovalToggled, this, &RealSenseWidget::onFloorRemovalToggled);
+    connect(m_pointCloudWidget, &PointCloudWidget::zFilterToggled, this, &RealSenseWidget::onZFilterToggled);
     connect(m_pointCloudWidget, &PointCloudWidget::showXYPlotRequested, this, &RealSenseWidget::onShowXYPlot);
     m_layout->addWidget(m_colorLabel, 1); m_layout->addWidget(m_pointCloudWidget, 1); setLayout(m_layout);
 
@@ -310,17 +311,13 @@ void RealSenseWidget::onRobotPoseUpdated(const float* pose)
     m_baseToTcpTransform.rotate(pose[3], 1, 0, 0);
 }
 
+// ✨ [핵심 수정] Z 필터 상태를 확인하여 플롯팅에 반영합니다.
 void RealSenseWidget::onShowXYPlot()
 {
-    qDebug() << "[INFO] Key '4' pressed. Calculating projection from clustered points...";
+    qDebug() << "[INFO] Key '4' pressed. Calculating projection from current points...";
 
-    // 1. 데이터 유효성 검사
     if (m_detectionResults.isEmpty()) {
         qDebug() << "[WARN] No detection results available. Press 'Capture' first.";
-        return;
-    }
-    if (m_clusterIds.empty()) {
-        qDebug() << "[WARN] No clustering results available. Press '3' to run RANSAC+DBSCAN first.";
         return;
     }
     if (!m_pointCloudWidget->m_points) {
@@ -328,19 +325,16 @@ void RealSenseWidget::onShowXYPlot()
         return;
     }
 
-    // 2. 현재 시점의 포인트 클라우드와 필요한 데이터 가져오기
     const rs2::points& currentPoints = m_pointCloudWidget->m_points;
     const rs2::vertex* vertices = currentPoints.get_vertices();
     const rs2::texture_coordinate* tex_coords = currentPoints.get_texture_coordinates();
     const int width = IMAGE_WIDTH;
     const int height = IMAGE_HEIGHT;
 
-    // 3. 현재 시점의 변환 행렬 계산
-    QMatrix4x4 baseToCamTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
+    QMatrix4x4 camToBaseTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
 
     QList<QVector<PlotData>> detectedObjectsPoints;
 
-    // 4. 각 검출 결과(컵)에 대해 포인트 계산
     for (const QJsonValue &cupValue : m_detectionResults) {
         QJsonObject cupResult = cupValue.toObject();
         QVector<PlotData> singleCupPoints;
@@ -379,18 +373,21 @@ void RealSenseWidget::onShowXYPlot()
                              int v_pc = std::min(std::max(int(tex_coords[i].v * height + .5f), 0), height - 1);
 
                              if (u_pc == u_mask && v_pc == v_mask) {
-                                 // 포인트가 유효한 군집에 속하는지 확인 (노이즈(-1)나 미분류(0)가 아니어야 함)
-                                 if (i < m_clusterIds.size() && m_clusterIds[i] > 0) {
-                                     const rs2::vertex& p = vertices[i];
-                                     if (p.z > 0) {
-                                         QVector3D p_cam(p.x, p.y, p.z);
-                                         QVector3D p_base = baseToCamTransform * p_cam;
-                                         PlotData plotData;
-                                         plotData.point = QPointF(p_base.x(), p_base.y());
-                                         plotData.label = (cls_id == 1) ? "B" : "H";
-                                         plotData.color = (cls_id == 1) ? Qt::green : Qt::blue;
-                                         singleCupPoints.append(plotData);
+                                 const rs2::vertex& p = vertices[i];
+                                 if (p.z > 0) {
+                                     QVector3D p_cam(p.x, p.y, p.z);
+                                     QVector3D p_base = camToBaseTransform * p_cam;
+
+                                     // Z 필터가 켜져있으면, 변환된 좌표가 0 이하인 점은 플롯에서 제외
+                                     if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) {
+                                         goto next_mask_pixel;
                                      }
+
+                                     PlotData plotData;
+                                     plotData.point = QPointF(p_base.x(), p_base.y());
+                                     plotData.label = (cls_id == 1) ? "B" : "H";
+                                     plotData.color = (cls_id == 1) ? Qt::green : Qt::blue;
+                                     singleCupPoints.append(plotData);
                                  }
                                  goto next_mask_pixel;
                              }
@@ -406,7 +403,7 @@ void RealSenseWidget::onShowXYPlot()
     }
 
     if (detectedObjectsPoints.isEmpty()){
-        qDebug() << "[WARN] No points found for plotting after applying all filters.";
+        qDebug() << "[WARN] No points found for plotting after filtering.";
         return;
     }
 
@@ -418,7 +415,7 @@ void RealSenseWidget::onShowXYPlot()
             m_plotWidgets.append(new XYPlotWidget());
         }
         m_plotWidgets[i]->updateData(detectedObjectsPoints[i]);
-        m_plotWidgets[i]->setWindowTitle(QString("Cup %1 Projection (Clustered)").arg(i + 1));
+        m_plotWidgets[i]->setWindowTitle(QString("Cup %1 Projection").arg(i + 1));
         m_plotWidgets[i]->show();
         m_plotWidgets[i]->activateWindow();
     }
@@ -479,10 +476,10 @@ QImage RealSenseWidget::cvMatToQImage(const cv::Mat &mat){ if(mat.empty()) retur
 void RealSenseWidget::captureAndProcess()
 {
     if (m_isProcessing || m_latestFrame.empty()) {
-        qDebug() << "[WARN] Capture failed. Is camera running? Or another process is already running?";
+        qDebug() << "[WARN] Capture failed. Is camera running?";
         return;
     }
-    qDebug() << "[INFO] Capture button pressed. Sending frame to Python for processing...";
+    qDebug() << "[INFO] Capture button pressed. Sending frame to Python.";
 
     sendImageToPython(m_latestFrame);
     m_isProcessing = true;
@@ -509,25 +506,15 @@ void RealSenseWidget::onDenoisingToggled() {
     updateFrame();
 }
 
-void RealSenseWidget::onFloorRemovalToggled() {
-    m_isFloorRemovalOn = !m_isFloorRemovalOn;
-    qDebug() << "[INFO] Floor removal & Clustering toggled:" << (m_isFloorRemovalOn ? "ON" : "OFF");
-
-    if (m_isFloorRemovalOn) {
-        findFloorPlaneRANSAC();
-        if (m_pointCloudWidget->m_isFloorFiltered) {
-            runDbscanClustering();
-        } else {
-             qDebug() << "[INFO] RANSAC failed to find floor, DBSCAN skipped.";
-             m_clusterIds.clear();
-             m_pointCloudWidget->processPoints();
-        }
-    } else {
-        m_pointCloudWidget->m_isFloorFiltered = false;
-        m_clusterIds.clear();
-        m_pointCloudWidget->processPoints();
-    }
+void RealSenseWidget::onZFilterToggled() {
+    m_pointCloudWidget->m_isZFiltered = !m_pointCloudWidget->m_isZFiltered;
+    qDebug() << "[INFO] Z-axis filter toggled:" << (m_pointCloudWidget->m_isZFiltered ? "ON" : "OFF");
+    m_pointCloudWidget->processPoints();
 }
+
+// ===================================================================
+// RANSAC and DBSCAN functions remain in the code but are not called by any key press
+// ===================================================================
 
 void RealSenseWidget::runDbscanClustering()
 {
@@ -555,8 +542,8 @@ void RealSenseWidget::runDbscanClustering()
     }
     qDebug() << "[INFO] Clustering" << pointsToCluster.size() << "points.";
 
-    float eps = 0.01f;
-    int minPts = 3;
+    float eps = 0.02f;
+    int minPts = 10;
     DBSCAN dbscan(eps, minPts, pointsToCluster);
     dbscan.run();
 
@@ -599,7 +586,7 @@ void RealSenseWidget::findFloorPlaneRANSAC() {
         for (size_t j = 0; j < num_points; ++j) {
             const rs2::vertex& p = vertices[j];
             if(p.x == 0 && p.y == 0 && p.z == 0) continue;
-            if (std::abs(a*p.x + b*p.y + c*p.z + d) < 0.007) {
+            if (std::abs(a*p.x + b*p.y + c*p.z + d) < 0.01) {
                 current_inliers.push_back(j);
             }
         }
@@ -614,10 +601,14 @@ void RealSenseWidget::findFloorPlaneRANSAC() {
         for (int idx : best_inliers_indices) m_pointCloudWidget->m_floorPoints[idx] = true;
         m_pointCloudWidget->m_isFloorFiltered = true;
     } else {
-        qDebug() << "[INFO] Floor removal: No dominant floor plane found. Best plane only had" << best_inliers_indices.size() << "inliers.";
+        qDebug() << "[INFO] Floor removal: No dominant floor plane found.";
         m_pointCloudWidget->m_isFloorFiltered = false;
     }
 }
+
+// ===================================================================
+// Unchanged functions below
+// ===================================================================
 
 void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) {
     if (image.isNull()) return;
