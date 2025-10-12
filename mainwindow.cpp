@@ -95,6 +95,7 @@ void OnMonitroingAccessControlCB(const MONITORING_ACCESS_CONTROL eTrasnsitContro
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
+    , m_isWaitingForMoveCompletion(false) // ✨ [추가] 플래그 초기화
 {
     ui->setupUi(this);
     s_robotStateLabel = ui->RobotState;
@@ -190,6 +191,8 @@ void MainWindow::onMoveRobot(const QVector3D& position_mm, const QVector3D& orie
     qDebug() << "[ROBOT] Moving to Pos(mm):" << target_posx[0] << target_posx[1] << target_posx[2]
              << "Rot(deg):" << target_posx[3] << target_posx[4] << target_posx[5];
 
+    // ✨ [요청 사항 2] 이동 명령 직전에 플래그 설정
+    m_isWaitingForMoveCompletion = true;
     GlobalDrfl.movel(target_posx, velx, accx);
 }
 // ================== ✨ [수정된 함수 끝] ✨ ====================
@@ -198,6 +201,23 @@ void MainWindow::onMoveRobot(const QVector3D& position_mm, const QVector3D& orie
 void MainWindow::updateRobotStateLabel(int state)
 {
     ROBOT_STATE eState = (ROBOT_STATE)state;
+
+    // ✨ [요청 사항 2] 이동 완료 감지 및 로봇 엔드 이펙터 회전 값 출력
+    if (m_isWaitingForMoveCompletion && eState == STATE_STANDBY) {
+        m_isWaitingForMoveCompletion = false; // 플래그 리셋
+
+        // 현재 로봇 포즈를 가져와서 회전 값만 출력
+        LPROBOT_TASK_POSE current_pose = GlobalDrfl.get_current_posx();
+        if (current_pose) {
+            qDebug() << "[ROBOT MOVE END] Final End-Effector Orientation (A, B, C deg):"
+                     << current_pose->_fTargetPos[3] // A (Rx)
+                     << current_pose->_fTargetPos[4] // B (Ry)
+                     << current_pose->_fTargetPos[5]; // C (Rz)
+        } else {
+            qWarning() << "[ROBOT MOVE END] Could not retrieve final pose.";
+        }
+    }
+
     if (s_robotStateLabel) {
         QString stateText;
         QString controlStatus = g_bHasControlAuthority ? " [Ctrl O]" : " [Ctrl X]";
@@ -243,6 +263,8 @@ void MainWindow::on_ResetPosButton_clicked()
     qDebug() << "[ROBOT] Moving to Pos(mm):" << target_posx[0] << target_posx[1] << target_posx[2]
              << "Rot(deg):" << target_posx[3] << target_posx[4] << target_posx[5];
 
+    // ✨ [요청 사항 2] 리셋 버튼 이동에도 플래그 설정 (옵션)
+    m_isWaitingForMoveCompletion = true;
     GlobalDrfl.movel(target_posx, velx, accx);
 }
 

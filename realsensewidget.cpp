@@ -522,22 +522,32 @@ void RealSenseWidget::onCalculateTargetPose()
 
     // 3. 사용자가 요청한 고정 각도를 설정합니다. (Rx=0, Ry=180)
     float target_rx = 0.0f;
-    float target_ry = 180.0f;
+    float target_ry = 179.9f; // 특이점을 피하기 위해 180 대신 179.9 사용
+
 
     // 4. 계산된 오일러 각도를 멤버 변수에 저장합니다.
     m_calculatedTargetOri_deg = QVector3D(target_rx, target_ry, target_rz);
 
     // 5. 시각화를 위해 오일러 각도로부터 4x4 행렬을 생성합니다.
-    // QMatrix4x4::rotate는 Post-multiplication(후행 곱셈) 입니다.
-    // 즉, T * Rz * Ry * Rx 순서의 변환을 만들려면 Z, Y, X 순으로 호출해야 합니다.
     QMatrix4x4 vizMatrix;
     vizMatrix.setToIdentity();
     vizMatrix.translate(m_calculatedTargetPos_m);
-    vizMatrix.rotate(m_calculatedTargetOri_deg.z(), 0, 0, 1); // Yaw (Rz)
-    vizMatrix.rotate(m_calculatedTargetOri_deg.y(), 0, 1, 0); // Pitch (Ry)
+
+    // ✨ [수정] 로봇 컨트롤러의 해석 순서와 일치시키기 위해 회전 순서를 Rx -> Ry -> Rz로 변경
+    // QMatrix4x4::rotate는 후행 곱셈(post-multiplication)이므로,
+    // translate(T) 후 rotate(Rx), rotate(Ry), rotate(Rz)를 순서대로 호출하면
+    // 최종 변환은 T * Rx * Ry * Rz 가 됩니다.
     vizMatrix.rotate(m_calculatedTargetOri_deg.x(), 1, 0, 0); // Roll (Rx)
+    vizMatrix.rotate(m_calculatedTargetOri_deg.y(), 0, 1, 0); // Pitch (Ry)
+    vizMatrix.rotate(m_calculatedTargetOri_deg.z(), 0, 0, 1); // Yaw (Rz)
 
     m_calculatedTargetPose = vizMatrix;
+
+    qDebug() << "[TARGET POSE] Calculated Target Orientation (Rx, Ry, Rz deg):"
+             << m_calculatedTargetOri_deg.x()
+             << m_calculatedTargetOri_deg.y()
+             << m_calculatedTargetOri_deg.z();
+
 
     qDebug() << "Target Pose Calculated: Pos(m):" << m_calculatedTargetPos_m << "Ori(deg):" << m_calculatedTargetOri_deg;
 

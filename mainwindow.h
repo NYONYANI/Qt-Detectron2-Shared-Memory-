@@ -38,5 +38,6 @@ private:
     Ui::MainWindow *ui;
     QThread *m_monitorThread;
     RobotMonitor *m_robotMonitor;
+    bool m_isWaitingForMoveCompletion; // ✨ [추가] 이동 완료 후 상태 출력을 위한 플래그
 };
 #endif // MAINWINDOW_H
