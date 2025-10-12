@@ -502,6 +502,7 @@ void RealSenseWidget::onCalculateTargetPose()
     QVector3D currentTcpPos = m_baseToTcpTransform.column(3).toVector3D();
     float minDistance = std::numeric_limits<float>::max();
     GraspingTarget bestTarget;
+
     for (const auto& target : m_graspingTargets) {
         float distance = currentTcpPos.distanceToPoint(target.point);
         if (distance < minDistance) {
@@ -510,18 +511,49 @@ void RealSenseWidget::onCalculateTargetPose()
         }
     }
 
+    // bestTarget.direction은 원 중심을 향하는 법선
+    // 손잡이는 법선 반대 방향에 있음
+    QVector3D toHandle = -bestTarget.direction; // 원 중심에서 손잡이로 향하는 방향
+
     // 1. 목표 위치(미터 단위)를 계산합니다.
     const float gripper_z_offset = 0.146f;
     m_calculatedTargetPos_m = bestTarget.point + QVector3D(0, 0, gripper_z_offset);
 
     // 2. 파지 방향(손잡이 방향)으로부터 Rz(Yaw) 각도를 계산합니다.
-    // bestTarget.direction (N)은 컵 중심을 향하는 법선 벡터(Normal vector)입니다.
-    const QVector3D& N = bestTarget.direction;
+    const QVector3D& N = bestTarget.direction; // 원 중심을 향하는 법선 벡터
 
-    // ✨ [수정] TCP -Y축이 원의 중심(법선 방향)을 향하도록 설정
-    // N이 원 중심을 향하는 방향이므로, -Y축이 N 방향이 되려면:
-    // Rz = atan2(Nx, Ny)
-    float target_rz_rad = atan2(N.x(), N.y());
+    // ✨ [수정] Y축 방향 결정: +Y 또는 -Y 중 -X축이 손잡이 방향을 더 잘 보도록
+
+    // Case 1: -Y축이 원의 중심을 향하는 경우 (Rz1)
+    float rz1 = atan2(N.x(), N.y());
+
+    // Case 2: +Y축이 원의 중심을 향하는 경우 (Rz2 = Rz1 + 180도)
+    float rz2 = rz1 + M_PI;
+
+    // 각 경우의 X축 방향을 계산
+    // Rz 회전 후 X축 방향은: X_rotated = [cos(Rz), -sin(Rz), 0]
+    QVector3D xAxis1(cos(rz1), -sin(rz1), 0);
+    QVector3D xAxis2(cos(rz2), -sin(rz2), 0);
+
+    // 손잡이 방향과의 내적을 계산하여 더 잘 정렬된 것을 선택
+    // (내적이 음수이고 작을수록 -X축이 손잡이를 향함)
+    float dot1 = QVector3D::dotProduct(xAxis1, toHandle);
+    float dot2 = QVector3D::dotProduct(xAxis2, toHandle);
+
+    float target_rz_rad;
+    if (dot1 < dot2) {
+        // Case 1이 -X축이 손잡이에 더 가까움
+        target_rz_rad = rz1;
+        qDebug() << "[INFO] Selected -Y towards center (Case 1), -X-axis towards handle (dot=" << dot1 << ")";
+    } else {
+        // Case 2가 -X축이 손잡이에 더 가까움
+        target_rz_rad = rz2;
+        qDebug() << "[INFO] Selected +Y towards center (Case 2), -X-axis towards handle (dot=" << dot2 << ")";
+    }
+
+    // 각도를 -π ~ π 범위로 정규화
+    while (target_rz_rad > M_PI) target_rz_rad -= 2 * M_PI;
+    while (target_rz_rad < -M_PI) target_rz_rad += 2 * M_PI;
 
     // 3. 사용자가 요청한 고정 각도를 설정합니다. (Rx=0, Ry=180)
     float target_rx = 0.0f;
@@ -539,7 +571,6 @@ void RealSenseWidget::onCalculateTargetPose()
     vizMatrix.setToIdentity();
     vizMatrix.translate(m_calculatedTargetPos_m);
 
-    // QMatrix4x4::rotate는 후행 곱셈(post-multiplication)이므로, 최종 변환은 T * Rx * Ry * Rz 가 됩니다.
     vizMatrix.rotate(m_calculatedTargetOri_deg.x(), 1, 0, 0); // Roll (Rx)
     vizMatrix.rotate(m_calculatedTargetOri_deg.y(), 0, 1, 0); // Pitch (Ry)
     vizMatrix.rotate(m_calculatedTargetOri_deg.z(), 0, 0, 1); // Yaw (Rz)
@@ -555,7 +586,6 @@ void RealSenseWidget::onCalculateTargetPose()
 
     m_pointCloudWidget->updateTargetPose(m_calculatedTargetPose, !m_pointCloudWidget->m_showTargetPose);
 }
-
 void RealSenseWidget::onMoveRobotToPreGraspPose()
 {
     qDebug() << "[INFO] Key 'M' pressed. Requesting robot move...";
