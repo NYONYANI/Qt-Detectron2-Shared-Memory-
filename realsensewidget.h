@@ -25,6 +25,7 @@
 #include <semaphore.h>
 #include "xyplotwidget.h"
 #include <GL/glu.h>
+#include "DBSCAN.h" // DBSCAN.h 포함
 
 class PointCloudWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
@@ -52,9 +53,10 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
 
 private:
-    void processPoints();
+    void processPoints(const std::vector<int>& clusterIds = {});
+    // ✨ [수정] 누락되었던 함수 선언 추가
     void drawAxes(float length = 0.1f);
-    void drawGrid(float size, int divisions); // ✨ [추가] 그리드 그리기 함수 선언
+    void drawGrid(float size, int divisions);
 
     std::vector<float> m_vertexData;
     rs2::points m_points;
@@ -88,13 +90,14 @@ public slots:
 
 private slots:
     void onDenoisingToggled();
-    void onFloorRemovalToggled();
+    void onFloorRemovalToggled(); // RANSAC + DBSCAN 실행 슬롯
     void onShowXYPlot();
     void updateFrame();
     void checkProcessingResult();
 
 private:
     void findFloorPlaneRANSAC();
+    void runDbscanClustering();
 
     QHBoxLayout *m_layout;
     QLabel *m_colorLabel;
@@ -130,8 +133,9 @@ private:
     sem_t *sem_image, *sem_result, *sem_control;
 
     QJsonArray m_detectionResults;
-    QList<QVector<PlotData>> m_detectedObjectsPoints;
     bool m_isProcessing;
+
+    std::vector<int> m_clusterIds;
 
     const int IMAGE_WIDTH = 640;
     const int IMAGE_HEIGHT = 480;
