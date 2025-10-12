@@ -21,6 +21,7 @@ SOURCES += \
 
 HEADERS += \
     DBSCAN.h \
+    circlefitter.h \
     mainwindow.h \
     realsensewidget.h \
     robotmonitor.h \

@@ -311,10 +311,9 @@ void RealSenseWidget::onRobotPoseUpdated(const float* pose)
     m_baseToTcpTransform.rotate(pose[3], 1, 0, 0);
 }
 
-// ✨ [핵심 수정] Z 필터 상태를 확인하여 플롯팅에 반영합니다.
 void RealSenseWidget::onShowXYPlot()
 {
-    qDebug() << "[INFO] Key '4' pressed. Calculating projection from current points...";
+    qDebug() << "[INFO] Key '4' pressed. Fitting circles and lines to objects...";
 
     if (m_detectionResults.isEmpty()) {
         qDebug() << "[WARN] No detection results available. Press 'Capture' first.";
@@ -333,13 +332,16 @@ void RealSenseWidget::onShowXYPlot()
 
     QMatrix4x4 camToBaseTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
 
-    QList<QVector<PlotData>> detectedObjectsPoints;
+    // 각 컵의 몸통과 손잡이 포인트 리스트를 저장할 리스트
+    QList<QVector<PlotData>> detectedBodyPoints;
+    QList<QVector<PlotData>> detectedHandlePoints;
 
     for (const QJsonValue &cupValue : m_detectionResults) {
         QJsonObject cupResult = cupValue.toObject();
-        QVector<PlotData> singleCupPoints;
-        QStringList parts = {"body", "handle"};
+        QVector<PlotData> singleCupBodyPoints;
+        QVector<PlotData> singleCupHandlePoints;
 
+        QStringList parts = {"body", "handle"};
         for (const QString &part : parts) {
             if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
 
@@ -349,7 +351,6 @@ void RealSenseWidget::onShowXYPlot()
             QJsonArray offset = partData["offset"].toArray();
             int H = shape[0].toInt(); int W = shape[1].toInt();
             int ox = offset[0].toInt(); int oy = offset[1].toInt();
-            int cls_id = partData["cls_id"].toInt();
 
             QVector<uchar> mask_buffer(W * H, 0);
             int idx = 0; uchar val = 0;
@@ -378,16 +379,23 @@ void RealSenseWidget::onShowXYPlot()
                                      QVector3D p_cam(p.x, p.y, p.z);
                                      QVector3D p_base = camToBaseTransform * p_cam;
 
-                                     // Z 필터가 켜져있으면, 변환된 좌표가 0 이하인 점은 플롯에서 제외
                                      if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) {
                                          goto next_mask_pixel;
                                      }
 
                                      PlotData plotData;
                                      plotData.point = QPointF(p_base.x(), p_base.y());
-                                     plotData.label = (cls_id == 1) ? "B" : "H";
-                                     plotData.color = (cls_id == 1) ? Qt::green : Qt::blue;
-                                     singleCupPoints.append(plotData);
+
+                                     // 파트 종류에 따라 다른 벡터에 저장
+                                     if (part == "body") {
+                                         plotData.label = "B";
+                                         plotData.color = Qt::green;
+                                         singleCupBodyPoints.append(plotData);
+                                     } else if (part == "handle") {
+                                         plotData.label = "H";
+                                         plotData.color = Qt::blue;
+                                         singleCupHandlePoints.append(plotData);
+                                     }
                                  }
                                  goto next_mask_pixel;
                              }
@@ -396,32 +404,35 @@ void RealSenseWidget::onShowXYPlot()
                     }
                 }
             }
-        }
-        if(!singleCupPoints.isEmpty()) {
-            detectedObjectsPoints.append(singleCupPoints);
+        } // end parts loop
+
+        // 몸통 포인트가 있는 경우에만 리스트에 추가
+        if(!singleCupBodyPoints.isEmpty()) {
+            detectedBodyPoints.append(singleCupBodyPoints);
+            detectedHandlePoints.append(singleCupHandlePoints); // 손잡이가 없으면 빈 벡터가 추가됨
         }
     }
 
-    if (detectedObjectsPoints.isEmpty()){
-        qDebug() << "[WARN] No points found for plotting after filtering.";
+    if (detectedBodyPoints.isEmpty()){
+        qDebug() << "[WARN] No body points found for plotting after filtering.";
         return;
     }
 
-    for (int i = detectedObjectsPoints.size(); i < m_plotWidgets.size(); ++i) {
+    for (int i = detectedBodyPoints.size(); i < m_plotWidgets.size(); ++i) {
         m_plotWidgets[i]->hide();
     }
-    for (int i = 0; i < detectedObjectsPoints.size(); ++i) {
+
+    for (int i = 0; i < detectedBodyPoints.size(); ++i) {
         if (i >= m_plotWidgets.size()) {
             m_plotWidgets.append(new XYPlotWidget());
         }
-        m_plotWidgets[i]->updateData(detectedObjectsPoints[i]);
-        m_plotWidgets[i]->setWindowTitle(QString("Cup %1 Projection").arg(i + 1));
+        // 수정된 updateData 함수 호출
+        m_plotWidgets[i]->updateData(detectedBodyPoints[i], detectedHandlePoints[i]);
+        m_plotWidgets[i]->setWindowTitle(QString("Cup %1 Fitting Result").arg(i + 1));
         m_plotWidgets[i]->show();
         m_plotWidgets[i]->activateWindow();
     }
 }
-
-
 void RealSenseWidget::updateFrame()
 {
     try {

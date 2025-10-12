@@ -8,10 +8,12 @@
 #include <QPainter>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QLineF> // ✨ [추가] QLineF 클래스 포함
+#include "circlefitter.h"
 
 // 플롯할 개별 데이터 포인트를 위한 구조체
 struct PlotData {
-    QPointF point; // x, z 좌표 (미터 단위)
+    QPointF point;
     QColor color;
     QString label;
 };
@@ -22,28 +24,34 @@ class XYPlotWidget : public QWidget
 
 public:
     explicit XYPlotWidget(QWidget *parent = nullptr);
-    void updateData(const QVector<PlotData>& data);
+    // ✨ [수정] 몸통과 손잡이 데이터를 별도로 받는 함수로 변경
+    void updateData(const QVector<PlotData>& bodyData, const QVector<PlotData>& handleData);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
-    // ✨ [추가] 마우스/휠 이벤트 핸들러 선언
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
-
 
 private:
     void drawGrid(QPainter& painter);
     void drawAxes(QPainter& painter);
     void drawPoints(QPainter& painter);
+    void drawFittedCircle(QPainter& painter);
+    void drawFittedLine(QPainter& painter); // ✨ [추가] 직선을 그리는 함수 선언
 
-    QVector<PlotData> m_plotData;
-    const float m_range = 1.0f; // 중심으로부터의 최대 거리 (미터)
+    QVector<PlotData> m_bodyPlotData;   // ✨ [수정] 변수 이름 변경 (body)
+    QVector<PlotData> m_handlePlotData; // ✨ [추가] 손잡이 포인트 데이터 저장 변수
+    const float m_range = 1.0f;
 
-    // ✨ [추가] 확대/축소 및 이동을 위한 변수
     float m_zoom;
     QPointF m_panOffset;
     QPoint m_lastPos;
+
+    CircleResult m_fittedCircle;
+    bool m_hasCircle;
+    QLineF m_fittedLine; // ✨ [추가] 피팅된 직선 정보를 저장할 변수
+    bool m_hasLine;
 };
 
 #endif // XYPLOTWIDGET_H
