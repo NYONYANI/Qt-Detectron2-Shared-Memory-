@@ -8,10 +8,9 @@
 #include <QPainter>
 #include <QMouseEvent>
 #include <QWheelEvent>
-#include <QLineF> // ✨ [추가] QLineF 클래스 포함
+#include <QLineF>
 #include "circlefitter.h"
 
-// 플롯할 개별 데이터 포인트를 위한 구조체
 struct PlotData {
     QPointF point;
     QColor color;
@@ -24,7 +23,6 @@ class XYPlotWidget : public QWidget
 
 public:
     explicit XYPlotWidget(QWidget *parent = nullptr);
-    // ✨ [수정] 몸통과 손잡이 데이터를 별도로 받는 함수로 변경
     void updateData(const QVector<PlotData>& bodyData, const QVector<PlotData>& handleData);
 
 protected:
@@ -38,10 +36,11 @@ private:
     void drawAxes(QPainter& painter);
     void drawPoints(QPainter& painter);
     void drawFittedCircle(QPainter& painter);
-    void drawFittedLine(QPainter& painter); // ✨ [추가] 직선을 그리는 함수 선언
+    void drawFittedLine(QPainter& painter);
+    void drawPerpendicularLines(QPainter& painter); // ✨ [추가] 수직선을 그리는 함수 선언
 
-    QVector<PlotData> m_bodyPlotData;   // ✨ [수정] 변수 이름 변경 (body)
-    QVector<PlotData> m_handlePlotData; // ✨ [추가] 손잡이 포인트 데이터 저장 변수
+    QVector<PlotData> m_bodyPlotData;
+    QVector<PlotData> m_handlePlotData;
     const float m_range = 1.0f;
 
     float m_zoom;
@@ -50,8 +49,13 @@ private:
 
     CircleResult m_fittedCircle;
     bool m_hasCircle;
-    QLineF m_fittedLine; // ✨ [추가] 피팅된 직선 정보를 저장할 변수
+    QLineF m_fittedLine;
     bool m_hasLine;
+
+    // ✨ [추가] 수직선 정보를 저장할 변수
+    QLineF m_perpLine1;
+    QLineF m_perpLine2;
+    bool m_hasPerpLines;
 };
 
 #endif // XYPLOTWIDGET_H
