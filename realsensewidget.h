@@ -28,7 +28,7 @@
 #include <GL/glu.h>
 #include "DBSCAN.h"
 
-// ✨ [추가] 파지 지점의 위치와 방향 정보를 함께 저장하는 구조체
+// 파지 지점의 위치와 방향 정보를 함께 저장하는 구조체
 struct GraspingTarget
 {
     QVector3D point;      // 3D 파지 포인트 (빨간 구의 중심)
@@ -46,13 +46,14 @@ public:
     void updatePointCloud(const rs2::points& points, const rs2::video_frame& color, const QImage& maskOverlay);
     void setTransforms(const QMatrix4x4& baseToTcp, const QMatrix4x4& tcpToCam);
     void updateGraspingPoints(const QVector<QVector3D>& points);
-    void updateTargetPose(const QMatrix4x4& pose, bool show); // ✨ [추가] 목표 자세 업데이트 함수
+    void updateTargetPose(const QMatrix4x4& pose, bool show); // 목표 자세 업데이트 함수
 
 signals:
     void denoisingToggled();
     void zFilterToggled();
     void showXYPlotRequested();
-    void calculateTargetPoseRequested(); // ✨ [추가] 5번 키를 위한 시그널
+    void calculateTargetPoseRequested(); // 5번 키를 위한 시그널
+    void moveRobotToPreGraspPoseRequested(); // 'm' 키를 위한 시그널
 
 protected:
     void initializeGL() override;
@@ -65,11 +66,11 @@ protected:
 
 private:
     void processPoints(const std::vector<int>& clusterIds = {});
-    void drawAxes(float length, float lineWidth = 2.0f); // ✨ [수정] 선 굵기 인자 추가
+    void drawAxes(float length, float lineWidth = 2.0f);
     void drawGrid(float size, int divisions);
     void drawGraspingSpheres();
     void drawGripper();
-    void drawTargetPose(); // ✨ [추가] 목표 자세 그리기 함수 선언
+    void drawTargetPose(); // 목표 자세 그리기 함수 선언
 
     std::vector<float> m_vertexData;
     rs2::points m_points;
@@ -81,8 +82,8 @@ private:
     std::vector<bool> m_floorPoints;
 
     QVector<QVector3D> m_graspingPoints;
-    QMatrix4x4 m_targetTcpTransform; // ✨ [추가] 목표 TCP 자세
-    bool m_showTargetPose = false;   // ✨ [추가] 목표 자세 표시 여부 플래그
+    QMatrix4x4 m_targetTcpTransform; // 목표 TCP 자세
+    bool m_showTargetPose = false;   // 목표 자세 표시 여부 플래그
 
     friend class RealSenseWidget;
 
@@ -108,11 +109,16 @@ public slots:
     void captureAndProcess();
     void onRobotPoseUpdated(const float* pose);
 
+signals:
+    // QMatrix4x4를 직접 전달하도록 시그널 변경
+    void requestRobotMove(const QMatrix4x4& poseMatrix);
+
 private slots:
     void onDenoisingToggled();
     void onZFilterToggled();
     void onShowXYPlot();
-    void onCalculateTargetPose(); // ✨ [추가] 5번 키를 위한 슬롯
+    void onCalculateTargetPose();
+    void onMoveRobotToPreGraspPose(); // 'm' 키를 위한 슬롯
     void updateFrame();
     void checkProcessingResult();
 
@@ -155,7 +161,8 @@ private:
     bool m_isProcessing;
     bool m_showPlotWindow;
 
-    QVector<GraspingTarget> m_graspingTargets; // ✨ [수정] GraspingTarget 구조체 벡터로 변경
+    QVector<GraspingTarget> m_graspingTargets;
+    QMatrix4x4 m_calculatedTargetPose; // 계산된 목표 자세를 저장할 변수
     std::vector<int> m_clusterIds;
 
     const int IMAGE_WIDTH = 640;

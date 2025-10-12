@@ -243,6 +243,7 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event) {
     else if (event->key() == Qt::Key_3) emit zFilterToggled();
     else if (event->key() == Qt::Key_4) emit showXYPlotRequested();
     else if (event->key() == Qt::Key_5) emit calculateTargetPoseRequested();
+    else if (event->key() == Qt::Key_M) emit moveRobotToPreGraspPoseRequested();
     else QOpenGLWidget::keyPressEvent(event);
 }
 
@@ -327,6 +328,7 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     connect(m_pointCloudWidget, &PointCloudWidget::zFilterToggled, this, &RealSenseWidget::onZFilterToggled);
     connect(m_pointCloudWidget, &PointCloudWidget::showXYPlotRequested, this, &RealSenseWidget::onShowXYPlot);
     connect(m_pointCloudWidget, &PointCloudWidget::calculateTargetPoseRequested, this, &RealSenseWidget::onCalculateTargetPose);
+    connect(m_pointCloudWidget, &PointCloudWidget::moveRobotToPreGraspPoseRequested, this, &RealSenseWidget::onMoveRobotToPreGraspPose);
     m_layout->addWidget(m_colorLabel, 1); m_layout->addWidget(m_pointCloudWidget, 1); setLayout(m_layout);
 
     m_baseToTcpTransform.setToIdentity();
@@ -446,15 +448,10 @@ void RealSenseWidget::onShowXYPlot()
                 QPointF circleCenter(circle.centerX, circle.centerY);
 
                 QLineF fittedLine(circleCenter, handleCentroid);
-                qreal angle = fittedLine.angle();
 
-                QLineF perpLine;
-                perpLine.setP1(circleCenter);
-                perpLine.setAngle(angle + 90.0);
-
-                // ✨ [오류 수정] QLineF의 각도는 Y축이 아래로 향하는 painter 좌표계 기준이 아닌,
-                // Y축이 위로 향하는 표준 데카르트 좌표계 기준이므로 y값을 뒤집을 필요가 없습니다.
-                QVector3D perpDir(perpLine.unitVector().dx(), perpLine.unitVector().dy(), 0);
+                QLineF perpLine(0, 0, -fittedLine.dy(), fittedLine.dx());
+                QVector3D perpDir(perpLine.dx(), perpLine.dy(), 0);
+                perpDir.normalize();
 
                 QVector3D graspPoint1(
                     circleCenter.x() + circle.radius * perpDir.x(),
@@ -528,15 +525,31 @@ void RealSenseWidget::onCalculateTargetPose()
     QVector3D target_y_axis = bestTarget.direction.normalized();
     QVector3D target_x_axis = QVector3D::crossProduct(target_y_axis, target_z_axis).normalized();
 
-    QMatrix4x4 targetTransform;
-    targetTransform.setColumn(0, QVector4D(target_x_axis, 0));
-    targetTransform.setColumn(1, QVector4D(target_y_axis, 0));
-    targetTransform.setColumn(2, QVector4D(target_z_axis, 0));
-    targetTransform.setColumn(3, QVector4D(targetTcpPos, 1));
+    m_calculatedTargetPose.setToIdentity();
+    m_calculatedTargetPose.setColumn(0, QVector4D(target_x_axis, 0));
+    m_calculatedTargetPose.setColumn(1, QVector4D(target_y_axis, 0));
+    m_calculatedTargetPose.setColumn(2, QVector4D(target_z_axis, 0));
+    m_calculatedTargetPose.setColumn(3, QVector4D(targetTcpPos, 1));
 
-    qDebug() << "Target Pose Calculated:" << targetTransform;
+    qDebug() << "Target Pose Calculated:" << m_calculatedTargetPose;
 
-    m_pointCloudWidget->updateTargetPose(targetTransform, !m_pointCloudWidget->m_showTargetPose);
+    m_pointCloudWidget->updateTargetPose(m_calculatedTargetPose, !m_pointCloudWidget->m_showTargetPose);
+}
+
+void RealSenseWidget::onMoveRobotToPreGraspPose()
+{
+    qDebug() << "[INFO] Key 'M' pressed. Requesting robot move...";
+    if (m_calculatedTargetPose.isIdentity()) {
+        qDebug() << "[WARN] No target pose has been calculated. Press '5' first.";
+        return;
+    }
+
+    QMatrix4x4 preGraspPose = m_calculatedTargetPose;
+    preGraspPose.translate(0, 0, 0.20);
+
+    qDebug() << "Requesting move to Pre-Grasp Pose Matrix:" << preGraspPose;
+
+    emit requestRobotMove(preGraspPose);
 }
 
 

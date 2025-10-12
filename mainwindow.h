@@ -5,10 +5,11 @@
 #include <QDebug>
 #include <QLabel>
 #include <QThread>
+#include <QMatrix4x4> // ✨ [추가] QMatrix4x4 헤더 포함
 #include "DRFL.h"
 #include "DRFLEx.h"
 #include "robotmonitor.h"
-#include "realsensewidget.h" // RealSenseWidget 헤더 포함
+#include "realsensewidget.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -26,9 +27,10 @@ private slots:
     void on_RobotInit_clicked();
     void updateRobotStateLabel(int state);
     void updateRobotPoseLabel(const float* pose);
+    // ✨ [수정] onMoveRobot 슬롯의 선언을 cpp 파일과 일치시킵니다.
+    void onMoveRobot(const QMatrix4x4& poseMatrix);
 
 public:
-    // 다른 파일에서 UI 라벨에 접근할 수 있도록 static으로 선언
     static QLabel* s_robotStateLabel;
 
 private:

@@ -3,9 +3,10 @@
 #include <QDebug>
 #include <QLabel>
 #include <QThread>
+#include <QtMath>
 
 // ----------------------------------------------------
-// ✨ [수정] 모든 전역 변수와 객체를 여기서 단 한 번만 정의합니다.
+// 전역 변수 및 객체 정의
 // ----------------------------------------------------
 using namespace DRAFramework;
 
@@ -16,7 +17,7 @@ bool g_TpInitailizingComplted = false;
 QLabel* MainWindow::s_robotStateLabel = nullptr;
 
 // ----------------------------------------------------
-// ✨ [수정] 모든 전역 콜백 함수를 여기서 단 한 번만 정의합니다.
+// 전역 콜백 함수 정의
 // ----------------------------------------------------
 void OnMonitoringStateCB(const ROBOT_STATE eState) {
     if (!g_bHasControlAuthority) {
@@ -24,20 +25,25 @@ void OnMonitoringStateCB(const ROBOT_STATE eState) {
     }
     switch (eState) {
         case STATE_SAFE_STOP:
+            qDebug() << "[ROBOT] In STATE_SAFE_STOP, resetting safe stop.";
             GlobalDrfl.SetSafeStopResetType(SAFE_STOP_RESET_TYPE_DEFAULT);
             GlobalDrfl.SetRobotControl(CONTROL_RESET_SAFET_STOP);
             break;
         case STATE_SAFE_STOP2:
+            qDebug() << "[ROBOT] In STATE_SAFE_STOP2, recovering safe stop.";
             GlobalDrfl.SetRobotControl(CONTROL_RECOVERY_SAFE_STOP);
             break;
         case STATE_SAFE_OFF2:
+             qDebug() << "[ROBOT] In STATE_SAFE_OFF2, recovering safe off.";
             GlobalDrfl.SetRobotControl(CONTROL_RECOVERY_SAFE_OFF);
             break;
         case STATE_SAFE_OFF:
+            qDebug() << "[ROBOT] In STATE_SAFE_OFF, attempting to turn servo ON.";
             GlobalDrfl.SetRobotControl(CONTROL_SERVO_ON);
             break;
         case STATE_STANDBY:
-            if (!g_bServoOnAttempted) {
+             if (!g_bServoOnAttempted) {
+                qDebug() << "[ROBOT] In STATE_STANDBY, attempting to turn servo ON for the first time.";
                 if (GlobalDrfl.SetRobotControl(CONTROL_SERVO_ON)) {
                     g_bServoOnAttempted = true;
                 }
@@ -65,14 +71,16 @@ void OnDisConnected() {
 void OnMonitroingAccessControlCB(const MONITORING_ACCESS_CONTROL eTrasnsitControl) {
     switch (eTrasnsitControl) {
         case MONITORING_ACCESS_CONTROL_REQUEST:
-            GlobalDrfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_RESPONSE_NO);
+            GlobalDrfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_RESPONSE_YES);
             break;
         case MONITORING_ACCESS_CONTROL_GRANT:
+            qDebug() << "[ROBOT] Control Authority Granted.";
             g_bHasControlAuthority = true;
             OnMonitoringStateCB(GlobalDrfl.GetRobotState());
             break;
         case MONITORING_ACCESS_CONTROL_DENY:
         case MONITORING_ACCESS_CONTROL_LOSS:
+            qDebug() << "[ROBOT] Control Authority Lost or Denied.";
             g_bHasControlAuthority = false;
             g_bServoOnAttempted = false;
             if (g_TpInitailizingComplted) {
@@ -85,7 +93,7 @@ void OnMonitroingAccessControlCB(const MONITORING_ACCESS_CONTROL eTrasnsitContro
 }
 
 // ----------------------------------------------------
-// [MainWindow 클래스 멤버 함수 구현]
+// MainWindow 클래스 멤버 함수 구현
 // ----------------------------------------------------
 
 MainWindow::MainWindow(QWidget *parent)
@@ -110,6 +118,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_robotMonitor, &RobotMonitor::robotPoseUpdated,
             ui->widget, &RealSenseWidget::onRobotPoseUpdated);
+
+    // ✨ [수정] 시그널과 슬롯의 인자 타입이 QMatrix4x4로 일치하도록 수정
+    connect(ui->widget, &RealSenseWidget::requestRobotMove,
+            this, &MainWindow::onMoveRobot);
+
+    ui->widget->setShowPlot(true);
 }
 
 MainWindow::~MainWindow()
@@ -149,6 +163,50 @@ void MainWindow::on_RobotInit_clicked()
         s_robotStateLabel->setText("Robot Status: FAILED TO CONNECT");
     }
 }
+
+void MainWindow::onMoveRobot(const QMatrix4x4 &poseMatrix)
+{
+    if (!g_bHasControlAuthority) {
+        qWarning() << "[ROBOT] Cannot move: No control authority.";
+        return;
+    }
+
+    if (GlobalDrfl.GetRobotState() != STATE_STANDBY) {
+        qWarning() << "[ROBOT] Cannot move: Robot is not in STANDBY state.";
+        return;
+    }
+
+    qInfo() << "[ROBOT] Received move request. Executing movel command.";
+
+    float target_posx[6];
+    target_posx[0] = poseMatrix.column(3).x() * 1000.0f;
+    target_posx[1] = poseMatrix.column(3).y() * 1000.0f;
+    target_posx[2] = poseMatrix.column(3).z() * 1000.0f;
+
+    const float *m = poseMatrix.constData();
+    float sy = sqrt(m[0] * m[0] +  m[4] * m[4]);
+    bool singular = sy < 1e-6;
+    float x, y, z;
+    if (!singular) {
+        x = atan2(m[9], m[10]);
+        y = atan2(-m[8], sy);
+        z = atan2(m[4], m[0]);
+    } else {
+        x = atan2(-m[6], m[5]);
+        y = atan2(-m[8], sy);
+        z = 0;
+    }
+    target_posx[3] = qRadiansToDegrees(x);
+    target_posx[4] = qRadiansToDegrees(y);
+    target_posx[5] = qRadiansToDegrees(z);
+
+    float velx[2] = {100.0f, 60.0f};
+    float accx[2] = {200.0f, 120.0f};
+
+    // ✨ [오류 수정] API 시그니처에 맞게 인자 타입과 개수를 수정합니다.
+    GlobalDrfl.movel(target_posx, velx, accx);
+}
+
 
 void MainWindow::updateRobotStateLabel(int state)
 {
