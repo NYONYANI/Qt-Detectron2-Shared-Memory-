@@ -18,6 +18,7 @@
 #include <QMatrix4x4>
 #include <QtMath>
 #include <QList>
+#include <QVector3D>
 #include <librealsense2/rs.hpp>
 #include <opencv2/opencv.hpp>
 #include <vector>
@@ -26,6 +27,13 @@
 #include "xyplotwidget.h"
 #include <GL/glu.h>
 #include "DBSCAN.h"
+
+// ✨ [추가] 파지 지점의 위치와 방향 정보를 함께 저장하는 구조체
+struct GraspingTarget
+{
+    QVector3D point;      // 3D 파지 포인트 (빨간 구의 중심)
+    QVector3D direction;  // 파지 방향 (점선의 방향 벡터)
+};
 
 class PointCloudWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
@@ -37,11 +45,14 @@ public:
 
     void updatePointCloud(const rs2::points& points, const rs2::video_frame& color, const QImage& maskOverlay);
     void setTransforms(const QMatrix4x4& baseToTcp, const QMatrix4x4& tcpToCam);
+    void updateGraspingPoints(const QVector<QVector3D>& points);
+    void updateTargetPose(const QMatrix4x4& pose, bool show); // ✨ [추가] 목표 자세 업데이트 함수
 
 signals:
     void denoisingToggled();
     void zFilterToggled();
     void showXYPlotRequested();
+    void calculateTargetPoseRequested(); // ✨ [추가] 5번 키를 위한 시그널
 
 protected:
     void initializeGL() override;
@@ -54,20 +65,25 @@ protected:
 
 private:
     void processPoints(const std::vector<int>& clusterIds = {});
-    void drawAxes(float length = 0.1f);
+    void drawAxes(float length, float lineWidth = 2.0f); // ✨ [수정] 선 굵기 인자 추가
     void drawGrid(float size, int divisions);
+    void drawGraspingSpheres();
+    void drawGripper();
+    void drawTargetPose(); // ✨ [추가] 목표 자세 그리기 함수 선언
 
     std::vector<float> m_vertexData;
     rs2::points m_points;
     rs2::video_frame m_colorFrame;
     QImage m_maskOverlay;
     bool m_showOnlyMaskedPoints = false;
-
-    // ✨ [수정] 두 개의 필터 플래그를 모두 유지합니다.
-    bool m_isZFiltered = false;       // '3'번 키로 제어되는 Z 필터
-    bool m_isFloorFiltered = false;   // RANSAC 함수에서 사용하는 바닥 필터
-
+    bool m_isZFiltered = false;
+    bool m_isFloorFiltered = false;
     std::vector<bool> m_floorPoints;
+
+    QVector<QVector3D> m_graspingPoints;
+    QMatrix4x4 m_targetTcpTransform; // ✨ [추가] 목표 TCP 자세
+    bool m_showTargetPose = false;   // ✨ [추가] 목표 자세 표시 여부 플래그
+
     friend class RealSenseWidget;
 
     QMatrix4x4 m_baseToTcpTransform;
@@ -85,6 +101,7 @@ class RealSenseWidget : public QWidget
 public:
     explicit RealSenseWidget(QWidget *parent = nullptr);
     ~RealSenseWidget();
+    void setShowPlot(bool show);
 
 public slots:
     void startCameraStream();
@@ -95,6 +112,7 @@ private slots:
     void onDenoisingToggled();
     void onZFilterToggled();
     void onShowXYPlot();
+    void onCalculateTargetPose(); // ✨ [추가] 5번 키를 위한 슬롯
     void updateFrame();
     void checkProcessingResult();
 
@@ -135,7 +153,9 @@ private:
 
     QJsonArray m_detectionResults;
     bool m_isProcessing;
+    bool m_showPlotWindow;
 
+    QVector<GraspingTarget> m_graspingTargets; // ✨ [수정] GraspingTarget 구조체 벡터로 변경
     std::vector<int> m_clusterIds;
 
     const int IMAGE_WIDTH = 640;

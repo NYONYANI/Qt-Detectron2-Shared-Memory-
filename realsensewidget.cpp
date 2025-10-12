@@ -14,6 +14,7 @@
 #include <random>
 #include <GL/glu.h>
 #include <map>
+#include <limits>
 
 // ===================================================================
 // PointCloudWidget 구현
@@ -45,9 +46,9 @@ void PointCloudWidget::setTransforms(const QMatrix4x4& baseToTcp, const QMatrix4
     m_tcpToCameraTransform = tcpToCam;
 }
 
-void PointCloudWidget::drawAxes(float length)
+void PointCloudWidget::drawAxes(float length, float lineWidth)
 {
-    glLineWidth(2.0);
+    glLineWidth(lineWidth);
     glBegin(GL_LINES);
     glColor3f(1.0f, 0.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(length, 0.0f, 0.0f);
     glColor3f(0.0f, 1.0f, 0.0f); glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(0.0f, length, 0.0f);
@@ -60,10 +61,8 @@ void PointCloudWidget::drawGrid(float size, int divisions)
 {
     glLineWidth(1.0f);
     glColor3f(0.8f, 0.8f, 0.8f);
-
     float step = size / divisions;
     float halfSize = size / 2.0f;
-
     glBegin(GL_LINES);
     for (int i = 0; i <= divisions; ++i) {
         float pos = -halfSize + i * step;
@@ -75,35 +74,30 @@ void PointCloudWidget::drawGrid(float size, int divisions)
     glEnd();
 }
 
-
 void PointCloudWidget::paintGL()
 {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-
     float aspect = (float)width() / (height() > 0 ? height() : 1);
     float view_size = m_distance * 0.5f;
     glOrtho(-view_size * aspect, view_size * aspect, -view_size, view_size, -100.0, 100.0);
-
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-
     glTranslatef(m_panX, m_panY, 0.0f);
     glRotatef(m_pitch, 1.0f, 0.0f, 0.0f);
     glRotatef(m_yaw, 0.0f, 1.0f, 0.0f);
 
     drawGrid(2.0f, 20);
-
-    drawAxes(0.2f); // World (Robot Base)
+    drawAxes(0.2f);
+    drawGraspingSpheres();
+    drawTargetPose();
 
     glPushMatrix();
-    glMultMatrixf(m_baseToTcpTransform.constData()); // Move to Robot TCP
+    glMultMatrixf(m_baseToTcpTransform.constData());
     drawAxes(0.1f);
-
-    glMultMatrixf(m_tcpToCameraTransform.constData()); // Move to Camera from TCP
-    drawAxes(0.05f);
-
+    drawGripper();
+    glMultMatrixf(m_tcpToCameraTransform.constData());
     if (!m_vertexData.empty()) {
         glEnableClientState(GL_VERTEX_ARRAY);
         glEnableClientState(GL_COLOR_ARRAY);
@@ -212,7 +206,6 @@ void PointCloudWidget::processPoints(const std::vector<int>& clusterIds) {
     QMetaObject::invokeMethod(this, "update", Qt::QueuedConnection);
 }
 
-
 void PointCloudWidget::mousePressEvent(QMouseEvent *event) { m_lastPos = event->pos(); }
 
 void PointCloudWidget::mouseMoveEvent(QMouseEvent *event) {
@@ -240,8 +233,7 @@ void PointCloudWidget::wheelEvent(QWheelEvent *event) {
 void PointCloudWidget::keyPressEvent(QKeyEvent *event) {
     if (event->key() == Qt::Key_1) {
         if (m_maskOverlay.isNull()) {
-            qDebug() << "[WARN] Key '1' pressed, but no mask data available.";
-            return;
+            qDebug() << "[WARN] Key '1' pressed, but no mask data available."; return;
         }
         m_showOnlyMaskedPoints = !m_showOnlyMaskedPoints;
         qDebug() << "[INFO] Show only masked points toggled to:" << m_showOnlyMaskedPoints;
@@ -250,7 +242,61 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event) {
     else if (event->key() == Qt::Key_2) emit denoisingToggled();
     else if (event->key() == Qt::Key_3) emit zFilterToggled();
     else if (event->key() == Qt::Key_4) emit showXYPlotRequested();
+    else if (event->key() == Qt::Key_5) emit calculateTargetPoseRequested();
     else QOpenGLWidget::keyPressEvent(event);
+}
+
+void PointCloudWidget::updateGraspingPoints(const QVector<QVector3D> &points) {
+    m_graspingPoints = points;
+    update();
+}
+
+void PointCloudWidget::drawGraspingSpheres() {
+    if (m_graspingPoints.isEmpty()) return;
+    GLUquadric* quadric = gluNewQuadric();
+    gluQuadricNormals(quadric, GLU_SMOOTH);
+    glColor3f(1.0f, 0.0f, 0.0f);
+    for (const auto& point : m_graspingPoints) {
+        glPushMatrix();
+        glTranslatef(point.x(), point.y(), point.z());
+        gluSphere(quadric, 0.005, 16, 16);
+        glPopMatrix();
+    }
+    gluDeleteQuadric(quadric);
+}
+
+void PointCloudWidget::drawGripper() {
+    const float gripper_z_offset = 0.146f;
+    const float gripper_half_width = 0.040f;
+    const float gripper_jaw_length = 0.05f;
+    glLineWidth(3.0f);
+    glColor3f(0.0f, 0.0f, 0.0f);
+    glBegin(GL_LINES);
+    glVertex3f(-gripper_jaw_length / 2, gripper_half_width, gripper_z_offset);
+    glVertex3f( gripper_jaw_length / 2, gripper_half_width, gripper_z_offset);
+    glVertex3f(-gripper_jaw_length / 2, -gripper_half_width, gripper_z_offset);
+    glVertex3f( gripper_jaw_length / 2, -gripper_half_width, gripper_z_offset);
+    glEnd();
+    glLineWidth(1.0f);
+}
+
+void PointCloudWidget::drawTargetPose()
+{
+    if (!m_showTargetPose) return;
+    glPushMatrix();
+    glMultMatrixf(m_targetTcpTransform.constData());
+    glPushAttrib(GL_CURRENT_BIT);
+    glColor3f(0.5f, 0.0f, 0.8f);
+    drawAxes(0.1f, 4.0f);
+    glPopAttrib();
+    glPopMatrix();
+}
+
+void PointCloudWidget::updateTargetPose(const QMatrix4x4 &pose, bool show)
+{
+    m_targetTcpTransform = pose;
+    m_showTargetPose = show;
+    update();
 }
 
 // ===================================================================
@@ -266,6 +312,7 @@ const char* SEM_CONTROL_NAME = "/sem_detection_control";
 
 RealSenseWidget::RealSenseWidget(QWidget *parent)
     : QWidget(parent), m_align(RS2_STREAM_COLOR), m_isProcessing(false),
+      m_showPlotWindow(false),
       m_depth_to_disparity(true), m_disparity_to_depth(false)
 {
     initSharedMemory();
@@ -279,6 +326,7 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     connect(m_pointCloudWidget, &PointCloudWidget::denoisingToggled, this, &RealSenseWidget::onDenoisingToggled);
     connect(m_pointCloudWidget, &PointCloudWidget::zFilterToggled, this, &RealSenseWidget::onZFilterToggled);
     connect(m_pointCloudWidget, &PointCloudWidget::showXYPlotRequested, this, &RealSenseWidget::onShowXYPlot);
+    connect(m_pointCloudWidget, &PointCloudWidget::calculateTargetPoseRequested, this, &RealSenseWidget::onCalculateTargetPose);
     m_layout->addWidget(m_colorLabel, 1); m_layout->addWidget(m_pointCloudWidget, 1); setLayout(m_layout);
 
     m_baseToTcpTransform.setToIdentity();
@@ -301,6 +349,11 @@ RealSenseWidget::~RealSenseWidget()
     try { m_pipeline.stop(); } catch (...) {}
 }
 
+void RealSenseWidget::setShowPlot(bool show)
+{
+    m_showPlotWindow = show;
+}
+
 void RealSenseWidget::onRobotPoseUpdated(const float* pose)
 {
     if (!pose) return;
@@ -313,45 +366,36 @@ void RealSenseWidget::onRobotPoseUpdated(const float* pose)
 
 void RealSenseWidget::onShowXYPlot()
 {
-    qDebug() << "[INFO] Key '4' pressed. Fitting circles and lines to objects...";
-
-    if (m_detectionResults.isEmpty()) {
-        qDebug() << "[WARN] No detection results available. Press 'Capture' first.";
-        return;
+    qDebug() << "[INFO] Key '4' pressed. Calculating grasping points...";
+    if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
+        qDebug() << "[WARN] No data available for calculation."; return;
     }
-    if (!m_pointCloudWidget->m_points) {
-        qDebug() << "[WARN] Current point cloud is invalid. Cannot create XY plot.";
-        return;
-    }
-
     const rs2::points& currentPoints = m_pointCloudWidget->m_points;
     const rs2::vertex* vertices = currentPoints.get_vertices();
     const rs2::texture_coordinate* tex_coords = currentPoints.get_texture_coordinates();
-    const int width = IMAGE_WIDTH;
-    const int height = IMAGE_HEIGHT;
-
+    const int width = IMAGE_WIDTH; const int height = IMAGE_HEIGHT;
     QMatrix4x4 camToBaseTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
 
-    // 각 컵의 몸통과 손잡이 포인트 리스트를 저장할 리스트
+    m_graspingTargets.clear();
+    QVector<QVector3D> graspingPointsForViz;
+
     QList<QVector<PlotData>> detectedBodyPoints;
     QList<QVector<PlotData>> detectedHandlePoints;
 
     for (const QJsonValue &cupValue : m_detectionResults) {
         QJsonObject cupResult = cupValue.toObject();
-        QVector<PlotData> singleCupBodyPoints;
-        QVector<PlotData> singleCupHandlePoints;
+        QVector<QVector3D> singleCupBodyPoints3D;
+        QVector<QVector3D> singleCupHandlePoints3D;
 
         QStringList parts = {"body", "handle"};
         for (const QString &part : parts) {
             if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
-
             QJsonObject partData = cupResult[part].toObject();
             QJsonArray rle = partData["mask_rle"].toArray();
             QJsonArray shape = partData["mask_shape"].toArray();
             QJsonArray offset = partData["offset"].toArray();
             int H = shape[0].toInt(); int W = shape[1].toInt();
             int ox = offset[0].toInt(); int oy = offset[1].toInt();
-
             QVector<uchar> mask_buffer(W * H, 0);
             int idx = 0; uchar val = 0;
             for(const QJsonValue& run_val : rle) {
@@ -361,78 +405,141 @@ void RealSenseWidget::onShowXYPlot()
                 idx += len; val = (val == 0 ? 255 : 0);
                 if(idx >= W * H) break;
             }
-
-            for(int y = 0; y < H; ++y) {
-                for(int x = 0; x < W; ++x) {
-                    if(mask_buffer[y * W + x] == 255) {
-                        int u_mask = ox + x;
-                        int v_mask = oy + y;
-                        if (u_mask < 0 || u_mask >= width || v_mask < 0 || v_mask >= height) continue;
-
-                        for (size_t i = 0; i < currentPoints.size(); ++i) {
-                             int u_pc = std::min(std::max(int(tex_coords[i].u * width + .5f), 0), width - 1);
-                             int v_pc = std::min(std::max(int(tex_coords[i].v * height + .5f), 0), height - 1);
-
-                             if (u_pc == u_mask && v_pc == v_mask) {
-                                 const rs2::vertex& p = vertices[i];
-                                 if (p.z > 0) {
-                                     QVector3D p_cam(p.x, p.y, p.z);
-                                     QVector3D p_base = camToBaseTransform * p_cam;
-
-                                     if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) {
-                                         goto next_mask_pixel;
-                                     }
-
-                                     PlotData plotData;
-                                     plotData.point = QPointF(p_base.x(), p_base.y());
-
-                                     // 파트 종류에 따라 다른 벡터에 저장
-                                     if (part == "body") {
-                                         plotData.label = "B";
-                                         plotData.color = Qt::green;
-                                         singleCupBodyPoints.append(plotData);
-                                     } else if (part == "handle") {
-                                         plotData.label = "H";
-                                         plotData.color = Qt::blue;
-                                         singleCupHandlePoints.append(plotData);
-                                     }
-                                 }
-                                 goto next_mask_pixel;
-                             }
+            for(int y = 0; y < H; ++y) { for(int x = 0; x < W; ++x) { if(mask_buffer[y * W + x] == 255) {
+                int u_mask = ox + x; int v_mask = oy + y;
+                if (u_mask < 0 || u_mask >= width || v_mask < 0 || v_mask >= height) continue;
+                for (size_t i = 0; i < currentPoints.size(); ++i) {
+                    int u_pc = std::min(std::max(int(tex_coords[i].u * width + .5f), 0), width - 1);
+                    int v_pc = std::min(std::max(int(tex_coords[i].v * height + .5f), 0), height - 1);
+                    if (u_pc == u_mask && v_pc == v_mask) {
+                        const rs2::vertex& p = vertices[i];
+                        if (p.z > 0) {
+                            QVector3D p_cam(p.x, p.y, p.z);
+                            QVector3D p_base = camToBaseTransform * p_cam;
+                            if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) { goto next_mask_pixel; }
+                            if (part == "body") singleCupBodyPoints3D.append(p_base);
+                            else if (part == "handle") singleCupHandlePoints3D.append(p_base);
                         }
-                        next_mask_pixel:;
+                        goto next_mask_pixel;
                     }
                 }
-            }
-        } // end parts loop
+            next_mask_pixel:;
+            }}}
+        }
 
-        // 몸통 포인트가 있는 경우에만 리스트에 추가
-        if(!singleCupBodyPoints.isEmpty()) {
-            detectedBodyPoints.append(singleCupBodyPoints);
-            detectedHandlePoints.append(singleCupHandlePoints); // 손잡이가 없으면 빈 벡터가 추가됨
+        if(singleCupBodyPoints3D.isEmpty()) continue;
+
+        QVector<QPointF> bodyPoints2D;
+        float max_z = -std::numeric_limits<float>::infinity();
+        for(const auto& p3d : singleCupBodyPoints3D) {
+            bodyPoints2D.append(p3d.toPointF());
+            if (p3d.z() > max_z) max_z = p3d.z();
+        }
+
+        CircleResult circle = CircleFitter::fitCircleLeastSquares(bodyPoints2D);
+        if (circle.radius > 0 && circle.radius < 1.0) {
+            float grasp_z = max_z - 0.01f;
+            if (!singleCupHandlePoints3D.isEmpty()){
+                double h_sum_x = 0, h_sum_y = 0;
+                for(const auto& p3d : singleCupHandlePoints3D) { h_sum_x += p3d.x(); h_sum_y += p3d.y(); }
+                QPointF handleCentroid(h_sum_x/singleCupHandlePoints3D.size(), h_sum_y/singleCupHandlePoints3D.size());
+                QPointF circleCenter(circle.centerX, circle.centerY);
+
+                QLineF fittedLine(circleCenter, handleCentroid);
+                qreal angle = fittedLine.angle();
+
+                QLineF perpLine;
+                perpLine.setP1(circleCenter);
+                perpLine.setAngle(angle + 90.0);
+
+                // ✨ [오류 수정] QLineF의 각도는 Y축이 아래로 향하는 painter 좌표계 기준이 아닌,
+                // Y축이 위로 향하는 표준 데카르트 좌표계 기준이므로 y값을 뒤집을 필요가 없습니다.
+                QVector3D perpDir(perpLine.unitVector().dx(), perpLine.unitVector().dy(), 0);
+
+                QVector3D graspPoint1(
+                    circleCenter.x() + circle.radius * perpDir.x(),
+                    circleCenter.y() + circle.radius * perpDir.y(),
+                    grasp_z
+                );
+                m_graspingTargets.append({graspPoint1, perpDir});
+                graspingPointsForViz.append(graspPoint1);
+
+                QVector3D graspPoint2(
+                    circleCenter.x() - circle.radius * perpDir.x(),
+                    circleCenter.y() - circle.radius * perpDir.y(),
+                    grasp_z
+                );
+                m_graspingTargets.append({graspPoint2, -perpDir});
+                graspingPointsForViz.append(graspPoint2);
+            }
+        }
+
+        if(m_showPlotWindow) {
+            QVector<PlotData> bodyPlotData, handlePlotData;
+            for(const auto& p3d : singleCupBodyPoints3D) bodyPlotData.append({p3d.toPointF(), Qt::green, "B"});
+            for(const auto& p3d : singleCupHandlePoints3D) handlePlotData.append({p3d.toPointF(), Qt::blue, "H"});
+            detectedBodyPoints.append(bodyPlotData);
+            detectedHandlePoints.append(handlePlotData);
         }
     }
 
-    if (detectedBodyPoints.isEmpty()){
-        qDebug() << "[WARN] No body points found for plotting after filtering.";
+    m_pointCloudWidget->updateGraspingPoints(graspingPointsForViz);
+
+    if (m_showPlotWindow && !detectedBodyPoints.isEmpty()) {
+        for (int i = detectedBodyPoints.size(); i < m_plotWidgets.size(); ++i) m_plotWidgets[i]->hide();
+        for (int i = 0; i < detectedBodyPoints.size(); ++i) {
+            if (i >= m_plotWidgets.size()) m_plotWidgets.append(new XYPlotWidget());
+            m_plotWidgets[i]->updateData(detectedBodyPoints[i], detectedHandlePoints[i]);
+            m_plotWidgets[i]->setWindowTitle(QString("Cup %1 Fitting Result").arg(i + 1));
+            m_plotWidgets[i]->show();
+            m_plotWidgets[i]->activateWindow();
+        }
+    } else if (m_showPlotWindow) {
+        qDebug() << "[WARN] No body points found for plotting.";
+    }
+}
+
+void RealSenseWidget::onCalculateTargetPose()
+{
+    qDebug() << "[INFO] Key '5' pressed. Calculating target pose...";
+    if (m_graspingTargets.isEmpty()) {
+        qDebug() << "[WARN] No grasping points calculated yet. Press '4' first.";
+        m_pointCloudWidget->updateTargetPose(QMatrix4x4(), false);
         return;
     }
 
-    for (int i = detectedBodyPoints.size(); i < m_plotWidgets.size(); ++i) {
-        m_plotWidgets[i]->hide();
+    QVector3D currentTcpPos = m_baseToTcpTransform.column(3).toVector3D();
+
+    float minDistance = std::numeric_limits<float>::max();
+    GraspingTarget bestTarget;
+
+    for (const auto& target : m_graspingTargets) {
+        float distance = currentTcpPos.distanceToPoint(target.point);
+        if (distance < minDistance) {
+            minDistance = distance;
+            bestTarget = target;
+        }
     }
 
-    for (int i = 0; i < detectedBodyPoints.size(); ++i) {
-        if (i >= m_plotWidgets.size()) {
-            m_plotWidgets.append(new XYPlotWidget());
-        }
-        // 수정된 updateData 함수 호출
-        m_plotWidgets[i]->updateData(detectedBodyPoints[i], detectedHandlePoints[i]);
-        m_plotWidgets[i]->setWindowTitle(QString("Cup %1 Fitting Result").arg(i + 1));
-        m_plotWidgets[i]->show();
-        m_plotWidgets[i]->activateWindow();
-    }
+    const float gripper_z_offset = 0.146f;
+    QVector3D target_z_axis(0, 0, -1);
+    QVector3D targetTcpPos = bestTarget.point - gripper_z_offset * target_z_axis;
+
+    QVector3D target_y_axis = bestTarget.direction.normalized();
+    QVector3D target_x_axis = QVector3D::crossProduct(target_y_axis, target_z_axis).normalized();
+
+    QMatrix4x4 targetTransform;
+    targetTransform.setColumn(0, QVector4D(target_x_axis, 0));
+    targetTransform.setColumn(1, QVector4D(target_y_axis, 0));
+    targetTransform.setColumn(2, QVector4D(target_z_axis, 0));
+    targetTransform.setColumn(3, QVector4D(targetTcpPos, 1));
+
+    qDebug() << "Target Pose Calculated:" << targetTransform;
+
+    m_pointCloudWidget->updateTargetPose(targetTransform, !m_pointCloudWidget->m_showTargetPose);
 }
+
+
 void RealSenseWidget::updateFrame()
 {
     try {
@@ -522,10 +629,6 @@ void RealSenseWidget::onZFilterToggled() {
     qDebug() << "[INFO] Z-axis filter toggled:" << (m_pointCloudWidget->m_isZFiltered ? "ON" : "OFF");
     m_pointCloudWidget->processPoints();
 }
-
-// ===================================================================
-// RANSAC and DBSCAN functions remain in the code but are not called by any key press
-// ===================================================================
 
 void RealSenseWidget::runDbscanClustering()
 {
@@ -617,10 +720,6 @@ void RealSenseWidget::findFloorPlaneRANSAC() {
     }
 }
 
-// ===================================================================
-// Unchanged functions below
-// ===================================================================
-
 void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) {
     if (image.isNull()) return;
     QPainter painter(&image);
@@ -631,15 +730,12 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
         QStringList parts = {"body", "handle"};
         for (const QString &part : parts) {
             if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
-
             QJsonObject partData = cupResult[part].toObject();
             if (!partData.contains("mask_rle") || !partData.contains("center")) continue;
-
             QJsonArray rle = partData["mask_rle"].toArray();
             QJsonArray shape = partData["mask_shape"].toArray();
             QJsonArray offset = partData["offset"].toArray();
             QJsonArray center = partData["center"].toArray();
-
             int H = shape[0].toInt();
             int W = shape[1].toInt();
             int ox = offset[0].toInt();
@@ -647,7 +743,6 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
             int centerX = center[0].toInt();
             int centerY = center[1].toInt();
             int cls = partData["cls_id"].toInt();
-
             QVector<uchar> mask_buffer(W * H, 0);
             int idx = 0; uchar val = 0;
             for(const QJsonValue& run_val : rle) {
@@ -658,7 +753,6 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
                 val = (val == 0 ? 255 : 0);
                 if(idx >= W * H) break;
             }
-
             QImage mask_img(mask_buffer.constData(), W, H, W, QImage::Format_Alpha8);
             QColor maskColor = (cls==1) ? QColor(0,255,0,150) : QColor(0,0,255,150);
             QImage colored(W, H, QImage::Format_ARGB32_Premultiplied);
@@ -668,7 +762,6 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
             p.drawImage(0, 0, mask_img);
             p.end();
             painter.drawImage(ox, oy, colored);
-
             painter.setPen(Qt::white);
             painter.setFont(QFont("Arial", 12, QFont::Bold));
             QString label = QString("cup%1: %2").arg(cupIndex).arg(part);
@@ -677,7 +770,6 @@ void RealSenseWidget::drawMaskOverlay(QImage &image, const QJsonArray &results) 
         cupIndex++;
     }
 }
-
 
 bool RealSenseWidget::initSharedMemory() {
     shm_unlink(SHM_IMAGE_NAME); shm_unlink(SHM_RESULT_NAME); shm_unlink(SHM_CONTROL_NAME);
