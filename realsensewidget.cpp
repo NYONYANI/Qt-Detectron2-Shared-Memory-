@@ -15,6 +15,7 @@
 #include <GL/glu.h>
 #include <map>
 #include <limits>
+#include <QElapsedTimer> // ✨ [추가] 성능 측정을 위해 추가
 
 // PointCloudWidget 구현 (변경 없음, 이전과 동일)
 // ===================================================================
@@ -363,13 +364,14 @@ void RealSenseWidget::onRobotTransformUpdated(const QMatrix4x4 &transform)
 
 void RealSenseWidget::onShowXYPlot()
 {
+    QElapsedTimer timer;
+    timer.start();
     qDebug() << "[INFO] Key '4' pressed. Calculating grasping points...";
     if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
         qDebug() << "[WARN] No data available for calculation."; return;
     }
     const rs2::points& currentPoints = m_pointCloudWidget->m_points;
     const rs2::vertex* vertices = currentPoints.get_vertices();
-    const rs2::texture_coordinate* tex_coords = currentPoints.get_texture_coordinates();
     const int width = IMAGE_WIDTH; const int height = IMAGE_HEIGHT;
     QMatrix4x4 camToBaseTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
 
@@ -402,26 +404,28 @@ void RealSenseWidget::onShowXYPlot()
                 idx += len; val = (val == 0 ? 255 : 0);
                 if(idx >= W * H) break;
             }
-            for(int y = 0; y < H; ++y) { for(int x = 0; x < W; ++x) { if(mask_buffer[y * W + x] == 255) {
-                        int u_mask = ox + x; int v_mask = oy + y;
+            for(int y = 0; y < H; ++y) {
+                for(int x = 0; x < W; ++x) {
+                    if(mask_buffer[y * W + x] == 255) {
+                        int u_mask = ox + x;
+                        int v_mask = oy + y;
                         if (u_mask < 0 || u_mask >= width || v_mask < 0 || v_mask >= height) continue;
-                        for (size_t i = 0; i < currentPoints.size(); ++i) {
-                            int u_pc = std::min(std::max(int(tex_coords[i].u * width + .5f), 0), width - 1);
-                            int v_pc = std::min(std::max(int(tex_coords[i].v * height + .5f), 0), height - 1);
-                            if (u_pc == u_mask && v_pc == v_mask) {
-                                const rs2::vertex& p = vertices[i];
-                                if (p.z > 0) {
-                                    QVector3D p_cam(p.x, p.y, p.z);
-                                    QVector3D p_base = camToBaseTransform * p_cam;
-                                    if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) { goto next_mask_pixel; }
-                                    if (part == "body") singleCupBodyPoints3D.append(p_base);
-                                    else if (part == "handle") singleCupHandlePoints3D.append(p_base);
-                                }
-                                goto next_mask_pixel;
+
+                        // ✨ [개선] 조회 테이블을 사용한 빠른 3D 포인트 검색
+                        int point_idx = m_uv_to_point_idx[v_mask * width + u_mask];
+                        if (point_idx != -1) {
+                            const rs2::vertex& p = vertices[point_idx];
+                            if (p.z > 0) {
+                                QVector3D p_cam(p.x, p.y, p.z);
+                                QVector3D p_base = camToBaseTransform * p_cam;
+                                if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) continue;
+                                if (part == "body") singleCupBodyPoints3D.append(p_base);
+                                else if (part == "handle") singleCupHandlePoints3D.append(p_base);
                             }
                         }
-                    next_mask_pixel:;
-                    }}}
+                    }
+                }
+            }
         }
 
         if(singleCupBodyPoints3D.isEmpty()) continue;
@@ -453,7 +457,7 @@ void RealSenseWidget::onShowXYPlot()
                     circleCenter.y() + circle.radius * perpDir.y(),
                     grasp_z
                     );
-                m_graspingTargets.append({graspPoint1, perpDir});
+                m_graspingTargets.append({graspPoint1, perpDir, circleCenter, handleCentroid});
                 graspingPointsForViz.append(graspPoint1);
 
                 QVector3D graspPoint2(
@@ -461,7 +465,7 @@ void RealSenseWidget::onShowXYPlot()
                     circleCenter.y() - circle.radius * perpDir.y(),
                     grasp_z
                     );
-                m_graspingTargets.append({graspPoint2, -perpDir});
+                m_graspingTargets.append({graspPoint2, -perpDir, circleCenter, handleCentroid});
                 graspingPointsForViz.append(graspPoint2);
             }
         }
@@ -476,6 +480,8 @@ void RealSenseWidget::onShowXYPlot()
     }
 
     m_pointCloudWidget->updateGraspingPoints(graspingPointsForViz);
+    qDebug() << "[INFO] Grasping point calculation finished in" << timer.elapsed() << "ms.";
+
 
     if (m_showPlotWindow && !detectedBodyPoints.isEmpty()) {
         for (int i = detectedBodyPoints.size(); i < m_plotWidgets.size(); ++i) m_plotWidgets[i]->hide();
@@ -657,6 +663,17 @@ void RealSenseWidget::updateFrame()
 
         m_pointcloud.map_to(color);
         rs2::points points = m_pointcloud.calculate(depth);
+
+        // ✨ [개선] 2D 픽셀 좌표와 3D 포인트 인덱스를 매핑하는 조회 테이블 생성
+        const rs2::texture_coordinate* tex_coords = points.get_texture_coordinates();
+        m_uv_to_point_idx.assign(IMAGE_WIDTH * IMAGE_HEIGHT, -1);
+        for (size_t i = 0; i < points.size(); ++i) {
+            int u = static_cast<int>(tex_coords[i].u * IMAGE_WIDTH + 0.5f);
+            int v = static_cast<int>(tex_coords[i].v * IMAGE_HEIGHT + 0.5f);
+            if (u >= 0 && u < IMAGE_WIDTH && v >= 0 && v < IMAGE_HEIGHT) {
+                m_uv_to_point_idx[v * IMAGE_WIDTH + u] = i;
+            }
+        }
 
         m_pointCloudWidget->setTransforms(m_baseToTcpTransform, m_tcpToCameraTransform);
 

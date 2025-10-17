@@ -159,6 +159,9 @@ private:
     rs2::points m_capturedPoints;
     QMatrix4x4 m_capturedBaseToTcpTransform;
 
+    // ✨ [추가] 2D 픽셀 좌표를 3D 포인트 인덱스로 매핑하는 조회 테이블
+    std::vector<int> m_uv_to_point_idx;
+
     int fd_image, fd_result, fd_control;
     void *data_image, *data_result, *data_control;
     sem_t *sem_image, *sem_result, *sem_control;
