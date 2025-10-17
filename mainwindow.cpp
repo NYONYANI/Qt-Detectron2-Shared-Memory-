@@ -125,6 +125,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->GripperOpenButton, &QPushButton::clicked, this, &MainWindow::on_GripperOpenButton_clicked);
     connect(ui->GripperCloseButton, &QPushButton::clicked, this, &MainWindow::on_GripperCloseButton_clicked);
 
+    // ✨ [추가] MoveButton 연결
+    connect(ui->MoveButton, &QPushButton::clicked, this, &MainWindow::on_MoveButton_clicked);
+
+
     m_monitorThread = new QThread(this);
     m_robotMonitor = new RobotMonitor();
     m_robotMonitor->moveToThread(m_monitorThread);
@@ -325,6 +329,33 @@ void MainWindow::onRobotPickAndReturn(const QVector3D& target_pos_mm, const QVec
         qWarning() << "[PICK] ERROR: Move down to target failed.";
     }
     m_isWaitingForMoveCompletion = false;
+}
+
+// ✨ [추가] MoveButton 클릭 시 호출될 슬롯 구현
+void MainWindow::on_MoveButton_clicked()
+{
+    if (!g_bHasControlAuthority) {
+        qWarning() << "[ROBOT] Cannot move: No control authority.";
+        return;
+    }
+
+    if (GlobalDrfl.GetRobotState() != STATE_STANDBY) {
+        qWarning() << "[ROBOT] Cannot move: Robot is not in STANDBY state.";
+        return;
+    }
+
+    qInfo() << "[ROBOT] Moving to Drop-off Position.";
+
+    // 요청받은 좌표: [401, 0, 415, 139, -109, -165]
+    float target_posx[6] = {401.0f, 0.0f, 415.0f, 139.0f, -109.0f, -165.0f};
+    float velx[2] = {150.0f, 90.0f};
+    float accx[2] = {300.0f, 180.0f};
+
+    qDebug() << "[ROBOT] Moving to Pos(mm):" << target_posx[0] << target_posx[1] << target_posx[2]
+             << "Rot(deg):" << target_posx[3] << target_posx[4] << target_posx[5];
+
+    m_isWaitingForMoveCompletion = true;
+    GlobalDrfl.movel(target_posx, velx, accx);
 }
 
 

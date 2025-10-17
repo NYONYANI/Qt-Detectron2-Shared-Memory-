@@ -28,8 +28,9 @@ private slots:
     void on_ResetPosButton_clicked();
     void on_GripperOpenButton_clicked();
     void on_GripperCloseButton_clicked();
-    void onGripperAction(int action); // ✨ [추가] 그리퍼 제어 통합 슬롯 (0: Open, 1: Close)
-    void onRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg); // ✨ [추가] D 키 시퀀스 슬롯
+    void onGripperAction(int action);
+    void onRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg);
+    void on_MoveButton_clicked(); // ✨ [추가] MoveButton 슬롯
 
 public:
     MainWindow(QWidget *parent = nullptr);
@@ -37,7 +38,7 @@ public:
 
     static QLabel* s_robotStateLabel;
     static MainWindow* s_instance;
-    bool m_isGripperOpenPending; // 외부 콜백에서 접근을 위해 public으로 유지
+    bool m_isGripperOpenPending;
 
 private:
     Ui::MainWindow *ui;
