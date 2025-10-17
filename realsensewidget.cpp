@@ -242,6 +242,7 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event) {
     else if (event->key() == Qt::Key_4) emit showXYPlotRequested();
     else if (event->key() == Qt::Key_5) emit calculateTargetPoseRequested();
     else if (event->key() == Qt::Key_M) emit moveRobotToPreGraspPoseRequested();
+    else if (event->key() == Qt::Key_D) emit pickAndReturnRequested(); // ✨ [추가] 'D' 키 시그널 발생
     else QOpenGLWidget::keyPressEvent(event);
 }
 
@@ -327,6 +328,7 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     connect(m_pointCloudWidget, &PointCloudWidget::showXYPlotRequested, this, &RealSenseWidget::onShowXYPlot);
     connect(m_pointCloudWidget, &PointCloudWidget::calculateTargetPoseRequested, this, &RealSenseWidget::onCalculateTargetPose);
     connect(m_pointCloudWidget, &PointCloudWidget::moveRobotToPreGraspPoseRequested, this, &RealSenseWidget::onMoveRobotToPreGraspPose);
+    connect(m_pointCloudWidget, &PointCloudWidget::pickAndReturnRequested, this, &RealSenseWidget::onPickAndReturnRequested); // ✨ [추가] D 키 연결
     m_layout->addWidget(m_colorLabel, 1); m_layout->addWidget(m_pointCloudWidget, 1); setLayout(m_layout);
 
     m_baseToTcpTransform.setToIdentity();
@@ -586,24 +588,56 @@ void RealSenseWidget::onCalculateTargetPose()
 
     m_pointCloudWidget->updateTargetPose(m_calculatedTargetPose, !m_pointCloudWidget->m_showTargetPose);
 }
+
+// RealSenseWidget::onMoveRobotToPreGraspPose (M 키 슬롯)
 void RealSenseWidget::onMoveRobotToPreGraspPose()
 {
-    qDebug() << "[INFO] Key 'M' pressed. Requesting robot move...";
+    qDebug() << "[INFO] Key 'M' pressed. Requesting robot move to pre-grasp and gripper open...";
     if (m_calculatedTargetPos_m.isNull() || m_calculatedTargetOri_deg.isNull()) {
-        qDebug() << "[WARN] No target pose has been calculated. Press '5' first.";
+        qWarning() << "[WARN] No target pose has been calculated. Press '5' first.";
         return;
     }
 
-    // Pre-grasp 위치는 목표 위치(베이스 좌표계 기준)에서 Z축으로 15cm 위입니다.
-    QVector3D preGraspPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, 0.15);
+    // Pre-grasp 위치 계산 (Z축으로 15cm 위)
+    QVector3D preGraspPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, APPROACH_HEIGHT_M); // 0.15m 위
 
-    // 로봇에게 전달하기 위해 미터 단위를 밀리미터 단위로 변환합니다.
     QVector3D preGraspPos_mm = preGraspPos_m * 1000.0f;
+    QVector3D preGraspOri_deg = m_calculatedTargetOri_deg;
 
-    qDebug() << "Requesting move to Pre-Grasp Pose: Pos(mm):" << preGraspPos_mm << "Ori(deg):" << m_calculatedTargetOri_deg;
+    qDebug() << "Requesting move to Pre-Grasp Pose: Pos(mm):" << preGraspPos_mm << "Ori(deg):" << preGraspOri_deg;
 
-    // 계산된 위치(mm)와 각도(deg)를 직접 시그널로 전달합니다.
-    emit requestRobotMove(preGraspPos_mm, m_calculatedTargetOri_deg);
+    // ✨ [수정] 그리퍼 열기 시퀀스 요청 (이동 전에 수행)
+    emit requestGripperAction(0); // 0: Open
+
+    // 계산된 위치(mm)와 각도(deg)를 로봇 이동 시그널로 전달
+    emit requestRobotMove(preGraspPos_mm, preGraspOri_deg);
+}
+
+
+// ✨ [추가] RealSenseWidget::onPickAndReturnRequested (D 키 슬롯)
+void RealSenseWidget::onPickAndReturnRequested()
+{
+    qDebug() << "[INFO] Key 'D' pressed. Requesting pick and return sequence...";
+
+    if (m_calculatedTargetPos_m.isNull() || m_calculatedTargetOri_deg.isNull()) {
+        qWarning() << "[WARN] Target pose not ready. Press '5' first.";
+        return;
+    }
+
+    // 1. 최종 파지 자세 (mm)
+    QVector3D finalTargetPos_m = m_calculatedTargetPos_m;
+    QVector3D finalTargetPos_mm = finalTargetPos_m * 1000.0f;
+    QVector3D finalTargetOri_deg = m_calculatedTargetOri_deg;
+
+    // 2. 복귀/접근 자세 (mm) (M 키로 이동했던 위치)
+    QVector3D approachPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, APPROACH_HEIGHT_M);
+    QVector3D approachPos_mm = approachPos_m * 1000.0f;
+    QVector3D approachOri_deg = m_calculatedTargetOri_deg;
+
+    qDebug() << "Requesting Pick Sequence: Final Pos(mm):" << finalTargetPos_mm << "Approach Pos(mm):" << approachPos_mm;
+
+    // 3. 메인 윈도우에 시퀀스 실행 요청
+    emit requestRobotPickAndReturn(finalTargetPos_mm, finalTargetOri_deg, approachPos_mm, approachOri_deg);
 }
 
 

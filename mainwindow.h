@@ -20,24 +20,29 @@ class MainWindow : public QMainWindow
 {
     Q_OBJECT
 
-public:
-    MainWindow(QWidget *parent = nullptr);
-    ~MainWindow();
-
 private slots:
     void on_RobotInit_clicked();
     void updateRobotStateLabel(int state);
     void updateRobotPoseLabel(const float* pose);
     void onMoveRobot(const QVector3D& position_mm, const QVector3D& orientation_deg);
-    void on_ResetPosButton_clicked(); // ✨ [추가] 리셋 버튼 슬롯
+    void on_ResetPosButton_clicked();
+    void on_GripperOpenButton_clicked();
+    void on_GripperCloseButton_clicked();
+    void onGripperAction(int action); // ✨ [추가] 그리퍼 제어 통합 슬롯 (0: Open, 1: Close)
+    void onRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg); // ✨ [추가] D 키 시퀀스 슬롯
 
 public:
+    MainWindow(QWidget *parent = nullptr);
+    ~MainWindow();
+
     static QLabel* s_robotStateLabel;
+    static MainWindow* s_instance;
+    bool m_isGripperOpenPending; // 외부 콜백에서 접근을 위해 public으로 유지
 
 private:
     Ui::MainWindow *ui;
     QThread *m_monitorThread;
     RobotMonitor *m_robotMonitor;
-    bool m_isWaitingForMoveCompletion; // ✨ [추가] 이동 완료 후 상태 출력을 위한 플래그
+    bool m_isWaitingForMoveCompletion;
 };
 #endif // MAINWINDOW_H

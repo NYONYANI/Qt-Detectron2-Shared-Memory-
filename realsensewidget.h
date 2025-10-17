@@ -54,8 +54,9 @@ signals:
     void denoisingToggled();
     void zFilterToggled();
     void showXYPlotRequested();
-    void calculateTargetPoseRequested(); // 5번 키를 위한 시그널
-    void moveRobotToPreGraspPoseRequested(); // 'm' 키를 위한 시그널
+    void calculateTargetPoseRequested(); // 5번 키
+    void moveRobotToPreGraspPoseRequested(); // M 키
+    void pickAndReturnRequested();           // ✨ [추가] D 키를 위한 시그널
 
 protected:
     void initializeGL() override;
@@ -114,13 +115,16 @@ public slots:
 signals:
     // ✨ [수정] 4x4 행렬 대신 위치(mm)와 오일러 각도(deg)를 직접 전달하도록 시그널 변경
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
+    void requestGripperAction(int action); // ✨ [추가] 그리퍼 제어를 위한 시그널 (0: Open, 1: Close)
+    void requestRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg); // ✨ [추가] D 키 시퀀스 시그널
 
 private slots:
     void onDenoisingToggled();
     void onZFilterToggled();
     void onShowXYPlot();
     void onCalculateTargetPose();
-    void onMoveRobotToPreGraspPose(); // 'm' 키를 위한 슬롯
+    void onMoveRobotToPreGraspPose(); // M 키 슬롯
+    void onPickAndReturnRequested(); // ✨ [추가] D 키 슬롯
     void updateFrame();
     void checkProcessingResult();
 
@@ -169,6 +173,8 @@ private:
     QVector3D m_calculatedTargetPos_m;      // 로봇 전달용 (미터 단위)
     QVector3D m_calculatedTargetOri_deg;    // 로봇 전달용 (도 단위)
     std::vector<int> m_clusterIds;
+
+    const float APPROACH_HEIGHT_M = 0.15f; // 접근 높이 상수 정의 (150mm)
 
     const int IMAGE_WIDTH = 640;
     const int IMAGE_HEIGHT = 480;

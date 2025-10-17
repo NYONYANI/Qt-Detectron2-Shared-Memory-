@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>1315</width>
-    <height>686</height>
+    <height>757</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -79,14 +79,53 @@
    <widget class="QPushButton" name="ResetPosButton">
     <property name="geometry">
      <rect>
-      <x>410</x>
-      <y>570</y>
-      <width>231</width>
+      <x>10</x>
+      <y>640</y>
+      <width>391</width>
       <height>61</height>
      </rect>
     </property>
     <property name="text">
      <string>Reset pos</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="GripperOpenButton">
+    <property name="geometry">
+     <rect>
+      <x>660</x>
+      <y>570</y>
+      <width>111</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Gripper open</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="GripperCloseButton">
+    <property name="geometry">
+     <rect>
+      <x>780</x>
+      <y>570</y>
+      <width>111</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Gripper close</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="MoveButton">
+    <property name="geometry">
+     <rect>
+      <x>410</x>
+      <y>570</y>
+      <width>241</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Move</string>
     </property>
    </widget>
   </widget>
