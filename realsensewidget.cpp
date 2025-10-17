@@ -15,10 +15,10 @@
 #include <GL/glu.h>
 #include <map>
 #include <limits>
-#include <QElapsedTimer> // ✨ [추가] 성능 측정을 위해 추가
+#include <QElapsedTimer>
 
-// PointCloudWidget 구현 (변경 없음, 이전과 동일)
-// ===================================================================
+// PointCloudWidget 구현 (변경 없음)
+// ... (이전과 동일한 코드) ...
 PointCloudWidget::PointCloudWidget(QWidget *parent)
     : QOpenGLWidget(parent), m_colorFrame(nullptr)
 {
@@ -91,6 +91,7 @@ void PointCloudWidget::paintGL()
     drawAxes(0.2f);
     drawGraspingSpheres();
     drawTargetPose();
+    drawTargetPose_Y_Aligned();
 
     glPushMatrix();
     glMultMatrixf(m_baseToTcpTransform.constData());
@@ -243,7 +244,7 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event) {
     else if (event->key() == Qt::Key_4) emit showXYPlotRequested();
     else if (event->key() == Qt::Key_5) emit calculateTargetPoseRequested();
     else if (event->key() == Qt::Key_M) emit moveRobotToPreGraspPoseRequested();
-    else if (event->key() == Qt::Key_D) emit pickAndReturnRequested(); // ✨ [추가] 'D' 키 시그널 발생
+    else if (event->key() == Qt::Key_D) emit pickAndReturnRequested();
     else QOpenGLWidget::keyPressEvent(event);
 }
 
@@ -287,18 +288,33 @@ void PointCloudWidget::drawTargetPose()
     glPushMatrix();
     glMultMatrixf(m_targetTcpTransform.constData());
     glPushAttrib(GL_CURRENT_BIT);
-    glColor3f(0.5f, 0.0f, 0.8f);
+    glColor3f(0.5f, 0.0f, 0.8f); // 보라색
     drawAxes(0.1f, 4.0f);
     glPopAttrib();
     glPopMatrix();
 }
 
-void PointCloudWidget::updateTargetPose(const QMatrix4x4 &pose, bool show)
+void PointCloudWidget::drawTargetPose_Y_Aligned()
+{
+    if (!m_showTargetPose_Y_Aligned) return;
+    glPushMatrix();
+    glMultMatrixf(m_targetTcpTransform_Y_Aligned.constData());
+    glPushAttrib(GL_CURRENT_BIT);
+    glColor3f(0.0f, 1.0f, 1.0f); // 청록색 (Cyan)
+    drawAxes(0.1f, 4.0f);
+    glPopAttrib();
+    glPopMatrix();
+}
+
+void PointCloudWidget::updateTargetPoses(const QMatrix4x4 &pose, bool show, const QMatrix4x4 &pose_y_aligned, bool show_y_aligned)
 {
     m_targetTcpTransform = pose;
     m_showTargetPose = show;
+    m_targetTcpTransform_Y_Aligned = pose_y_aligned;
+    m_showTargetPose_Y_Aligned = show_y_aligned;
     update();
 }
+
 
 // ===================================================================
 // RealSenseWidget 구현
@@ -329,7 +345,7 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     connect(m_pointCloudWidget, &PointCloudWidget::showXYPlotRequested, this, &RealSenseWidget::onShowXYPlot);
     connect(m_pointCloudWidget, &PointCloudWidget::calculateTargetPoseRequested, this, &RealSenseWidget::onCalculateTargetPose);
     connect(m_pointCloudWidget, &PointCloudWidget::moveRobotToPreGraspPoseRequested, this, &RealSenseWidget::onMoveRobotToPreGraspPose);
-    connect(m_pointCloudWidget, &PointCloudWidget::pickAndReturnRequested, this, &RealSenseWidget::onPickAndReturnRequested); // ✨ [추가] D 키 연결
+    connect(m_pointCloudWidget, &PointCloudWidget::pickAndReturnRequested, this, &RealSenseWidget::onPickAndReturnRequested);
     m_layout->addWidget(m_colorLabel, 1); m_layout->addWidget(m_pointCloudWidget, 1); setLayout(m_layout);
 
     m_baseToTcpTransform.setToIdentity();
@@ -340,7 +356,6 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     m_tcpToCameraTransform = translationMatrix * rotationMatrix;
 
     m_pointCloudWidget->setFocus();
-    QTimer::singleShot(500, this, &RealSenseWidget::startCameraStream);
 }
 
 RealSenseWidget::~RealSenseWidget()
@@ -352,15 +367,8 @@ RealSenseWidget::~RealSenseWidget()
     try { m_pipeline.stop(); } catch (...) {}
 }
 
-void RealSenseWidget::setShowPlot(bool show)
-{
-    m_showPlotWindow = show;
-}
-
-void RealSenseWidget::onRobotTransformUpdated(const QMatrix4x4 &transform)
-{
-    m_baseToTcpTransform = transform;
-}
+void RealSenseWidget::setShowPlot(bool show) { m_showPlotWindow = show; }
+void RealSenseWidget::onRobotTransformUpdated(const QMatrix4x4 &transform) { m_baseToTcpTransform = transform; }
 
 void RealSenseWidget::onShowXYPlot()
 {
@@ -410,8 +418,6 @@ void RealSenseWidget::onShowXYPlot()
                         int u_mask = ox + x;
                         int v_mask = oy + y;
                         if (u_mask < 0 || u_mask >= width || v_mask < 0 || v_mask >= height) continue;
-
-                        // ✨ [개선] 조회 테이블을 사용한 빠른 3D 포인트 검색
                         int point_idx = m_uv_to_point_idx[v_mask * width + u_mask];
                         if (point_idx != -1) {
                             const rs2::vertex& p = vertices[point_idx];
@@ -502,11 +508,10 @@ void RealSenseWidget::onCalculateTargetPose()
     qDebug() << "[INFO] Key '5' pressed. Calculating target pose...";
     if (m_graspingTargets.isEmpty()) {
         qDebug() << "[WARN] No grasping points calculated yet. Press '4' first.";
-        m_pointCloudWidget->updateTargetPose(QMatrix4x4(), false);
+        m_pointCloudWidget->updateTargetPoses(QMatrix4x4(), false, QMatrix4x4(), false);
         return;
     }
 
-    // 가장 가까운 파지점을 선택
     QVector3D currentTcpPos = m_baseToTcpTransform.column(3).toVector3D();
     float minDistance = std::numeric_limits<float>::max();
     GraspingTarget bestTarget;
@@ -519,83 +524,64 @@ void RealSenseWidget::onCalculateTargetPose()
         }
     }
 
-    // bestTarget.direction은 원 중심을 향하는 법선
-    // 손잡이는 법선 반대 방향에 있음
-    QVector3D toHandle = -bestTarget.direction; // 원 중심에서 손잡이로 향하는 방향
-
-    // 1. 목표 위치(미터 단위)를 계산합니다.
+    // --- 1. 기본 파지 자세 계산 (최적 경로) ---
     const float gripper_z_offset = 0.146f;
     m_calculatedTargetPos_m = bestTarget.point + QVector3D(0, 0, gripper_z_offset);
+    const QVector3D& N = bestTarget.direction;
+    QVector3D toHandle = -bestTarget.direction;
 
-    // 2. 파지 방향(손잡이 방향)으로부터 Rz(Yaw) 각도를 계산합니다.
-    const QVector3D& N = bestTarget.direction; // 원 중심을 향하는 법선 벡터
-
-    // ✨ [수정] Y축 방향 결정: +Y 또는 -Y 중 -X축이 손잡이 방향을 더 잘 보도록
-
-    // Case 1: -Y축이 원의 중심을 향하는 경우 (Rz1)
     float rz1 = atan2(N.x(), N.y());
-
-    // Case 2: +Y축이 원의 중심을 향하는 경우 (Rz2 = Rz1 + 180도)
     float rz2 = rz1 + M_PI;
-
-    // 각 경우의 X축 방향을 계산
-    // Rz 회전 후 X축 방향은: X_rotated = [cos(Rz), -sin(Rz), 0]
     QVector3D xAxis1(cos(rz1), -sin(rz1), 0);
     QVector3D xAxis2(cos(rz2), -sin(rz2), 0);
-
-    // 손잡이 방향과의 내적을 계산하여 더 잘 정렬된 것을 선택
-    // (내적이 음수이고 작을수록 -X축이 손잡이를 향함)
     float dot1 = QVector3D::dotProduct(xAxis1, toHandle);
     float dot2 = QVector3D::dotProduct(xAxis2, toHandle);
-
-    float target_rz_rad;
-    if (dot1 < dot2) {
-        // Case 1이 -X축이 손잡이에 더 가까움
-        target_rz_rad = rz1;
-        qDebug() << "[INFO] Selected -Y towards center (Case 1), -X-axis towards handle (dot=" << dot1 << ")";
-    } else {
-        // Case 2가 -X축이 손잡이에 더 가까움
-        target_rz_rad = rz2;
-        qDebug() << "[INFO] Selected +Y towards center (Case 2), -X-axis towards handle (dot=" << dot2 << ")";
-    }
-
-    // 각도를 -π ~ π 범위로 정규화
+    float target_rz_rad = (dot1 < dot2) ? rz1 : rz2;
     while (target_rz_rad > M_PI) target_rz_rad -= 2 * M_PI;
     while (target_rz_rad < -M_PI) target_rz_rad += 2 * M_PI;
+    m_calculatedTargetOri_deg = QVector3D(0.0f, 179.9f, qRadiansToDegrees(target_rz_rad));
 
-    // 3. 사용자가 요청한 고정 각도를 설정합니다. (Rx=0, Ry=180)
-    float target_rx = 0.0f;
-    float target_ry = 179.9f; // 특이점을 피하기 위해 180 대신 179.9 사용
-
-    // 4. 계산된 오일러 각도를 멤버 변수에 저장합니다.
-    m_calculatedTargetOri_deg = QVector3D(
-        target_rx,
-        target_ry,
-        qRadiansToDegrees(target_rz_rad)
-        );
-
-    // 5. 시각화를 위해 오일러 각도로부터 4x4 행렬을 생성합니다.
     QMatrix4x4 vizMatrix;
     vizMatrix.setToIdentity();
     vizMatrix.translate(m_calculatedTargetPos_m);
-
-    vizMatrix.rotate(m_calculatedTargetOri_deg.x(), 1, 0, 0); // Roll (Rx)
-    vizMatrix.rotate(m_calculatedTargetOri_deg.y(), 0, 1, 0); // Pitch (Ry)
-    vizMatrix.rotate(m_calculatedTargetOri_deg.z(), 0, 0, 1); // Yaw (Rz)
-
+    vizMatrix.rotate(m_calculatedTargetOri_deg.x(), 1, 0, 0);
+    vizMatrix.rotate(m_calculatedTargetOri_deg.y(), 0, 1, 0);
+    vizMatrix.rotate(m_calculatedTargetOri_deg.z(), 0, 0, 1);
     m_calculatedTargetPose = vizMatrix;
+    qDebug() << "[TARGET POSE 1] Original Pose | Pos(m):" << m_calculatedTargetPos_m << "Ori(deg):" << m_calculatedTargetOri_deg;
 
-    qDebug() << "[TARGET POSE] Calculated Target Orientation (Rx, Ry, Rz deg):"
-             << m_calculatedTargetOri_deg.x()
-             << m_calculatedTargetOri_deg.y()
-             << m_calculatedTargetOri_deg.z();
+    // --- 2. ✨ [수정] Y축 정렬 자세 계산 로직 수정 ---
+    // 목표: 손잡이-컵중심 벡터가 베이스의 +Y축을 향하도록 로봇의 Z축 회전(yaw) 계산
+    QPointF handleVec = bestTarget.handleCentroid - bestTarget.circleCenter;
+    float handleAngle_rad = atan2(handleVec.y(), handleVec.x()); // 현재 손잡이 벡터의 각도 (X축 기준)
 
-    qDebug() << "Target Pose Calculated: Pos(m):" << m_calculatedTargetPos_m << "Ori(deg):" << m_calculatedTargetOri_deg;
+    // 로봇 TCP의 -Y축이 손잡이 방향(handleVec)과 평행하게 정렬되어야 함.
+    // 즉, TCP의 -Y축 방향 = handleVec의 방향.
+    // TCP의 Z축 회전각(Yaw)은 이 방향에서 90도를 뺀 값.
+    float y_aligned_rz_rad = handleAngle_rad - (M_PI / 2.0f);
 
-    m_pointCloudWidget->updateTargetPose(m_calculatedTargetPose, !m_pointCloudWidget->m_showTargetPose);
+    // 각도를 -180 ~ 180 범위로 정규화
+    while (y_aligned_rz_rad > M_PI) y_aligned_rz_rad -= 2 * M_PI;
+    while (y_aligned_rz_rad < -M_PI) y_aligned_rz_rad += 2 * M_PI;
+
+    m_calculatedTargetOri_deg_Y_Aligned = QVector3D(m_calculatedTargetOri_deg.x(), m_calculatedTargetOri_deg.y(), qRadiansToDegrees(y_aligned_rz_rad));
+
+    QMatrix4x4 vizMatrix_Y_Aligned;
+    vizMatrix_Y_Aligned.setToIdentity();
+    vizMatrix_Y_Aligned.translate(m_calculatedTargetPos_m);
+    vizMatrix_Y_Aligned.rotate(m_calculatedTargetOri_deg_Y_Aligned.x(), 1, 0, 0);
+    vizMatrix_Y_Aligned.rotate(m_calculatedTargetOri_deg_Y_Aligned.y(), 0, 1, 0);
+    vizMatrix_Y_Aligned.rotate(m_calculatedTargetOri_deg_Y_Aligned.z(), 0, 0, 1);
+    m_calculatedTargetPose_Y_Aligned = vizMatrix_Y_Aligned;
+    qDebug() << "[TARGET POSE 2] Y-Aligned Pose | Pos(m):" << m_calculatedTargetPos_m << "Ori(deg):" << m_calculatedTargetOri_deg_Y_Aligned;
+
+
+    // --- 3. 두 자세를 모두 위젯에 전달하여 토글 ---
+    bool show = !m_pointCloudWidget->m_showTargetPose;
+    m_pointCloudWidget->updateTargetPoses(m_calculatedTargetPose, show, m_calculatedTargetPose_Y_Aligned, show);
 }
 
-// RealSenseWidget::onMoveRobotToPreGraspPose (M 키 슬롯)
+
 void RealSenseWidget::onMoveRobotToPreGraspPose()
 {
     qDebug() << "[INFO] Key 'M' pressed. Requesting robot move to pre-grasp and gripper open...";
@@ -603,47 +589,44 @@ void RealSenseWidget::onMoveRobotToPreGraspPose()
         qWarning() << "[WARN] No target pose has been calculated. Press '5' first.";
         return;
     }
-
-    // Pre-grasp 위치 계산 (Z축으로 15cm 위)
-    QVector3D preGraspPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, APPROACH_HEIGHT_M); // 0.15m 위
-
+    QVector3D preGraspPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, APPROACH_HEIGHT_M);
     QVector3D preGraspPos_mm = preGraspPos_m * 1000.0f;
     QVector3D preGraspOri_deg = m_calculatedTargetOri_deg;
-
     qDebug() << "Requesting move to Pre-Grasp Pose: Pos(mm):" << preGraspPos_mm << "Ori(deg):" << preGraspOri_deg;
-
-    // ✨ [수정] 그리퍼 열기 시퀀스 요청 (이동 전에 수행)
-    emit requestGripperAction(0); // 0: Open
-
-    // 계산된 위치(mm)와 각도(deg)를 로봇 이동 시그널로 전달
+    emit requestGripperAction(0);
     emit requestRobotMove(preGraspPos_mm, preGraspOri_deg);
 }
 
-
-// ✨ [추가] RealSenseWidget::onPickAndReturnRequested (D 키 슬롯)
 void RealSenseWidget::onPickAndReturnRequested()
 {
     qDebug() << "[INFO] Key 'D' pressed. Requesting pick and return sequence...";
-
     if (m_calculatedTargetPos_m.isNull() || m_calculatedTargetOri_deg.isNull()) {
         qWarning() << "[WARN] Target pose not ready. Press '5' first.";
         return;
     }
-
-    // 1. 최종 파지 자세 (mm)
     QVector3D finalTargetPos_m = m_calculatedTargetPos_m;
     QVector3D finalTargetPos_mm = finalTargetPos_m * 1000.0f;
     QVector3D finalTargetOri_deg = m_calculatedTargetOri_deg;
-
-    // 2. 복귀/접근 자세 (mm) (M 키로 이동했던 위치)
     QVector3D approachPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, APPROACH_HEIGHT_M);
     QVector3D approachPos_mm = approachPos_m * 1000.0f;
     QVector3D approachOri_deg = m_calculatedTargetOri_deg;
-
     qDebug() << "Requesting Pick Sequence: Final Pos(mm):" << finalTargetPos_mm << "Approach Pos(mm):" << approachPos_mm;
-
-    // 3. 메인 윈도우에 시퀀스 실행 요청
     emit requestRobotPickAndReturn(finalTargetPos_mm, finalTargetOri_deg, approachPos_mm, approachOri_deg);
+}
+
+void RealSenseWidget::onMoveToYAlignedPoseRequested()
+{
+    qDebug() << "[INFO] 'MoveButton' pressed. Requesting rotation to Y-aligned pose...";
+    if (m_calculatedTargetPos_m.isNull() || m_calculatedTargetOri_deg_Y_Aligned.isNull()) {
+        qWarning() << "[WARN] No Y-aligned target pose has been calculated. Press '5' first.";
+        return;
+    }
+    QVector3D approachPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, APPROACH_HEIGHT_M);
+    QVector3D approachPos_mm = approachPos_m * 1000.0f;
+    QVector3D yAlignedOri_deg = m_calculatedTargetOri_deg_Y_Aligned;
+
+    qDebug() << "Requesting rotation at current height. Target Pose: Pos(mm):" << approachPos_mm << "Ori(deg):" << yAlignedOri_deg;
+    emit requestRobotMove(approachPos_mm, yAlignedOri_deg);
 }
 
 
@@ -663,8 +646,6 @@ void RealSenseWidget::updateFrame()
 
         m_pointcloud.map_to(color);
         rs2::points points = m_pointcloud.calculate(depth);
-
-        // ✨ [개선] 2D 픽셀 좌표와 3D 포인트 인덱스를 매핑하는 조회 테이블 생성
         const rs2::texture_coordinate* tex_coords = points.get_texture_coordinates();
         m_uv_to_point_idx.assign(IMAGE_WIDTH * IMAGE_HEIGHT, -1);
         for (size_t i = 0; i < points.size(); ++i) {
@@ -676,7 +657,6 @@ void RealSenseWidget::updateFrame()
         }
 
         m_pointCloudWidget->setTransforms(m_baseToTcpTransform, m_tcpToCameraTransform);
-
         QImage maskOverlayImage(color.get_width(), color.get_height(), QImage::Format_ARGB32_Premultiplied);
         maskOverlayImage.fill(Qt::transparent);
         if (!m_detectionResults.isEmpty()) {
@@ -696,7 +676,6 @@ void RealSenseWidget::updateFrame()
             painter.drawText(20, 30, "Processing...");
         }
         m_colorLabel->setPixmap(QPixmap::fromImage(m_currentImage).scaled(m_colorLabel->size(), Qt::KeepAspectRatio));
-
         m_pointCloudWidget->update();
 
     } catch (const rs2::error& e) {
@@ -716,7 +695,6 @@ void RealSenseWidget::captureAndProcess()
         return;
     }
     qDebug() << "[INFO] Capture button pressed. Sending frame to Python.";
-
     sendImageToPython(m_latestFrame);
     m_isProcessing = true;
     m_resultTimer->start(100);
@@ -725,7 +703,6 @@ void RealSenseWidget::captureAndProcess()
 void RealSenseWidget::checkProcessingResult()
 {
     if (!m_isProcessing) { m_resultTimer->stop(); return; }
-
     QJsonArray results = receiveResultsFromPython();
     if (!results.isEmpty()) {
         qDebug() << "[INFO] Received" << results.size() << "detection results from Python.";
@@ -734,7 +711,6 @@ void RealSenseWidget::checkProcessingResult()
         m_resultTimer->stop();
     }
 }
-
 
 void RealSenseWidget::onDenoisingToggled() {
     m_isDenoisingOn = !m_isDenoisingOn;

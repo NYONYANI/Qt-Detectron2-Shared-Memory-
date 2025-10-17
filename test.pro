@@ -15,6 +15,7 @@ SOURCES += \
     main.cpp \
     mainwindow.cpp \
     realsensewidget.cpp \
+    robotcontroller.cpp \
     robotmonitor.cpp \
     xyplotwidget.cpp
 
@@ -22,6 +23,7 @@ HEADERS += \
     circlefitter.h \
     mainwindow.h \
     realsensewidget.h \
+    robotcontroller.h \
     robotmonitor.h \
     xyplotwidget.h
 

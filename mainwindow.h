@@ -7,10 +7,11 @@
 #include <QThread>
 #include <QMatrix4x4>
 #include <QVector3D>
+#include <QShowEvent>
 #include "DRFL.h"
 #include "DRFLEx.h"
-#include "robotmonitor.h"
 #include "realsensewidget.h"
+#include "robotcontroller.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -20,27 +21,14 @@ class MainWindow : public QMainWindow
 {
     Q_OBJECT
 
-    // ✨ [추가] 로봇 연결 상태를 관리하기 위한 열거형
 public:
     enum class RobotConnectionState {
         Disconnected,
+        Connecting,
         Connected,
         ServoOn
     };
 
-private slots:
-    void on_RobotInit_clicked();
-    void updateRobotStateLabel(int state);
-    void updateRobotPoseLabel(const float* pose);
-    void onMoveRobot(const QVector3D& position_mm, const QVector3D& orientation_deg);
-    void on_ResetPosButton_clicked();
-    void on_GripperOpenButton_clicked();
-    void on_GripperCloseButton_clicked();
-    void onGripperAction(int action);
-    void onRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg);
-    void on_MoveButton_clicked();
-
-public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
@@ -48,14 +36,35 @@ public:
     static MainWindow* s_instance;
     bool m_isGripperOpenPending;
 
-    void updateUiForState(RobotConnectionState state); // ✨ [수정] UI 업데이트 함수 이름 및 파라미터 변경
-    RobotConnectionState getConnectionState() const; // ✨ [추가] 현재 연결 상태를 반환하는 함수
+    void updateUiForState(RobotConnectionState state);
+    RobotConnectionState getConnectionState() const;
+
+signals:
+    void requestMoveRobot(const QVector3D& position_mm, const QVector3D& orientation_deg);
+    void requestPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg);
+    void requestResetPosition();
+    void requestGripperAction(int action);
+    void startRobotMonitoring(); // ✨ [추가]
+
+protected:
+    void showEvent(QShowEvent *event) override;
+
+private slots:
+    void on_RobotInit_clicked();
+    void updateRobotStateLabel(int state);
+    void updateRobotPoseLabel(const float* pose);
+    void on_ResetPosButton_clicked();
+    void on_GripperOpenButton_clicked();
+    void on_GripperCloseButton_clicked();
+    void on_MoveButton_clicked();
 
 private:
     Ui::MainWindow *ui;
-    QThread *m_monitorThread;
-    RobotMonitor *m_robotMonitor;
-    bool m_isWaitingForMoveCompletion;
-    RobotConnectionState m_robotConnectionState; // ✨ [수정] bool 플래그를 상태 열거형으로 변경
+
+    // ✨ [수정] RobotMonitor 관련 코드 제거
+    QThread m_robotControllerThread;
+    RobotController* m_robotController;
+
+    RobotConnectionState m_robotConnectionState;
 };
 #endif // MAINWINDOW_H

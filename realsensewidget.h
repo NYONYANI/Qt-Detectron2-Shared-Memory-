@@ -28,13 +28,12 @@
 #include <GL/glu.h>
 #include "DBSCAN.h"
 
-// ✨ [수정] 파지 방향 계산을 위해 원 중심과 손잡이 중심 정보 추가
 struct GraspingTarget
 {
-    QVector3D point;      // 3D 파지 포인트 (빨간 구의 중심)
-    QVector3D direction;  // 파지 방향 (점선의 방향 벡터)
-    QPointF circleCenter; // 2D 원의 중심
-    QPointF handleCentroid; // 2D 손잡이의 중심
+    QVector3D point;
+    QVector3D direction;
+    QPointF circleCenter;
+    QPointF handleCentroid;
 };
 
 class PointCloudWidget : public QOpenGLWidget, protected QOpenGLFunctions
@@ -48,15 +47,15 @@ public:
     void updatePointCloud(const rs2::points& points, const rs2::video_frame& color, const QImage& maskOverlay);
     void setTransforms(const QMatrix4x4& baseToTcp, const QMatrix4x4& tcpToCam);
     void updateGraspingPoints(const QVector<QVector3D>& points);
-    void updateTargetPose(const QMatrix4x4& pose, bool show); // 목표 자세 업데이트 함수
+    void updateTargetPoses(const QMatrix4x4& pose, bool show, const QMatrix4x4& pose_y_aligned, bool show_y_aligned);
 
 signals:
     void denoisingToggled();
     void zFilterToggled();
     void showXYPlotRequested();
-    void calculateTargetPoseRequested(); // 5번 키
-    void moveRobotToPreGraspPoseRequested(); // M 키
-    void pickAndReturnRequested();           // ✨ [추가] D 키를 위한 시그널
+    void calculateTargetPoseRequested();
+    void moveRobotToPreGraspPoseRequested();
+    void pickAndReturnRequested();
 
 protected:
     void initializeGL() override;
@@ -73,7 +72,8 @@ private:
     void drawGrid(float size, int divisions);
     void drawGraspingSpheres();
     void drawGripper();
-    void drawTargetPose(); // 목표 자세 그리기 함수 선언
+    void drawTargetPose();
+    void drawTargetPose_Y_Aligned();
 
     std::vector<float> m_vertexData;
     rs2::points m_points;
@@ -85,8 +85,11 @@ private:
     std::vector<bool> m_floorPoints;
 
     QVector<QVector3D> m_graspingPoints;
-    QMatrix4x4 m_targetTcpTransform; // 목표 TCP 자세
-    bool m_showTargetPose = false;   // 목표 자세 표시 여부 플래그
+
+    QMatrix4x4 m_targetTcpTransform;
+    bool m_showTargetPose = false;
+    QMatrix4x4 m_targetTcpTransform_Y_Aligned;
+    bool m_showTargetPose_Y_Aligned = false;
 
     friend class RealSenseWidget;
 
@@ -108,23 +111,23 @@ public:
     void setShowPlot(bool show);
 
 public slots:
-    void startCameraStream();
+    void startCameraStream(); // ✨ [수정] public 슬롯으로 변경
     void captureAndProcess();
     void onRobotTransformUpdated(const QMatrix4x4 &transform);
+    void onMoveToYAlignedPoseRequested();
 
 signals:
-    // ✨ [수정] 4x4 행렬 대신 위치(mm)와 오일러 각도(deg)를 직접 전달하도록 시그널 변경
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
-    void requestGripperAction(int action); // ✨ [추가] 그리퍼 제어를 위한 시그널 (0: Open, 1: Close)
-    void requestRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg); // ✨ [추가] D 키 시퀀스 시그널
+    void requestGripperAction(int action);
+    void requestRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg);
 
 private slots:
     void onDenoisingToggled();
     void onZFilterToggled();
     void onShowXYPlot();
     void onCalculateTargetPose();
-    void onMoveRobotToPreGraspPose(); // M 키 슬롯
-    void onPickAndReturnRequested(); // ✨ [추가] D 키 슬롯
+    void onMoveRobotToPreGraspPose();
+    void onPickAndReturnRequested();
     void updateFrame();
     void checkProcessingResult();
 
@@ -158,8 +161,6 @@ private:
 
     rs2::points m_capturedPoints;
     QMatrix4x4 m_capturedBaseToTcpTransform;
-
-    // ✨ [추가] 2D 픽셀 좌표를 3D 포인트 인덱스로 매핑하는 조회 테이블
     std::vector<int> m_uv_to_point_idx;
 
     int fd_image, fd_result, fd_control;
@@ -171,14 +172,16 @@ private:
     bool m_showPlotWindow;
 
     QVector<GraspingTarget> m_graspingTargets;
-    // ✨ [추가] 계산된 목표 위치와 각도를 저장할 멤버 변수
-    QMatrix4x4 m_calculatedTargetPose; // 시각화용
-    QVector3D m_calculatedTargetPos_m;      // 로봇 전달용 (미터 단위)
-    QVector3D m_calculatedTargetOri_deg;    // 로봇 전달용 (도 단위)
+
+    QMatrix4x4 m_calculatedTargetPose;
+    QVector3D m_calculatedTargetPos_m;
+    QVector3D m_calculatedTargetOri_deg;
+
+    QMatrix4x4 m_calculatedTargetPose_Y_Aligned;
+    QVector3D m_calculatedTargetOri_deg_Y_Aligned;
+
     std::vector<int> m_clusterIds;
-
-    const float APPROACH_HEIGHT_M = 0.15f; // 접근 높이 상수 정의 (150mm)
-
+    const float APPROACH_HEIGHT_M = 0.15f;
     const int IMAGE_WIDTH = 640;
     const int IMAGE_HEIGHT = 480;
     const int IMAGE_CHANNELS = 3;
