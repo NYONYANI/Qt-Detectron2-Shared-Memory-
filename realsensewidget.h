@@ -27,6 +27,10 @@
 #include "xyplotwidget.h"
 #include <GL/glu.h>
 #include "DBSCAN.h"
+#include "handleplotwidget.h" // ✨ [추가]
+#include <Eigen/Dense>      // ✨ [추가]
+#include <Eigen/SVD>        // ✨ [추가]
+
 
 struct GraspingTarget
 {
@@ -124,6 +128,7 @@ public slots:
     void onMoveRobotToPreGraspPose();
     void onPickAndReturnRequested();
     void onToggleMaskedPoints();
+    void onShowHandlePlot(); // ✨ [추가]
 
     // (Move 버튼이 호출할 메인 함수)
     void runFullAutomatedSequence();
@@ -152,6 +157,8 @@ private slots:
 private:
     // (계산 로직을 담당하는 비공개 함수)
     bool calculateGraspingPoses(bool showPlot);
+    // ✨ [추가] PCA 계산 및 2D 포인트 반환
+    void calculatePCA(const QVector<QVector3D>& points, QVector<QPointF>& projectedPoints);
 
     void findFloorPlaneRANSAC();
     void runDbscanClustering();
@@ -160,6 +167,7 @@ private:
     QLabel *m_colorLabel;
     PointCloudWidget *m_pointCloudWidget;
     QList<XYPlotWidget*> m_plotWidgets;
+    HandlePlotWidget* m_handlePlotWidget; // ✨ [추가]
 
     QMatrix4x4 m_baseToTcpTransform;
     QMatrix4x4 m_tcpToCameraTransform;

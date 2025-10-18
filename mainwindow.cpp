@@ -126,7 +126,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->ResetPosButton, &QPushButton::clicked, this, &MainWindow::on_ResetPosButton_clicked);
     connect(ui->GripperOpenButton, &QPushButton::clicked, this, &MainWindow::on_GripperOpenButton_clicked);
     connect(ui->GripperCloseButton, &QPushButton::clicked, this, &MainWindow::on_GripperCloseButton_clicked);
-    // (MoveButton은 on_MoveButton_clicked() 슬롯으로 자동 연결됩니다)
+    // (MoveButton과 HandlePlotButton은 on_..._clicked() 슬롯으로 자동 연결됩니다)
 
     // RealSenseWidget -> MainWindow (수동 시그널 전달용)
     connect(ui->widget, &RealSenseWidget::requestRobotMove, this, &MainWindow::requestMoveRobot);
@@ -268,6 +268,14 @@ void MainWindow::on_MoveButton_clicked()
     // 1~5번(계산) + M, D, Move(로봇동작)을 모두 처리하는 함수 호출
     ui->widget->runFullAutomatedSequence();
 }
+
+// ✨ [추가] HandlePlotButton 클릭 시 RealSenseWidget의 새 함수를 호출
+void MainWindow::on_HandlePlotButton_clicked()
+{
+    qDebug() << "[MAIN] 'Handle Plot' button clicked. Requesting handle PCA plot.";
+    ui->widget->onShowHandlePlot();
+}
+
 
 void MainWindow::updateRobotStateLabel(int state)
 {

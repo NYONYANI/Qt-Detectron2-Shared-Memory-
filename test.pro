@@ -21,6 +21,7 @@ SOURCES += \
 
 HEADERS += \
     circlefitter.h \
+    handleplotwidget.h \
     mainwindow.h \
     realsensewidget.h \
     robotcontroller.h \
@@ -51,7 +52,7 @@ LIBS += -lrt -lpthread
 INCLUDEPATH += $$PWD/../API-DRFL/include
 LIBS += -L$$PWD/../API-DRFL/library/Linux/64bits/amd64/22.04
 LIBS += -lDRFL -lPocoFoundation -lPocoNet
-
+INCLUDEPATH += /usr/include/eigen3
 # -------------------------------------------------
 # 배포 설정
 # -------------------------------------------------

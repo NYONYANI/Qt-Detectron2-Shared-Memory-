@@ -60,6 +60,7 @@ private slots:
     void on_GripperOpenButton_clicked();
     void on_GripperCloseButton_clicked();
     void on_MoveButton_clicked();
+    void on_HandlePlotButton_clicked(); // ✨ [추가]
 
 private:
     Ui::MainWindow *ui;

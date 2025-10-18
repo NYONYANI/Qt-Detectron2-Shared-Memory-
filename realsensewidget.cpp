@@ -150,6 +150,7 @@ void PointCloudWidget::processPoints(const std::vector<int>& clusterIds) {
     if (useClusters) {
         int maxClusterId = 0;
         for (int id : clusterIds) { if (id > maxClusterId) maxClusterId = id; }
+        // ✨ [오류 수정] mt1937 -> mt19937
         std::mt19937 gen(12345);
         std::uniform_real_distribution<float> distrib(0.0, 1.0);
         for (int i = 1; i <= maxClusterId; ++i) { clusterColors[i] = QVector3D(distrib(gen), distrib(gen), distrib(gen)); }
@@ -346,7 +347,10 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     connect(m_pointCloudWidget, &PointCloudWidget::calculateTargetPoseRequested, this, &RealSenseWidget::onCalculateTargetPose);
     connect(m_pointCloudWidget, &PointCloudWidget::moveRobotToPreGraspPoseRequested, this, &RealSenseWidget::onMoveRobotToPreGraspPose);
     connect(m_pointCloudWidget, &PointCloudWidget::pickAndReturnRequested, this, &RealSenseWidget::onPickAndReturnRequested);
-    m_layout->addWidget(m_colorLabel, 1); m_layout->addWidget(m_pointCloudWidget, 1); setLayout(m_layout);
+    m_layout->addWidget(m_colorLabel, 1);
+    m_layout->addWidget(m_pointCloudWidget, 1);
+    // ✨ [오류 수정] setLayout(this) -> setLayout(m_layout)
+    setLayout(m_layout);
 
     m_baseToTcpTransform.setToIdentity();
     const float r[] = { 0.0f,  1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
@@ -354,6 +358,10 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     QMatrix4x4 translationMatrix;
     translationMatrix.translate(-0.080, 0.0325, 0.0308);
     m_tcpToCameraTransform = translationMatrix * rotationMatrix;
+
+    // ✨ [추가] HandlePlotWidget 초기화
+    m_handlePlotWidget = new HandlePlotWidget(); // 부모를 this로 설정하지 않아 별도 윈도우로 뜸
+    m_handlePlotWidget->setWindowTitle("Handle Shape Projection (PCA)");
 
     m_pointCloudWidget->setFocus();
 }
@@ -364,6 +372,7 @@ RealSenseWidget::~RealSenseWidget()
     if (data_control) { static_cast<char*>(data_control)[OFFSET_SHUTDOWN] = 1; }
     qDeleteAll(m_plotWidgets);
     m_plotWidgets.clear();
+    delete m_handlePlotWidget; // ✨ [추가]
     try { m_pipeline.stop(); } catch (...) {}
 }
 
@@ -380,6 +389,131 @@ void RealSenseWidget::onToggleMaskedPoints()
     qDebug() << "[INFO] Show only masked points toggled to:" << m_pointCloudWidget->m_showOnlyMaskedPoints;
     m_pointCloudWidget->processPoints();
 }
+
+// ✨ [추가] PCA 계산 헬퍼 함수
+void RealSenseWidget::calculatePCA(const QVector<QVector3D>& points, QVector<QPointF>& projectedPoints)
+{
+    if (points.size() < 3) {
+        qDebug() << "[PCA] Not enough points for PCA:" << points.size();
+        return;
+    }
+
+    // 1. 데이터를 Eigen Matrix로 변환하고 평균(Centroid) 계산
+    Eigen::MatrixXf eigenPoints(points.size(), 3);
+    Eigen::Vector3f mean = Eigen::Vector3f::Zero();
+    for (int i = 0; i < points.size(); ++i) {
+        eigenPoints(i, 0) = points[i].x();
+        eigenPoints(i, 1) = points[i].y();
+        eigenPoints(i, 2) = points[i].z();
+        mean += eigenPoints.row(i);
+    }
+    mean /= points.size();
+
+    // 2. 데이터 중심화 (평균 빼기)
+    eigenPoints.rowwise() -= mean.transpose();
+
+    // 3. SVD(특이값 분해) 수행
+    // U * S * V.transpose() = A
+    // V의 열(column)이 주성분(Principal Components)이 됩니다.
+    Eigen::JacobiSVD<Eigen::MatrixXf> svd(eigenPoints, Eigen::ComputeThinU | Eigen::ComputeThinV);
+
+    // 4. 주성분 (PC1, PC2) 추출
+    Eigen::Vector3f pc1 = svd.matrixV().col(0);
+    Eigen::Vector3f pc2 = svd.matrixV().col(1);
+    // ✨ [오류 수정] pc3 선언 주석 해제
+    Eigen::Vector3f pc3 = svd.matrixV().col(2); // 이것이 평면의 법선(normal) 벡터가 됨
+
+    qDebug() << "[PCA] Handle Plane Normal (PC3):" << pc3(0) << "," << pc3(1) << "," << pc3(2);
+
+    // 5. 중심화된 3D 포인트를 PC1, PC2 평면으로 투영 (내적)
+    projectedPoints.clear();
+    projectedPoints.reserve(points.size());
+    for (int i = 0; i < points.size(); ++i) {
+        float proj1 = eigenPoints.row(i).dot(pc1); // PC1 축 좌표
+        float proj2 = eigenPoints.row(i).dot(pc2); // PC2 축 좌표
+        projectedPoints.append(QPointF(proj1, proj2));
+    }
+}
+
+// ✨ [추가] HandlePlotButton 슬롯 구현
+void RealSenseWidget::onShowHandlePlot()
+{
+    qDebug() << "[PLOT] Handle Plot requested.";
+
+    // 1. 데이터 유효성 검사
+    if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
+        qDebug() << "[PLOT] No detection results or point cloud available.";
+        return;
+    }
+    const rs2::points& currentPoints = m_pointCloudWidget->m_points;
+    const rs2::vertex* vertices = currentPoints.get_vertices();
+    const int width = IMAGE_WIDTH; const int height = IMAGE_HEIGHT;
+    QMatrix4x4 camToBaseTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
+
+    QVector<QVector3D> allHandlePoints3D;
+
+    // 2. 모든 컵의 "handle" 3D 포인트 추출 (calculateGraspingPoses 로직 재활용)
+    for (const QJsonValue &cupValue : m_detectionResults) {
+        QJsonObject cupResult = cupValue.toObject();
+
+        QString part = "handle"; // "handle"만 대상으로 함
+        if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
+
+        QJsonObject partData = cupResult[part].toObject();
+        QJsonArray rle = partData["mask_rle"].toArray();
+        QJsonArray shape = partData["mask_shape"].toArray();
+        QJsonArray offset = partData["offset"].toArray();
+        int H = shape[0].toInt(); int W = shape[1].toInt();
+        int ox = offset[0].toInt(); int oy = offset[1].toInt();
+
+        QVector<uchar> mask_buffer(W * H, 0);
+        int idx = 0; uchar val = 0;
+        for(const QJsonValue& run_val : rle) {
+            int len = run_val.toInt();
+            if(idx + len > W * H) len = W * H - idx;
+            if(len > 0) memset(mask_buffer.data() + idx, val, len);
+            idx += len; val = (val == 0 ? 255 : 0);
+            if(idx >= W * H) break;
+        }
+
+        for(int y = 0; y < H; ++y) {
+            for(int x = 0; x < W; ++x) {
+                if(mask_buffer[y * W + x] == 255) {
+                    int u_mask = ox + x;
+                    int v_mask = oy + y;
+                    if (u_mask < 0 || u_mask >= width || v_mask < 0 || v_mask >= height) continue;
+                    int point_idx = m_uv_to_point_idx[v_mask * width + u_mask];
+                    if (point_idx != -1) {
+                        const rs2::vertex& p = vertices[point_idx];
+                        if (p.z > 0) {
+                            QVector3D p_cam(p.x, p.y, p.z);
+                            QVector3D p_base = camToBaseTransform * p_cam;
+                            if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) continue;
+                            allHandlePoints3D.append(p_base);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (allHandlePoints3D.isEmpty()) {
+        qDebug() << "[PLOT] No 'handle' 3D points found.";
+        return;
+    }
+
+    qDebug() << "[PLOT] Found" << allHandlePoints3D.size() << "handle points. Running PCA...";
+
+    // 3. PCA 수행 및 2D 포인트 획득
+    QVector<QPointF> projectedPoints;
+    calculatePCA(allHandlePoints3D, projectedPoints);
+
+    // 4. 플롯 위젯 업데이트 및 표시
+    m_handlePlotWidget->updateData(projectedPoints);
+    m_handlePlotWidget->show();
+    m_handlePlotWidget->activateWindow();
+}
+
 
 // ✨ [추가] 키 4, 5의 계산 로직을 수행하는 내부 함수
 bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
