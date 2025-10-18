@@ -128,6 +128,19 @@
      <string>Move</string>
     </property>
    </widget>
+   <widget class="QPushButton" name="HandlePlotButton">
+    <property name="geometry">
+     <rect>
+      <x>410</x>
+      <y>640</y>
+      <width>241</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>View handle Plot</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
