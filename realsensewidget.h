@@ -111,10 +111,22 @@ public:
     void setShowPlot(bool show);
 
 public slots:
-    void startCameraStream(); // ✨ [수정] public 슬롯으로 변경
+    void startCameraStream();
     void captureAndProcess();
     void onRobotTransformUpdated(const QMatrix4x4 &transform);
     void onMoveToYAlignedPoseRequested();
+
+    // (MainWindow에서 호출하기 위해 public으로 이동)
+    void onDenoisingToggled();
+    void onZFilterToggled();
+    void onShowXYPlot();
+    void onCalculateTargetPose();
+    void onMoveRobotToPreGraspPose();
+    void onPickAndReturnRequested();
+    void onToggleMaskedPoints();
+
+    // (Move 버튼이 호출할 메인 함수)
+    void runFullAutomatedSequence();
 
 signals:
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
@@ -123,17 +135,24 @@ signals:
     void requestLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
                                         const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
                                         const QVector3D& place_pos_mm, const QVector3D& place_ori_deg);
+
+    // (로봇 컨트롤러에게 보낼 전체 시퀀스 시그널)
+    void requestFullPickAndPlaceSequence(
+        const QVector3D& pre_grasp_pos_mm, const QVector3D& pre_grasp_ori_deg,
+        const QVector3D& grasp_pos_mm, const QVector3D& grasp_ori_deg,
+        const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
+        const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
+        const QVector3D& place_pos_mm, const QVector3D& place_ori_deg
+        );
+
 private slots:
-    void onDenoisingToggled();
-    void onZFilterToggled();
-    void onShowXYPlot();
-    void onCalculateTargetPose();
-    void onMoveRobotToPreGraspPose();
-    void onPickAndReturnRequested();
     void updateFrame();
     void checkProcessingResult();
 
 private:
+    // (계산 로직을 담당하는 비공개 함수)
+    bool calculateGraspingPoses(bool showPlot);
+
     void findFloorPlaneRANSAC();
     void runDbscanClustering();
 
@@ -175,6 +194,7 @@ private:
 
     QVector<GraspingTarget> m_graspingTargets;
 
+    // ✨ [오타 수정] QMatrix4HMatrix4 -> QMatrix4x4
     QMatrix4x4 m_calculatedTargetPose;
     QVector3D m_calculatedTargetPos_m;
     QVector3D m_calculatedTargetOri_deg;

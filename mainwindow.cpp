@@ -5,8 +5,9 @@
 #include <QThread>
 #include <QtMath>
 #include <QTimer>
+// QApplication은 on_MoveButton_clicked에서 제거되었으므로 여기서 필요 없습니다.
 
-// ... (전역 변수 및 콜백 함수는 변경 없음) ...
+// 전역 변수 및 콜백 함수
 using namespace DRAFramework;
 
 CDRFLEx GlobalDrfl;
@@ -113,7 +114,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(this, &MainWindow::requestGripperAction, m_robotController, &RobotController::onGripperAction);
     connect(this, &MainWindow::startRobotMonitoring, m_robotController, &RobotController::startMonitoring);
 
-    // ✨ [수정] RobotController -> MainWindow (상태 업데이트)
+    // RobotController -> MainWindow (상태 업데이트)
     connect(m_robotController, &RobotController::robotStateChanged, this, &MainWindow::updateRobotStateLabel);
     connect(m_robotController, &RobotController::robotPoseUpdated, this, &MainWindow::updateRobotPoseLabel);
     connect(m_robotController, &RobotController::robotTransformUpdated, ui->widget, &RealSenseWidget::onRobotTransformUpdated);
@@ -125,21 +126,22 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->ResetPosButton, &QPushButton::clicked, this, &MainWindow::on_ResetPosButton_clicked);
     connect(ui->GripperOpenButton, &QPushButton::clicked, this, &MainWindow::on_GripperOpenButton_clicked);
     connect(ui->GripperCloseButton, &QPushButton::clicked, this, &MainWindow::on_GripperCloseButton_clicked);
-    connect(ui->MoveButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onMoveToYAlignedPoseRequested);
+    // (MoveButton은 on_MoveButton_clicked() 슬롯으로 자동 연결됩니다)
 
-    // RealSenseWidget -> MainWindow
-    // ✨ [수정] 오타 수정: requestRobotMove -> requestMoveRobot
+    // RealSenseWidget -> MainWindow (수동 시그널 전달용)
     connect(ui->widget, &RealSenseWidget::requestRobotMove, this, &MainWindow::requestMoveRobot);
     connect(ui->widget, &RealSenseWidget::requestGripperAction, this, &MainWindow::requestGripperAction);
     connect(ui->widget, &RealSenseWidget::requestRobotPickAndReturn, this, &MainWindow::requestPickAndReturn);
-
-    // (이전에 중복 제거된 라인)
     connect(ui->widget, &RealSenseWidget::requestLiftRotatePlaceSequence,
             this, &MainWindow::requestLiftRotatePlaceSequence);
 
-    // MainWindow -> RobotController 연결
+    // MainWindow -> RobotController (수동 시그널 전달용)
     connect(this, &MainWindow::requestLiftRotatePlaceSequence,
             m_robotController, &RobotController::onLiftRotatePlaceSequence);
+
+    // ✨ [추가] RealSenseWidget의 새 전체 시퀀스 시그널을 RobotController의 새 슬롯에 연결
+    connect(ui->widget, &RealSenseWidget::requestFullPickAndPlaceSequence,
+            m_robotController, &RobotController::onFullPickAndPlaceSequence);
 
     ui->widget->setShowPlot(true);
 }
@@ -186,7 +188,6 @@ void MainWindow::on_RobotInit_clicked()
             GlobalDrfl.set_robot_system(ROBOT_SYSTEM_REAL);
             GlobalDrfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_FORCE_REQUEST);
 
-            // ✨ [수정] RobotMonitor 스레드 대신 RobotController의 모니터링 시작
             emit startRobotMonitoring();
         } else {
             s_robotStateLabel->setText("Robot Status: FAILED TO CONNECT");
@@ -194,7 +195,6 @@ void MainWindow::on_RobotInit_clicked()
         }
     }
     break;
-    // ... (이하 on_RobotInit_clicked의 다른 case들은 변경 없음)
     case RobotConnectionState::Connected:
     {
         qDebug() << "[ROBOT] 'Servo ON' button clicked.";
@@ -228,7 +228,6 @@ void MainWindow::on_RobotInit_clicked()
     }
 }
 
-// ... (이하 나머지 코드는 이전과 동일) ...
 
 MainWindow::RobotConnectionState MainWindow::getConnectionState() const
 {
@@ -261,7 +260,14 @@ void MainWindow::updateUiForState(RobotConnectionState state)
 void MainWindow::on_GripperOpenButton_clicked() { emit requestGripperAction(0); }
 void MainWindow::on_GripperCloseButton_clicked() { emit requestGripperAction(1); }
 void MainWindow::on_ResetPosButton_clicked() { emit requestResetPosition(); }
-void MainWindow::on_MoveButton_clicked() {}
+
+// ✨ [수정] Move 버튼 클릭 시 RealSenseWidget의 새 함수를 호출
+void MainWindow::on_MoveButton_clicked()
+{
+    qDebug() << "[MAIN] 'Move' button clicked. Initiating full automated sequence.";
+    // 1~5번(계산) + M, D, Move(로봇동작)을 모두 처리하는 함수 호출
+    ui->widget->runFullAutomatedSequence();
+}
 
 void MainWindow::updateRobotStateLabel(int state)
 {

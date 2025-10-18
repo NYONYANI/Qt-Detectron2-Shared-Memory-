@@ -31,13 +31,20 @@ public slots:
                                    const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
                                    const QVector3D& place_pos_mm, const QVector3D& place_ori_deg);
 
+    // ✨ [추가] RealSenseWidget에서 모든 좌표를 받아 전체 시퀀스를 실행하는 슬롯
+    void onFullPickAndPlaceSequence(
+        const QVector3D& pre_grasp_pos_mm, const QVector3D& pre_grasp_ori_deg,
+        const QVector3D& grasp_pos_mm, const QVector3D& grasp_ori_deg,
+        const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
+        const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
+        const QVector3D& place_pos_mm, const QVector3D& place_ori_deg
+        );
+
 private slots:
     void checkRobotState();
 
 private:
     QTimer *m_timer;
-
-    // ✨ 헬퍼 함수 추가
     void moveToPositionAndWait(const QVector3D& pos_mm, const QVector3D& ori_deg);
 };
 

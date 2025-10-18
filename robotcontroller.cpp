@@ -136,7 +136,7 @@ void RobotController::onGripperAction(int action)
     QThread::msleep(500);
 }
 
-// ✨ 헬퍼 함수 구현
+// ✨ 헬퍼 함수
 void RobotController::moveToPositionAndWait(const QVector3D& pos_mm, const QVector3D& ori_deg)
 {
     if (!g_bHasControlAuthority || GlobalDrfl.GetRobotState() != STATE_STANDBY) {
@@ -156,9 +156,12 @@ void RobotController::moveToPositionAndWait(const QVector3D& pos_mm, const QVect
     if (!GlobalDrfl.movel(target_posx, velx, accx)) {
         qWarning() << "[ROBOT] Move command failed!";
     }
+    // 참고: movel은 비동기일 수 있습니다.
+    // 만약 movel이 즉시 리턴된다면, 이 함수 뒤에 QThread::msleep()이 필요합니다.
+    // 기존 onLiftRotatePlaceSequence의 msleep(2000)을 보면 movel이 즉시 리턴되는 것 같습니다.
 }
 
-// ✨ Lift-Rotate-Place 시퀀스 구현
+// ✨ 기존 Lift-Rotate-Place 시퀀스 (독립 실행용)
 void RobotController::onLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
                                                 const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
                                                 const QVector3D& place_pos_mm, const QVector3D& place_ori_deg)
@@ -168,7 +171,7 @@ void RobotController::onLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, co
         return;
     }
 
-    qDebug() << "[ROBOT] ========== Starting Lift-Rotate-Place Sequence ==========";
+    qDebug() << "[ROBOT] ========== Starting Lift-Rotate-Place Sequence (Manual) ==========";
 
     // Step 1: 3cm 위로 올라가기
     qDebug() << "[ROBOT] Step 1/5: Lifting 3cm up";
@@ -192,9 +195,72 @@ void RobotController::onLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, co
 
     // Step 5: 다시 위로 올라가기
     qDebug() << "[ROBOT] Step 5/5: Lifting back up after release";
-    // ✨ [수정] 불필요한 회전을 방지하기 위해 현재 방향(place_ori_deg)을 사용합니다.
-    moveToPositionAndWait(lift_pos_mm, place_ori_deg);
+    moveToPositionAndWait(lift_pos_mm, place_ori_deg); // 수정된 방향 사용
     QThread::msleep(1000);
 
     qDebug() << "[ROBOT] ========== Lift-Rotate-Place Sequence Completed! ==========";
+}
+
+
+// ✨ [추가] Move 버튼을 위한 전체 자동 시퀀스
+void RobotController::onFullPickAndPlaceSequence(
+    const QVector3D& pre_grasp_pos_mm, const QVector3D& pre_grasp_ori_deg,
+    const QVector3D& grasp_pos_mm, const QVector3D& grasp_ori_deg,
+    const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
+    const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
+    const QVector3D& place_pos_mm, const QVector3D& place_ori_deg)
+{
+    if (!g_bHasControlAuthority || GlobalDrfl.GetRobotState() != STATE_STANDBY) {
+        qWarning() << "[ROBOT_SEQ] Cannot start full sequence: No control authority or not in STANDBY.";
+        return;
+    }
+
+    qDebug() << "[ROBOT_SEQ] ========== Starting Full Automated Sequence ==========";
+
+    // Step 1: (M) 그리퍼 열기
+    qDebug() << "[ROBOT_SEQ] Step 1/9: Opening Gripper (for M)";
+    onGripperAction(0);
+    QThread::msleep(1500); // 그리퍼 열릴 시간
+
+    // Step 2: (M) Pre-Grasp 위치로 이동
+    qDebug() << "[ROBOT_SEQ] Step 2/9: Moving to Pre-Grasp Pose (M)";
+    moveToPositionAndWait(pre_grasp_pos_mm, pre_grasp_ori_deg);
+    QThread::msleep(2000); // 이동 완료 대기
+
+    // Step 3: (D) Grasp 위치로 하강
+    qDebug() << "[ROBOT_SEQ] Step 3/9: Moving to Grasp Pose (D-part 1)";
+    moveToPositionAndWait(grasp_pos_mm, grasp_ori_deg);
+    QThread::msleep(2000); // 이동 완료 대기
+
+    // Step 4: (D) 그리퍼 닫기
+    qDebug() << "[ROBOT_SEQ] Step 4/9: Closing Gripper (D-part 2)";
+    onGripperAction(1);
+    QThread::msleep(1500); // 그리퍼 닫힐 시간
+
+    // Step 5: (Move) 3cm 위로 올라가기
+    qDebug() << "[ROBOT_SEQ] Step 5/9: Lifting object (Move-part 1)";
+    moveToPositionAndWait(lift_pos_mm, lift_ori_deg);
+    QThread::msleep(2000); // 이동 완료 대기
+
+    // Step 6: (Move) 회전하기 (같은 높이에서)
+    qDebug() << "[ROBOT_SEQ] Step 6/9: Rotating object (Move-part 2)";
+    moveToPositionAndWait(rotate_pos_mm, rotate_ori_deg);
+    QThread::msleep(2000); // 이동 완료 대기
+
+    // Step 7: (Move) 원래 높이로 내려가기
+    qDebug() << "[ROBOT_SEQ] Step 7/9: Placing object (Move-part 3)";
+    moveToPositionAndWait(place_pos_mm, place_ori_deg);
+    QThread::msleep(2000); // 이동 완료 대기
+
+    // Step 8: (Move) 그리퍼 열기
+    qDebug() << "[ROBOT_SEQ] Step 8/9: Opening gripper (Move-part 4)";
+    onGripperAction(0);
+    QThread::msleep(1500); // 그리퍼 열릴 시간
+
+    // Step 9: (Move) 다시 위로 올라가기
+    qDebug() << "[ROBOT_SEQ] Step 9/9: Lifting back up (Move-part 5)";
+    moveToPositionAndWait(rotate_pos_mm, place_ori_deg); // 최종 방향(place_ori_deg) 유지
+    QThread::msleep(1000); // 이동 완료 대기
+
+    qDebug() << "[ROBOT_SEQ] ========== Full Automated Sequence Completed! ==========";
 }
