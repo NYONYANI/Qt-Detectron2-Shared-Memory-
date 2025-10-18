@@ -376,7 +376,10 @@ void RealSenseWidget::onShowXYPlot()
     timer.start();
     qDebug() << "[INFO] Key '4' pressed. Calculating grasping points...";
     if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
-        qDebug() << "[WARN] No data available for calculation."; return;
+        qDebug() << "[WARN] No data available for "
+                    ""
+                    ""
+                    "culation."; return;
     }
     const rs2::points& currentPoints = m_pointCloudWidget->m_points;
     const rs2::vertex* vertices = currentPoints.get_vertices();
@@ -502,7 +505,6 @@ void RealSenseWidget::onShowXYPlot()
         qDebug() << "[WARN] No body points found for plotting.";
     }
 }
-
 void RealSenseWidget::onCalculateTargetPose()
 {
     qDebug() << "[INFO] Key '5' pressed. Calculating target pose...";
@@ -524,7 +526,7 @@ void RealSenseWidget::onCalculateTargetPose()
         }
     }
 
-    // --- 1. 기본 파지 자세 계산 (최적 경로) ---
+    // 기본 파지 자세 계산 (최적 경로)
     const float gripper_z_offset = 0.146f;
     m_calculatedTargetPos_m = bestTarget.point + QVector3D(0, 0, gripper_z_offset);
     const QVector3D& N = bestTarget.direction;
@@ -548,39 +550,12 @@ void RealSenseWidget::onCalculateTargetPose()
     vizMatrix.rotate(m_calculatedTargetOri_deg.y(), 0, 1, 0);
     vizMatrix.rotate(m_calculatedTargetOri_deg.z(), 0, 0, 1);
     m_calculatedTargetPose = vizMatrix;
-    qDebug() << "[TARGET POSE 1] Original Pose | Pos(m):" << m_calculatedTargetPos_m << "Ori(deg):" << m_calculatedTargetOri_deg;
+    qDebug() << "[TARGET POSE] Grasp Pose | Pos(m):" << m_calculatedTargetPos_m << "Ori(deg):" << m_calculatedTargetOri_deg;
 
-    // --- 2. ✨ [수정] Y축 정렬 자세 계산 로직 수정 ---
-    // 목표: 손잡이-컵중심 벡터가 베이스의 +Y축을 향하도록 로봇의 Z축 회전(yaw) 계산
-    QPointF handleVec = bestTarget.handleCentroid - bestTarget.circleCenter;
-    float handleAngle_rad = atan2(handleVec.y(), handleVec.x()); // 현재 손잡이 벡터의 각도 (X축 기준)
-
-    // 로봇 TCP의 -Y축이 손잡이 방향(handleVec)과 평행하게 정렬되어야 함.
-    // 즉, TCP의 -Y축 방향 = handleVec의 방향.
-    // TCP의 Z축 회전각(Yaw)은 이 방향에서 90도를 뺀 값.
-    float y_aligned_rz_rad = handleAngle_rad - (M_PI / 2.0f);
-
-    // 각도를 -180 ~ 180 범위로 정규화
-    while (y_aligned_rz_rad > M_PI) y_aligned_rz_rad -= 2 * M_PI;
-    while (y_aligned_rz_rad < -M_PI) y_aligned_rz_rad += 2 * M_PI;
-
-    m_calculatedTargetOri_deg_Y_Aligned = QVector3D(m_calculatedTargetOri_deg.x(), m_calculatedTargetOri_deg.y(), qRadiansToDegrees(y_aligned_rz_rad));
-
-    QMatrix4x4 vizMatrix_Y_Aligned;
-    vizMatrix_Y_Aligned.setToIdentity();
-    vizMatrix_Y_Aligned.translate(m_calculatedTargetPos_m);
-    vizMatrix_Y_Aligned.rotate(m_calculatedTargetOri_deg_Y_Aligned.x(), 1, 0, 0);
-    vizMatrix_Y_Aligned.rotate(m_calculatedTargetOri_deg_Y_Aligned.y(), 0, 1, 0);
-    vizMatrix_Y_Aligned.rotate(m_calculatedTargetOri_deg_Y_Aligned.z(), 0, 0, 1);
-    m_calculatedTargetPose_Y_Aligned = vizMatrix_Y_Aligned;
-    qDebug() << "[TARGET POSE 2] Y-Aligned Pose | Pos(m):" << m_calculatedTargetPos_m << "Ori(deg):" << m_calculatedTargetOri_deg_Y_Aligned;
-
-
-    // --- 3. 두 자세를 모두 위젯에 전달하여 토글 ---
+    // 잡기 좌표계만 표시 (Y-Aligned는 표시하지 않음)
     bool show = !m_pointCloudWidget->m_showTargetPose;
-    m_pointCloudWidget->updateTargetPoses(m_calculatedTargetPose, show, m_calculatedTargetPose_Y_Aligned, show);
+    m_pointCloudWidget->updateTargetPoses(m_calculatedTargetPose, show, QMatrix4x4(), false);
 }
-
 
 void RealSenseWidget::onMoveRobotToPreGraspPose()
 {
@@ -599,36 +574,76 @@ void RealSenseWidget::onMoveRobotToPreGraspPose()
 
 void RealSenseWidget::onPickAndReturnRequested()
 {
-    qDebug() << "[INFO] Key 'D' pressed. Requesting pick and return sequence...";
+    qDebug() << "[INFO] Key 'D' pressed. Requesting pick sequence (grasp only - NO return)...";
     if (m_calculatedTargetPos_m.isNull() || m_calculatedTargetOri_deg.isNull()) {
         qWarning() << "[WARN] Target pose not ready. Press '5' first.";
         return;
     }
+
+    // D키: 목표 위치로 이동하여 잡기만 (복귀 없음)
     QVector3D finalTargetPos_m = m_calculatedTargetPos_m;
     QVector3D finalTargetPos_mm = finalTargetPos_m * 1000.0f;
     QVector3D finalTargetOri_deg = m_calculatedTargetOri_deg;
+
+    // approach position은 필요 없지만 시그널 호환성을 위해 전달
     QVector3D approachPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, APPROACH_HEIGHT_M);
     QVector3D approachPos_mm = approachPos_m * 1000.0f;
     QVector3D approachOri_deg = m_calculatedTargetOri_deg;
-    qDebug() << "Requesting Pick Sequence: Final Pos(mm):" << finalTargetPos_mm << "Approach Pos(mm):" << approachPos_mm;
+
+    qDebug() << "Requesting Pick (Grasp Only): Target Pos(mm):" << finalTargetPos_mm << "Ori(deg):" << finalTargetOri_deg;
     emit requestRobotPickAndReturn(finalTargetPos_mm, finalTargetOri_deg, approachPos_mm, approachOri_deg);
 }
 
 void RealSenseWidget::onMoveToYAlignedPoseRequested()
 {
-    qDebug() << "[INFO] 'MoveButton' pressed. Requesting rotation to Y-aligned pose...";
-    if (m_calculatedTargetPos_m.isNull() || m_calculatedTargetOri_deg_Y_Aligned.isNull()) {
-        qWarning() << "[WARN] No Y-aligned target pose has been calculated. Press '5' first.";
+    qDebug() << "[INFO] 'MoveButton' pressed. Lift -> Rotate -> Place sequence...";
+    if (m_calculatedTargetPos_m.isNull() || m_calculatedTargetOri_deg.isNull()) {
+        qWarning() << "[WARN] No target pose has been calculated. Press '5' first.";
         return;
     }
-    QVector3D approachPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, APPROACH_HEIGHT_M);
-    QVector3D approachPos_mm = approachPos_m * 1000.0f;
-    QVector3D yAlignedOri_deg = m_calculatedTargetOri_deg_Y_Aligned;
 
-    qDebug() << "Requesting rotation at current height. Target Pose: Pos(mm):" << approachPos_mm << "Ori(deg):" << yAlignedOri_deg;
-    emit requestRobotMove(approachPos_mm, yAlignedOri_deg);
+    // ✨ 새로운 시퀀스: 3cm 위로 -> 회전 -> 3cm 아래로 -> 그리퍼 열기 -> 위로
+
+    const float LIFT_HEIGHT_M = 0.03f;  // 3cm
+
+    // 현재 파지 위치 (잡은 상태)
+    QVector3D graspPos_mm = m_calculatedTargetPos_m * 1000.0f;
+    QVector3D graspOri_deg = m_calculatedTargetOri_deg;
+
+    // Step 1: 3cm 위로 올라가기
+    QVector3D liftPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, LIFT_HEIGHT_M);
+    QVector3D liftPos_mm = liftPos_m * 1000.0f;
+
+    // Step 2: 회전된 자세 계산 (엔드이펙터 X축을 베이스 Y축과 평행하게)
+    float original_rz_rad = qDegreesToRadians(m_calculatedTargetOri_deg.z());
+    float target_rz_option1 = M_PI / 2.0f;   // +90도
+    float target_rz_option2 = -M_PI / 2.0f;  // -90도
+
+    float rotation1 = target_rz_option1 - original_rz_rad;
+    float rotation2 = target_rz_option2 - original_rz_rad;
+
+    while (rotation1 > M_PI) rotation1 -= 2 * M_PI;
+    while (rotation1 < -M_PI) rotation1 += 2 * M_PI;
+    while (rotation2 > M_PI) rotation2 -= 2 * M_PI;
+    while (rotation2 < -M_PI) rotation2 += 2 * M_PI;
+
+    float y_aligned_rz_rad = (std::abs(rotation1) < std::abs(rotation2)) ? target_rz_option1 : target_rz_option2;
+
+    QVector3D rotatedOri_deg = QVector3D(
+        m_calculatedTargetOri_deg.x(),
+        m_calculatedTargetOri_deg.y(),
+        qRadiansToDegrees(y_aligned_rz_rad)
+        );
+
+    // Step 3: 회전 후 같은 높이에서 다시 내려가기
+    QVector3D placePos_mm = graspPos_mm;  // 원래 파지 위치
+
+    qDebug() << "[SEQUENCE] Lift to:" << liftPos_mm << "| Rotate to:" << rotatedOri_deg << "| Place at:" << placePos_mm;
+
+    // 시퀀스 실행을 위한 시그널 방출
+    // RobotController에 새로운 시퀀스 함수 필요
+    emit requestLiftRotatePlaceSequence(liftPos_mm, graspOri_deg, liftPos_mm, rotatedOri_deg, placePos_mm, rotatedOri_deg);
 }
-
 
 void RealSenseWidget::updateFrame()
 {

@@ -46,6 +46,9 @@ signals:
     void requestGripperAction(int action);
     void startRobotMonitoring(); // ✨ [추가]
 
+    void requestLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
+                                        const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
+                                        const QVector3D& place_pos_mm, const QVector3D& place_ori_deg);
 protected:
     void showEvent(QShowEvent *event) override;
 

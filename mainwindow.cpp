@@ -131,6 +131,16 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->widget, &RealSenseWidget::requestRobotMove, this, &MainWindow::requestMoveRobot);
     connect(ui->widget, &RealSenseWidget::requestGripperAction, this, &MainWindow::requestGripperAction);
     connect(ui->widget, &RealSenseWidget::requestRobotPickAndReturn, this, &MainWindow::requestPickAndReturn);
+    connect(ui->widget, &RealSenseWidget::requestLiftRotatePlaceSequence,
+            this, &MainWindow::requestLiftRotatePlaceSequence);
+
+    // ✨ 이 줄 추가
+    connect(ui->widget, &RealSenseWidget::requestLiftRotatePlaceSequence,
+            this, &MainWindow::requestLiftRotatePlaceSequence);
+
+    // ✨ 이 줄 추가 - MainWindow -> RobotController 연결
+    connect(this, &MainWindow::requestLiftRotatePlaceSequence,
+            m_robotController, &RobotController::onLiftRotatePlaceSequence);
 
     ui->widget->setShowPlot(true);
 }

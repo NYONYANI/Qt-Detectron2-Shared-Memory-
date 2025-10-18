@@ -120,7 +120,9 @@ signals:
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
     void requestGripperAction(int action);
     void requestRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg);
-
+    void requestLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
+                                        const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
+                                        const QVector3D& place_pos_mm, const QVector3D& place_ori_deg);
 private slots:
     void onDenoisingToggled();
     void onZFilterToggled();
