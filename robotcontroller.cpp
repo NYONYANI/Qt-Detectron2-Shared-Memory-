@@ -192,7 +192,8 @@ void RobotController::onLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, co
 
     // Step 5: 다시 위로 올라가기
     qDebug() << "[ROBOT] Step 5/5: Lifting back up after release";
-    moveToPositionAndWait(lift_pos_mm, rotate_ori_deg);
+    // ✨ [수정] 불필요한 회전을 방지하기 위해 현재 방향(place_ori_deg)을 사용합니다.
+    moveToPositionAndWait(lift_pos_mm, place_ori_deg);
     QThread::msleep(1000);
 
     qDebug() << "[ROBOT] ========== Lift-Rotate-Place Sequence Completed! ==========";
