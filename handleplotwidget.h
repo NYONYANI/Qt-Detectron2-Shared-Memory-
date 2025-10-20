@@ -214,7 +214,7 @@ private:
         return {point, normal, tangent};
     }
 
-    // 중심선 계산: 직사각형 영역 내 양 끝점의 중간점 사용
+    // ✨ [수정됨] 중심선 계산: 영역 내 포인트들의 X, Y 중앙값 사용
     void calculateCenterlinePoints()
     {
         if (!m_hasCurve) return;
@@ -243,55 +243,65 @@ private:
             QPointF p4 = curvePoint + tanVec * rectHalfLength - normVec * rectHalfWidth;
             data.rect << p1 << p2 << p3 << p4;
 
+            // ✨ [개선] 영역 내 포인트들의 X, Y 좌표를 각각 수집
+            QVector<double> xValues, yValues;
             double minDistProj = std::numeric_limits<double>::max();
-            double maxDistProj = -std::numeric_limits<double>::max();
+            double maxDistProj = std::numeric_limits<double>::lowest();
             QPointF currentMinPoint = curvePoint;
             QPointF currentMaxPoint = curvePoint;
-            bool minPointFound = false;
-            bool maxPointFound = false;
 
-            // 직사각형 영역 내 점들을 찾고, 그 중 법선 방향 양 끝점 찾기
+            // 직사각형 영역 내 모든 점을 순회
             for (const QPointF& dataPoint : m_plotData)
             {
                 if (data.rect.containsPoint(dataPoint, Qt::OddEvenFill)) {
+                    // 중앙값 계산용 X, Y 값 수집
+                    xValues.append(dataPoint.x());
+                    yValues.append(dataPoint.y());
+
+                    // 시각화용 min/max 점도 계속 추적
                     QVector2D diffVec(dataPoint - curvePoint);
                     double distProj = QVector2D::dotProduct(diffVec, normal);
 
-                    if (distProj < 0) { // 법선 반대 방향
-                        if (!minPointFound || distProj < minDistProj) {
-                            minDistProj = distProj;
-                            currentMinPoint = dataPoint;
-                            minPointFound = true;
-                        }
-                    } else { // 법선 방향
-                        if (!maxPointFound || distProj > maxDistProj) {
-                            maxDistProj = distProj;
-                            currentMaxPoint = dataPoint;
-                            maxPointFound = true;
-                        }
+                    if (distProj < minDistProj) {
+                        minDistProj = distProj;
+                        currentMinPoint = dataPoint;
+                    }
+                    if (distProj > maxDistProj) {
+                        maxDistProj = distProj;
+                        currentMaxPoint = dataPoint;
                     }
                 }
             }
 
-            // 양 끝점을 모두 찾았으면 중간점 계산 및 저장
-            if (minPointFound && maxPointFound)
+            // ✨ [수정된 로직] 영역 내 포인트가 있으면 X, Y 각각의 중앙값 사용
+            if (!xValues.isEmpty())
             {
-                data.minPoint = currentMinPoint; // 시각화용
-                data.maxPoint = currentMaxPoint; // 시각화용
-                data.midPoint = (data.minPoint + data.maxPoint) / 2.0; // 실제 양 끝점의 중간
+                // X, Y 각각 정렬하여 중앙값 찾기
+                std::sort(xValues.begin(), xValues.end());
+                std::sort(yValues.begin(), yValues.end());
+
+                int midIdx = xValues.size() / 2;
+                double medianX = xValues[midIdx];
+                double medianY = yValues[midIdx];
+
+                data.minPoint = currentMinPoint;
+                data.maxPoint = currentMaxPoint;
+                data.midPoint = QPointF(medianX, medianY);  // ✨ X, Y 각각의 중앙값
                 data.valid = true;
-            } else {
-                // 하나라도 못 찾으면 유효하지 않음
-                data.midPoint = curvePoint; // 곡선 점 사용
+            }
+            else
+            {
+                // 사각형 안에 점이 아예 없으면 곡선 점을 중심선으로 사용
                 data.minPoint = curvePoint;
                 data.maxPoint = curvePoint;
-                data.valid = false;
+                data.midPoint = curvePoint;
+                data.valid = true;  // 끝단도 연결되도록
             }
             m_centerlineData.push_back(data);
         }
     }
 
-    // ✨ [수정] 중심선 포인트 스무딩 (끝점 처리 개선)
+    // 중심선 포인트 스무딩 (갭 채우기 및 양끝단 연결 로직)
     void smoothCenterlinePoints(int windowSize = 3) // 홀수 사용 권장
     {
         m_smoothedCenterlinePoints.clear();
@@ -309,34 +319,20 @@ private:
 
         int halfWindow = windowSize / 2;
 
-        // 첫 번째 유효한 midPoint 찾기
-        int firstValidIdx = -1;
-        for(int i=0; i<n; ++i) { if(m_centerlineData[i].valid) { firstValidIdx = i; break; } }
+        // --- 1단계: 유효한 포인트만 먼저 스무딩 ---
+        QVector<QPointF> tempSmoothed(n);
+        QVector<bool> isValidSmoothed(n, false);
+        int validPointsFound = 0;
 
-        // 마지막 유효한 midPoint 찾기
-        int lastValidIdx = -1;
-        for(int i=n-1; i>=0; --i) { if(m_centerlineData[i].valid) { lastValidIdx = i; break; } }
-
-        // 유효한 점이 하나도 없으면 모든 스무딩 포인트를 curvePoint로 채움
-        if (firstValidIdx == -1) {
-            qWarning() << "[Smooth] No valid points found.";
-            for(int i = 0; i < n; ++i) { m_smoothedCenterlinePoints[i] = m_centerlineData[i].curvePoint; }
-            return;
-        }
-        // lastValidIdx가 유효하지 않거나 first보다 작으면 first 사용 (유효점 1개)
-        if (lastValidIdx == -1 || lastValidIdx < firstValidIdx) lastValidIdx = firstValidIdx;
-
-        // 스무딩 계산
         for (int i = 0; i < n; ++i)
         {
-            // 스무딩 범위 [startIdx, endIdx] 계산 (끝점 처리 포함)
             int startIdx = qMax(0, i - halfWindow);
             int endIdx = qMin(n - 1, i + halfWindow);
 
-            // 스무딩 범위 내 유효한 점들의 합과 개수 계산
             QPointF sum(0, 0);
             int count = 0;
             for (int k = startIdx; k <= endIdx; ++k) {
+                // 원본 데이터(midPoint)가 유효한지 검사
                 if (m_centerlineData[k].valid) {
                     sum += m_centerlineData[k].midPoint;
                     count++;
@@ -344,22 +340,74 @@ private:
             }
 
             if (count > 0) {
-                m_smoothedCenterlinePoints[i] = sum / count;
+                tempSmoothed[i] = sum / count;
+                isValidSmoothed[i] = true;
+                validPointsFound++;
+            }
+            // count == 0 이면 isValidSmoothed[i]는 false로 유지
+        }
+
+        // --- 2단계: 갭(Gap) 채우기 ---
+
+        // 유효한 스무딩 점이 하나도 없으면, 곡선 점(curvePoint)으로 대체
+        if (validPointsFound == 0) {
+            qWarning() << "[Smooth] No valid points found during smoothing.";
+            for(int i = 0; i < n; ++i) { m_smoothedCenterlinePoints[i] = m_centerlineData[i].curvePoint; }
+            return;
+        }
+
+        // 첫 번째 유효 스무딩 인덱스 찾기
+        int firstValidIdx = -1;
+        for(int i=0; i<n; ++i) if(isValidSmoothed[i]) { firstValidIdx = i; break; }
+
+        // 마지막 유효 스무딩 인덱스 찾기
+        int lastValidIdx = n - 1;
+        for(int i=n-1; i>=0; --i) if(isValidSmoothed[i]) { lastValidIdx = i; break; }
+
+        // 2-1: 시작 갭 채우기 (Extrapolation)
+        // 0부터 firstValidIdx 직전까지 모든 점을 첫 유효점으로 설정
+        for(int i = 0; i < firstValidIdx; ++i) {
+            m_smoothedCenterlinePoints[i] = tempSmoothed[firstValidIdx];
+        }
+
+        // 2-2: 끝 갭 채우기 (Extrapolation)
+        // lastValidIdx 다음부터 끝까지 모든 점을 마지막 유효점으로 설정
+        for(int i = lastValidIdx + 1; i < n; ++i) {
+            m_smoothedCenterlinePoints[i] = tempSmoothed[lastValidIdx];
+        }
+
+        // 2-3: 중간 갭 채우기 (Interpolation)
+        for (int i = firstValidIdx; i <= lastValidIdx; ++i)
+        {
+            if (isValidSmoothed[i]) {
+                // 유효한 점은 그대로 복사
+                m_smoothedCenterlinePoints[i] = tempSmoothed[i];
             } else {
-                // 주변에 유효한 점이 없으면 가장 가까운 유효점 사용
-                // (firstValidIdx 이전이면 firstValidIdx 사용, lastValidIdx 이후면 lastValidIdx 사용)
-                if (i < firstValidIdx) {
-                    m_smoothedCenterlinePoints[i] = m_centerlineData[firstValidIdx].midPoint;
-                } else if (i > lastValidIdx) {
-                    m_smoothedCenterlinePoints[i] = m_centerlineData[lastValidIdx].midPoint;
-                } else {
-                    // 중간인데 주변에 유효점 없으면 바로 이전 스무딩 점 사용 (선 끊김 방지)
-                    if (i > 0) {
-                        m_smoothedCenterlinePoints[i] = m_smoothedCenterlinePoints[i-1];
-                    } else { // 맨 처음인데 주변에 유효점 없는 극단적 경우 (거의 발생 안 함)
-                        m_smoothedCenterlinePoints[i] = m_centerlineData[i].curvePoint;
-                    }
+                // 갭 시작 (i는 유효하지 않음)
+                int gapStartIdx = i;
+                int prevValidIdx = i - 1; // i >= firstValidIdx이므로 prevValidIdx는 항상 유효함
+
+                // 갭 끝(다음 유효점) 찾기
+                int nextValidIdx = gapStartIdx + 1;
+                while(nextValidIdx <= lastValidIdx && !isValidSmoothed[nextValidIdx]) {
+                    nextValidIdx++;
                 }
+
+                // 갭의 양 끝점 (p1은 이미 m_smoothedCenterlinePoints에 채워져 있음)
+                QPointF p1 = m_smoothedCenterlinePoints[prevValidIdx];
+                QPointF p2 = tempSmoothed[nextValidIdx]; // nextValidIdx는 유효함이 보장됨
+
+                int gapLen = nextValidIdx - prevValidIdx; // (e.g., prev=3, next=7 -> 7-3 = 4)
+
+                // 갭 내부를 선형 보간
+                for(int k = gapStartIdx; k < nextValidIdx; ++k) {
+                    // k가 prevValidIdx로부터 얼마나 떨어져 있는지 비율 계산
+                    double t = static_cast<double>(k - prevValidIdx) / static_cast<double>(gapLen);
+                    m_smoothedCenterlinePoints[k] = p1 * (1.0 - t) + p2 * t;
+                }
+
+                // 갭을 모두 채웠으므로, 다음 유효점 직전까지 인덱스 점프
+                i = nextValidIdx - 1;
             }
         }
     }
