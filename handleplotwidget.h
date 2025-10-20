@@ -117,7 +117,7 @@ protected:
 
         if (m_plotData.isEmpty()) return;
 
-        // 2. 포인트 그리기
+        // 2. 포인트 그리기 (✨ 다시 활성화)
         painter.setBrush(Qt::blue);
         painter.setPen(Qt::NoPen);
         for(const auto& data : m_plotData)
@@ -126,13 +126,13 @@ protected:
             painter.drawEllipse(widgetPos, 3, 3);
         }
 
-        // 3. 피팅된 2차 곡선 (더 진하게)
-        drawPolynomialCurve(painter, QColor(255, 0, 0, 200), 1.5); // 진한 빨간색, 두께 1.5
+        // 3. 피팅된 2차 곡선 (비활성화)
+        // drawPolynomialCurve(painter, QColor(255, 0, 0, 200), 1.5); // 진한 빨간색, 두께 1.5
 
-        // 4. 직사각형 영역 그리기
-        drawNormalRects(painter);
+        // 4. 직사각형 영역 그리기 (비활성화)
+        // drawNormalRects(painter);
 
-        // 5. 스무딩된 중심선 그리기
+        // 5. 스무딩된 중심선 그리기 (활성화)
         drawCenterline(painter);
     }
 
