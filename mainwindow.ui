@@ -92,9 +92,9 @@
    <widget class="QPushButton" name="GripperOpenButton">
     <property name="geometry">
      <rect>
-      <x>660</x>
+      <x>680</x>
       <y>570</y>
-      <width>111</width>
+      <width>121</width>
       <height>61</height>
      </rect>
     </property>
@@ -105,9 +105,9 @@
    <widget class="QPushButton" name="GripperCloseButton">
     <property name="geometry">
      <rect>
-      <x>780</x>
+      <x>810</x>
       <y>570</y>
-      <width>111</width>
+      <width>121</width>
       <height>61</height>
      </rect>
     </property>
@@ -120,7 +120,7 @@
      <rect>
       <x>410</x>
       <y>570</y>
-      <width>241</width>
+      <width>261</width>
       <height>61</height>
      </rect>
     </property>
@@ -133,12 +133,25 @@
      <rect>
       <x>410</x>
       <y>640</y>
-      <width>241</width>
+      <width>261</width>
       <height>61</height>
      </rect>
     </property>
     <property name="text">
      <string>View handle Plot</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="MoveViewButton">
+    <property name="geometry">
+     <rect>
+      <x>680</x>
+      <y>640</y>
+      <width>251</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Move View point</string>
     </property>
    </widget>
   </widget>

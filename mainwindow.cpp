@@ -109,7 +109,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // MainWindow -> RobotController (명령)
     connect(this, &MainWindow::requestMoveRobot, m_robotController, &RobotController::onMoveRobot);
-    connect(this, &MainWindow::requestPickAndReturn, m_robotController, &RobotController::onRobotPickAndReturn);
+    connect(this, &MainWindow::requestRobotPickAndReturn, m_robotController, &RobotController::onRobotPickAndReturn); // 이름 확인
     connect(this, &MainWindow::requestResetPosition, m_robotController, &RobotController::onResetPosition);
     connect(this, &MainWindow::requestGripperAction, m_robotController, &RobotController::onGripperAction);
     connect(this, &MainWindow::startRobotMonitoring, m_robotController, &RobotController::startMonitoring);
@@ -126,12 +126,15 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->ResetPosButton, &QPushButton::clicked, this, &MainWindow::on_ResetPosButton_clicked);
     connect(ui->GripperOpenButton, &QPushButton::clicked, this, &MainWindow::on_GripperOpenButton_clicked);
     connect(ui->GripperCloseButton, &QPushButton::clicked, this, &MainWindow::on_GripperCloseButton_clicked);
-    // (MoveButton과 HandlePlotButton은 on_..._clicked() 슬롯으로 자동 연결됩니다)
+    // (MoveButton, HandlePlotButton, MoveViewButton은 on_..._clicked() 슬롯으로 자동 연결됩니다)
 
     // RealSenseWidget -> MainWindow (수동 시그널 전달용)
     connect(ui->widget, &RealSenseWidget::requestRobotMove, this, &MainWindow::requestMoveRobot);
     connect(ui->widget, &RealSenseWidget::requestGripperAction, this, &MainWindow::requestGripperAction);
-    connect(ui->widget, &RealSenseWidget::requestRobotPickAndReturn, this, &MainWindow::requestPickAndReturn);
+
+    // ✨ [오류 발생했던 지점] 이제 mainwindow.h의 시그널 이름과 일치합니다.
+    connect(ui->widget, &RealSenseWidget::requestRobotPickAndReturn, this, &MainWindow::requestRobotPickAndReturn);
+
     connect(ui->widget, &RealSenseWidget::requestLiftRotatePlaceSequence,
             this, &MainWindow::requestLiftRotatePlaceSequence);
 
@@ -274,6 +277,13 @@ void MainWindow::on_HandlePlotButton_clicked()
 {
     qDebug() << "[MAIN] 'Handle Plot' button clicked. Requesting handle PCA plot.";
     ui->widget->onShowHandlePlot();
+}
+
+// ✨ [추가] MoveViewButton 클릭 시 RealSenseWidget의 새 함수를 호출
+void MainWindow::on_MoveViewButton_clicked()
+{
+    qDebug() << "[MAIN] 'Move View' button clicked. Requesting move to handle view pose.";
+    ui->widget->onMoveToHandleViewPose();
 }
 
 

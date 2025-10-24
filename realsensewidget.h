@@ -27,9 +27,9 @@
 #include "xyplotwidget.h"
 #include <GL/glu.h>
 #include "DBSCAN.h"
-#include "handleplotwidget.h" // ✨ [추가]
-#include <Eigen/Dense>      // ✨ [추가]
-#include <Eigen/SVD>        // ✨ [추가]
+#include "handleplotwidget.h"
+#include <Eigen/Dense>
+#include <Eigen/SVD>
 
 
 struct GraspingTarget
@@ -46,12 +46,15 @@ class PointCloudWidget : public QOpenGLWidget, protected QOpenGLFunctions
 
 public:
     explicit PointCloudWidget(QWidget *parent = nullptr);
-    ~PointCloudWidget();
+    virtual ~PointCloudWidget(); // ✨ virtual 추가
 
     void updatePointCloud(const rs2::points& points, const rs2::video_frame& color, const QImage& maskOverlay);
     void setTransforms(const QMatrix4x4& baseToTcp, const QMatrix4x4& tcpToCam);
     void updateGraspingPoints(const QVector<QVector3D>& points);
-    void updateTargetPoses(const QMatrix4x4& pose, bool show, const QMatrix4x4& pose_y_aligned, bool show_y_aligned);
+    // ✨ 파라미터 6개짜리 선언 확인
+    void updateTargetPoses(const QMatrix4x4& pose, bool show,
+                           const QMatrix4x4& pose_y_aligned, bool show_y_aligned,
+                           const QMatrix4x4& view_pose, bool show_view_pose);
 
 signals:
     void denoisingToggled();
@@ -71,6 +74,7 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
 
 private:
+    // ✨ processPoints 선언 확인
     void processPoints(const std::vector<int>& clusterIds = {});
     void drawAxes(float length, float lineWidth = 2.0f);
     void drawGrid(float size, int divisions);
@@ -78,6 +82,8 @@ private:
     void drawGripper();
     void drawTargetPose();
     void drawTargetPose_Y_Aligned();
+    // ✨ drawViewPose 선언 확인
+    void drawViewPose();
 
     std::vector<float> m_vertexData;
     rs2::points m_points;
@@ -94,6 +100,9 @@ private:
     bool m_showTargetPose = false;
     QMatrix4x4 m_targetTcpTransform_Y_Aligned;
     bool m_showTargetPose_Y_Aligned = false;
+    // ✨ 뷰포인트 Pose 시각화용 변수
+    QMatrix4x4 m_viewPoseTransform;
+    bool m_showViewPose = false;
 
     friend class RealSenseWidget;
 
@@ -128,7 +137,8 @@ public slots:
     void onMoveRobotToPreGraspPose();
     void onPickAndReturnRequested();
     void onToggleMaskedPoints();
-    void onShowHandlePlot(); // ✨ [추가]
+    void onShowHandlePlot();
+    void onMoveToHandleViewPose();
 
     // (Move 버튼이 호출할 메인 함수)
     void runFullAutomatedSequence();
@@ -157,7 +167,6 @@ private slots:
 private:
     // (계산 로직을 담당하는 비공개 함수)
     bool calculateGraspingPoses(bool showPlot);
-    // ✨ [추가] PCA 계산 및 2D 포인트 반환
     void calculatePCA(const QVector<QVector3D>& points, QVector<QPointF>& projectedPoints);
 
     void findFloorPlaneRANSAC();
@@ -167,7 +176,7 @@ private:
     QLabel *m_colorLabel;
     PointCloudWidget *m_pointCloudWidget;
     QList<XYPlotWidget*> m_plotWidgets;
-    HandlePlotWidget* m_handlePlotWidget; // ✨ [추가]
+    HandlePlotWidget* m_handlePlotWidget;
 
     QMatrix4x4 m_baseToTcpTransform;
     QMatrix4x4 m_tcpToCameraTransform;
@@ -202,7 +211,6 @@ private:
 
     QVector<GraspingTarget> m_graspingTargets;
 
-    // ✨ [오타 수정] QMatrix4HMatrix4 -> QMatrix4x4
     QMatrix4x4 m_calculatedTargetPose;
     QVector3D m_calculatedTargetPos_m;
     QVector3D m_calculatedTargetOri_deg;

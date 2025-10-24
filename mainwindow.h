@@ -41,10 +41,11 @@ public:
 
 signals:
     void requestMoveRobot(const QVector3D& position_mm, const QVector3D& orientation_deg);
-    void requestPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg);
+    // ✨ [오류 수정] 시그널 이름을 connect 구문과 일치하도록 수정 (Robot 추가)
+    void requestRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg);
     void requestResetPosition();
     void requestGripperAction(int action);
-    void startRobotMonitoring(); // ✨ [추가]
+    void startRobotMonitoring();
 
     void requestLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
                                         const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
@@ -60,12 +61,12 @@ private slots:
     void on_GripperOpenButton_clicked();
     void on_GripperCloseButton_clicked();
     void on_MoveButton_clicked();
-    void on_HandlePlotButton_clicked(); // ✨ [추가]
+    void on_HandlePlotButton_clicked();
+    void on_MoveViewButton_clicked();
 
 private:
     Ui::MainWindow *ui;
 
-    // ✨ [수정] RobotMonitor 관련 코드 제거
     QThread m_robotControllerThread;
     RobotController* m_robotController;
 
