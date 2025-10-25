@@ -146,7 +146,20 @@
      <rect>
       <x>680</x>
       <y>640</y>
-      <width>251</width>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Move View point</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="MovepointButton">
+    <property name="geometry">
+     <rect>
+      <x>810</x>
+      <y>640</y>
+      <width>121</width>
       <height>61</height>
      </rect>
     </property>

@@ -903,11 +903,9 @@ void RealSenseWidget::onMoveToYAlignedPoseRequested()
 
     emit requestLiftRotatePlaceSequence(liftPos_mm, graspOri_deg, liftPos_mm, rotatedOri_deg, placePos_mm, rotatedOri_deg);
 }
-
-// ✨ [수정] onMoveToHandleViewPose 함수 (요구사항 반영 - X축 이동 및 Y축 회전)
 void RealSenseWidget::onMoveToHandleViewPose()
 {
-    qInfo() << "[VIEW] 'Move to Handle View' requested based on Grasp Pose.";
+    qInfo() << "[VIEW] 'Move to Handle View' requested (Look-At Grasp Point).";
 
     // Step 1: 파지 좌표계 계산
     if (!calculateGraspingPoses(false)) {
@@ -915,48 +913,97 @@ void RealSenseWidget::onMoveToHandleViewPose()
         return;
     }
 
-    // Step 2: 필요한 정보 가져오기
-    if (m_calculatedTargetPos_m.isNull() || m_calculatedTargetOri_deg.isNull()) {
+    // Step 2: 파지 좌표계 유효성 확인
+    if (m_calculatedTargetPose.isIdentity()) {
         qWarning() << "[VIEW] Grasp pose data is invalid after calculation. Aborting.";
         return;
     }
 
-    // Step 3: 파지 좌표계 X축 방향 벡터 추출
-    QVector3D graspXAxis = m_calculatedTargetPose.column(0).toVector3D().normalized();
-    qInfo() << "[VIEW] Grasp Pose X-Axis (World):" << graspXAxis;
+    // Step 3: 파지 포인트 위치 추출 (빨간 구체가 표시되는 위치)
+    if (m_graspingTargets.isEmpty()) {
+        qWarning() << "[VIEW] No grasping targets available. Cannot create look-at view.";
+        return;
+    }
 
-    // Step 4: 새로운 뷰 포인트 위치 계산
-    // 파지 위치에서 파지 좌표계의 -X축 방향으로 30cm 이동
-    const float VIEW_OFFSET_X_M = -0.3f; // ✨ 수정: -30cm
-    QVector3D viewPos_m = m_calculatedTargetPos_m + VIEW_OFFSET_X_M * graspXAxis;
+    // 첫 번째 파지 타겟의 포인트를 사용 (또는 가장 가까운 포인트 선택 가능)
+    QVector3D graspPoint = m_graspingTargets[0].point;
 
-    // Step 5: 새로운 뷰 포인트 방향 설정
-    float Rx_deg = m_calculatedTargetOri_deg.x(); // 파지 Pitch 유지 (0도)
-    float Ry_deg = 30.0f;                         // ✨ 수정: Y축 회전 30도
-    float Rz_deg = m_calculatedTargetOri_deg.z(); // 파지 Yaw 유지 (Y축이 손잡이 선과 평행)
-    QVector3D viewOri_deg(Rx_deg, Ry_deg, Rz_deg);
+    // Step 4: 뷰 포지션 계산 (파지 좌표계 기준 상대 이동)
+    QMatrix4x4 viewPoseMatrix = m_calculatedTargetPose;
+    const float VIEW_OFFSET_X_M = -0.3f;
+    viewPoseMatrix.translate(VIEW_OFFSET_X_M, 0.0f, 0.0f);
 
-    // Step 6: 시각화를 위한 Matrix 생성
-    QMatrix4x4 viewPoseMatrix;
-    viewPoseMatrix.setToIdentity();
-    viewPoseMatrix.translate(viewPos_m);
-    // Z -> Y -> X 순서로 회전 적용
-    viewPoseMatrix.rotate(viewOri_deg.z(), 0, 0, 1); // Yaw
-    viewPoseMatrix.rotate(viewOri_deg.y(), 0, 1, 0); // Roll (30도)
-    viewPoseMatrix.rotate(viewOri_deg.x(), 1, 0, 0); // Pitch
+    // 현재 뷰 위치 추출
+    QVector3D viewPos = viewPoseMatrix.column(3).toVector3D();
 
-    // Step 7: 로그 출력 및 시각화 업데이트
-    qInfo() << "[VIEW] Visualizing Calculated Handle View Pose (Relative to Grasp Pose):";
-    qInfo() << "  - View Pos (m):" << viewPos_m << "(Grasp Pos - 30cm along Grasp X)"; // ✨ 로그 수정
-    qInfo() << "  - View Ori (deg):" << viewOri_deg << "(Grasp Yaw, Roll=30, Grasp Pitch)"; // ✨ 로그 수정
+    // Step 5: 원래 파지 자세의 X, Y축 방향 추출
+    QVector3D originalX = m_calculatedTargetPose.column(0).toVector3D().normalized();
+    QVector3D originalY = m_calculatedTargetPose.column(1).toVector3D().normalized();
+
+    // Step 6: Z축이 파지 포인트를 향하도록 계산
+    QVector3D desiredZ = (graspPoint - viewPos).normalized();
+
+    // Step 7: 원래 X축 방향 유지하면서 새로운 좌표계 구성
+    // 방법 1: X축 우선 (X축 방향 최대한 유지)
+    QVector3D newY = QVector3D::crossProduct(desiredZ, originalX).normalized();
+    QVector3D newX = QVector3D::crossProduct(newY, desiredZ).normalized();
+
+    // 회전 행렬 구성 (열 우선 방식)
+    QMatrix4x4 lookAtMatrix;
+    lookAtMatrix.setColumn(0, QVector4D(newX, 0));
+    lookAtMatrix.setColumn(1, QVector4D(newY, 0));
+    lookAtMatrix.setColumn(2, QVector4D(desiredZ, 0));
+    lookAtMatrix.setColumn(3, QVector4D(viewPos, 1));
+
+    // Step 8: Z축 180도 회전 적용 (원래 코드에서 사용하던 부분)
+    const float RELATIVE_RZ_DEG = 180.0f;
+    lookAtMatrix.rotate(RELATIVE_RZ_DEG, 0, 0, 1); // 로컬 Z축(Yaw) 기준 회전
+
+    // Step 8: 로그 출력 및 시각화
+    qInfo() << "[VIEW] Look-At View Pose Calculated (with Z-axis 180° rotation):";
+    qInfo() << "  - View Pos (m):" << viewPos;
+    qInfo() << "  - Grasp Point (m):" << graspPoint;
+    qInfo() << "  - Desired Z (Forward):" << desiredZ;
+    qInfo() << "  - New X:" << newX;
+    qInfo() << "  - New Y:" << newY;
+    qInfo() << "  - Z-axis Rotation: 180°";
+    qInfo() << "  - Distance:" << viewPos.distanceToPoint(graspPoint) << "m";
 
     m_pointCloudWidget->updateTargetPoses(
-        m_calculatedTargetPose, m_pointCloudWidget->m_showTargetPose, // 기존 파지 Pose 유지
-        QMatrix4x4(), false, // Y-Aligned Pose는 숨김
-        viewPoseMatrix, true  // 새로운 뷰 Pose 표시 (노란색)
+        m_calculatedTargetPose, m_pointCloudWidget->m_showTargetPose,  // 파지 Pose (보라색)
+        QMatrix4x4(), false,                                             // Y-Aligned Pose (숨김)
+        lookAtMatrix, true                                               // 뷰 Pose (노란색)
         );
 
-    // emit requestRobotMove(viewPos_m * 1000.0f, viewOri_deg); // <-- 실제 이동은 주석 처리
+    // Step 9: 실제 로봇 이동 (필요 시 활성화)
+    QVector3D viewOri_deg = extractEulerAngles(lookAtMatrix);
+    emit requestRobotMove(viewPos * 1000.0f, viewOri_deg);
+}
+
+// 보조 함수: QMatrix4x4에서 Euler 각도 추출 (ZYX 순서)
+QVector3D RealSenseWidget::extractEulerAngles(const QMatrix4x4& matrix)
+{
+    // R = Rz(yaw) * Ry(pitch) * Rx(roll)
+    float m00 = matrix(0, 0), m01 = matrix(0, 1), m02 = matrix(0, 2);
+    float m10 = matrix(1, 0), m11 = matrix(1, 1), m12 = matrix(1, 2);
+    float m20 = matrix(2, 0), m21 = matrix(2, 1), m22 = matrix(2, 2);
+
+    float pitch = std::asin(-m20);
+    float roll, yaw;
+
+    if (std::abs(std::cos(pitch)) > 1e-6) {
+        roll = std::atan2(m21, m22);
+        yaw = std::atan2(m10, m00);
+    } else {
+        roll = std::atan2(-m12, m11);
+        yaw = 0;
+    }
+
+    return QVector3D(
+        qRadiansToDegrees(roll),
+        qRadiansToDegrees(pitch),
+        qRadiansToDegrees(yaw)
+        );
 }
 
 

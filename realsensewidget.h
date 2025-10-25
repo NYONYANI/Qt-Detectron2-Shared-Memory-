@@ -168,7 +168,7 @@ private:
     // (계산 로직을 담당하는 비공개 함수)
     bool calculateGraspingPoses(bool showPlot);
     void calculatePCA(const QVector<QVector3D>& points, QVector<QPointF>& projectedPoints);
-
+    QVector3D extractEulerAngles(const QMatrix4x4& matrix);
     void findFloorPlaneRANSAC();
     void runDbscanClustering();
 
