@@ -938,13 +938,19 @@ void RealSenseWidget::onCalculateHandleViewPose()
 
     // Step 4: 뷰 포지션 계산
     QMatrix4x4 viewPoseMatrix = m_calculatedTargetPose;
-    const float VIEW_OFFSET_X_M = -0.3f;
+    const float VIEW_OFFSET_X_M = -0.3f; // 파지 좌표계 기준 X축 방향으로 이동 (-0.3m)
     viewPoseMatrix.translate(VIEW_OFFSET_X_M, 0.0f, 0.0f);
-    QVector3D viewPos = viewPoseMatrix.column(3).toVector3D();
+    const float VIEW_OFFSET_Z_M = -0.0f; // 파지 좌표계 기준 Z축 방향으로 이동 (-0.1m)
+    viewPoseMatrix.translate(0.0f, 0.0f, VIEW_OFFSET_Z_M); // ✨ 추가된 Z축 위치 오프셋 적용
+    QVector3D viewPos = viewPoseMatrix.column(3).toVector3D(); // 최종 뷰 위치
 
-    // Step 5 & 6: 목표 Z축 계산
+    // Step 5: 파지 자세의 X축 방향 추출 (새로운 Y축 계산에 사용)
     QVector3D originalX = m_calculatedTargetPose.column(0).toVector3D().normalized();
-    QVector3D desiredZ = (graspPoint - viewPos).normalized();
+
+    // Step 6: 목표 Z축 계산 (파지점보다 살짝 아래를 보도록)
+    const float Z_OFFSET_BELOW_GRASP = 0.1f; // Z축으로 2cm 아래 지점을 바라보도록 설정
+    QVector3D lookAtTarget = graspPoint - QVector3D(0, 0, Z_OFFSET_BELOW_GRASP); // 목표 지점 Z값 조정
+    QVector3D desiredZ = (lookAtTarget - viewPos).normalized(); // 최종 뷰 위치에서 조정된 목표 지점을 향하는 Z벡터
 
     // Step 7: 새로운 X, Y축 계산
     QVector3D newY = QVector3D::crossProduct(desiredZ, originalX).normalized();
@@ -957,7 +963,7 @@ void RealSenseWidget::onCalculateHandleViewPose()
     lookAtMatrix.setColumn(2, QVector4D(desiredZ, 0));
     lookAtMatrix.setColumn(3, QVector4D(viewPos, 1));
     const float RELATIVE_RZ_DEG = 180.0f;
-    lookAtMatrix.rotate(RELATIVE_RZ_DEG, 0, 0, 1);
+    lookAtMatrix.rotate(RELATIVE_RZ_DEG, 0, 0, 1); // 로컬 Z축 기준 회전
 
     // Step 9: 시각화 업데이트
     m_pointCloudWidget->updateTargetPoses(
