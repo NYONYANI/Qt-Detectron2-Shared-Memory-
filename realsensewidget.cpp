@@ -457,7 +457,7 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     connect(m_pointCloudWidget, &PointCloudWidget::pickAndReturnRequested, this, &RealSenseWidget::onPickAndReturnRequested);
     m_layout->addWidget(m_colorLabel, 1);
     m_layout->addWidget(m_pointCloudWidget, 1);
-    setLayout(m_layout);
+    setLayout(m_layout); // ✨ [오류 수정] setLayout(this) -> setLayout(m_layout)
 
     m_baseToTcpTransform.setToIdentity();
     const float r[] = { 0.0f,  1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
@@ -747,21 +747,52 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
     const QVector3D& N = bestTarget.direction; // Direction perpendicular to handle line on XY plane
 
     // Calculate Rz (Yaw) to align TCP X-axis with the grasp direction (N)
-    float target_rz_rad = atan2(N.y(), N.x());
+    float target_rz_rad_for_X = atan2(N.y(), N.x()); // N 벡터(파지 방향)의 각도
+
+    // ✨ [수정] Y축이 N방향(파지 방향)을 향하도록 Rz를 -90도(M_PI/2) 회전
+    float target_rz_rad = target_rz_rad_for_X - (M_PI / 2.0f);
+
 
     while (target_rz_rad > M_PI) target_rz_rad -= 2 * M_PI;
-    while (target_rz_rad < -M_PI) target_rz_rad += 2 * M_PI;
+    while (target_rz_rad <= -M_PI) target_rz_rad += 2 * M_PI; // 등호 <= 추가
 
-    // Standard orientation: Rx=0, Ry=180, Rz calculated
-    m_calculatedTargetOri_deg = QVector3D(0.0f, 179.9f, qRadiansToDegrees(target_rz_rad));
+    // ----- [✨ 로봇 각도 변환 로직 시작] -----
+    // 1. (Rx, Ry, Rz)로 먼저 4x4 행렬 생성
+    // (Standard orientation: Rx=0, Ry=180, Rz=calculated)
+    QVector3D euler_RxRyRz_deg(0.0f, 179.9f, qRadiansToDegrees(target_rz_rad));
 
     m_calculatedTargetPose.setToIdentity();
     m_calculatedTargetPose.translate(m_calculatedTargetPos_m);
-    m_calculatedTargetPose.rotate(m_calculatedTargetOri_deg.z(), 0, 0, 1); // Yaw
-    m_calculatedTargetPose.rotate(m_calculatedTargetOri_deg.y(), 0, 1, 0); // Roll
-    m_calculatedTargetPose.rotate(m_calculatedTargetOri_deg.x(), 1, 0, 0); // Pitch
+    m_calculatedTargetPose.rotate(euler_RxRyRz_deg.z(), 0, 0, 1); // Z (Yaw)
+    m_calculatedTargetPose.rotate(euler_RxRyRz_deg.y(), 0, 1, 0); // Y (Pitch)
+    m_calculatedTargetPose.rotate(euler_RxRyRz_deg.x(), 1, 0, 0); // X (Roll)
 
-    qDebug() << "[CALC] Target Grasp Pose Calculated | Pos(m):" << m_calculatedTargetPos_m << "Ori(deg):" << m_calculatedTargetOri_deg;
+    // 2. 4x4 행렬에서 3x3 회전 행렬 추출
+    QMatrix3x3 rotMat = m_calculatedTargetPose.toGenericMatrix<3,3>();
+
+    // 3. 3x3 회전 행렬을 "ZYZ" 규약으로 변환
+    QVector3D graspOri_deg_ZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
+
+    // 4. "ZYZ" 각도를 로봇 명령용 (A, B, C)로 변환 (Move View 로직과 동일)
+    float cmd_A = graspOri_deg_ZYZ.x() + 180.0f; // Z1 + 180
+    float cmd_B = -graspOri_deg_ZYZ.y();         // -Y'
+    float cmd_C = graspOri_deg_ZYZ.z() + 180.0f; // Z'' + 180
+
+    // 각도 정규화 (-180 ~ 180)
+    while (cmd_A > 180.0f) cmd_A -= 360.0f;
+    while (cmd_A <= -180.0f) cmd_A += 360.0f; // 등호 <= 추가
+    while (cmd_B > 180.0f) cmd_B -= 360.0f;
+    while (cmd_B <= -180.0f) cmd_B += 360.0f; // 등호 <= 추가
+    while (cmd_C > 180.0f) cmd_C -= 360.0f;
+    while (cmd_C <= -180.0f) cmd_C += 360.0f; // 등호 <= 추가
+
+    // 5. 최종 (A, B, C) 값을 m_calculatedTargetOri_deg에 저장
+    m_calculatedTargetOri_deg = QVector3D(cmd_A, cmd_B, cmd_C);
+    // ----- [✨ 로봇 각도 변환 로직 끝] -----
+
+    qDebug() << "[CALC] Target Grasp Pose Calculated | Pos(m):" << m_calculatedTargetPos_m
+             << "| Ori(A,B,C deg):" << m_calculatedTargetOri_deg
+             << "| (Debug ZYZ):" << graspOri_deg_ZYZ;
 
     // Toggle visualization
     bool show = !m_pointCloudWidget->m_showTargetPose;
@@ -808,33 +839,59 @@ void RealSenseWidget::runFullAutomatedSequence()
 
     QVector3D preGraspPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, APPROACH_HEIGHT_M);
     QVector3D preGraspPos_mm = preGraspPos_m * 1000.0f;
-    QVector3D preGraspOri_deg = m_calculatedTargetOri_deg;
+    QVector3D preGraspOri_deg = m_calculatedTargetOri_deg; // (A, B, C)
 
     QVector3D graspPos_mm = m_calculatedTargetPos_m * 1000.0f;
-    QVector3D graspOri_deg = m_calculatedTargetOri_deg;
+    QVector3D graspOri_deg = m_calculatedTargetOri_deg; // (A, B, C)
 
     const float LIFT_HEIGHT_M = 0.03f;
     QVector3D liftPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, LIFT_HEIGHT_M);
     QVector3D liftPos_mm = liftPos_m * 1000.0f;
-    QVector3D liftOri_deg = graspOri_deg;
+    QVector3D liftOri_deg = graspOri_deg; // (A, B, C)
 
-    float original_rz_rad = qDegreesToRadians(m_calculatedTargetOri_deg.z());
-    float target_rz_option1 = M_PI / 2.0f;
-    float target_rz_option2 = -M_PI / 2.0f;
-    float rotation1 = target_rz_option1 - original_rz_rad;
-    float rotation2 = target_rz_option2 - original_rz_rad;
-    while (rotation1 > M_PI) rotation1 -= 2 * M_PI;
-    while (rotation1 < -M_PI) rotation1 += 2 * M_PI;
-    while (rotation2 > M_PI) rotation2 -= 2 * M_PI;
-    while (rotation2 < -M_PI) rotation2 += 2 * M_PI;
-    float y_aligned_rz_rad = (std::abs(rotation1) < std::abs(rotation2)) ? target_rz_option1 : target_rz_option2;
-    QVector3D rotatedOri_deg = QVector3D(m_calculatedTargetOri_deg.x(), m_calculatedTargetOri_deg.y(), qRadiansToDegrees(y_aligned_rz_rad));
+    // --- [✨ 수정] 로봇 베이스 Y축 정렬 회전 계산 (X축 기준, A값 직접 설정) ---
+    // 1. 현재 파지 자세(m_calculatedTargetPose - 4x4 행렬)에서 X축 벡터 가져오기
+    QVector3D grasp_X_axis = m_calculatedTargetPose.column(0).toVector3D().normalized();
 
-    QVector3D rotatePos_mm = liftPos_mm;
-    QVector3D rotateOri_deg = rotatedOri_deg;
+    // 2. X축 벡터의 현재 Rz 각도(라디안) 계산
+    float rz_rad_for_X = atan2(grasp_X_axis.y(), grasp_X_axis.x());
 
-    QVector3D placePos_mm = graspPos_mm;
-    QVector3D placeOri_deg = rotatedOri_deg;
+    // 3. 목표 각도 (+Y축 또는 -Y축 방향의 A값) 결정
+    //    Target ZYZ = (90, 180, 0) -> A = -90  (X축이 +Y베이스 향함)
+    //    Target ZYZ = (-90, 180, 0) -> A = 90 (X축이 -Y베이스 향함)
+    float target_A_option1 = -90.0f; // Target: TCP X along +Y base
+    float target_A_option2 = 90.0f;  // Target: TCP X along -Y base
+
+    // 4. 현재 X축 각도와 목표 방향(+Y 또는 -Y) 사이의 각도 차이 계산
+    float diff_to_pos_Y = rz_rad_for_X - (M_PI / 2.0f); // Diff to +Y base axis (PI/2)
+    float diff_to_neg_Y = rz_rad_for_X - (-M_PI / 2.0f);// Diff to -Y base axis (-PI/2)
+
+    // 각도 차이를 (-PI, PI] 범위로 정규화
+    while (diff_to_pos_Y > M_PI) diff_to_pos_Y -= 2 * M_PI;
+    while (diff_to_pos_Y <= -M_PI) diff_to_pos_Y += 2 * M_PI; // 등호 <= 추가
+    while (diff_to_neg_Y > M_PI) diff_to_neg_Y -= 2 * M_PI;
+    while (diff_to_neg_Y <= -M_PI) diff_to_neg_Y += 2 * M_PI; // 등호 <= 추가
+
+    // 5. 더 작은 각도 차이를 가진 목표 A값 선택
+    float target_A = (std::abs(diff_to_pos_Y) < std::abs(diff_to_neg_Y)) ? target_A_option1 : target_A_option2;
+
+    // 6. 회전된 최종 Orientation (A, B, C) 설정
+    QVector3D rotatedOri_deg = graspOri_deg; // 시작은 원래 파지 자세 A, B, C
+    rotatedOri_deg.setX(target_A);           // 계산된 목표 A 값으로 설정 (B, C는 유지)
+
+    // 디버깅 로그 추가
+    qDebug() << "[SEQ ROT CALC] Current X-Axis Angle (deg):" << qRadiansToDegrees(rz_rad_for_X);
+    qDebug() << "[SEQ ROT CALC] Diff to +Y Base (deg):" << qRadiansToDegrees(diff_to_pos_Y);
+    qDebug() << "[SEQ ROT CALC] Diff to -Y Base (deg):" << qRadiansToDegrees(diff_to_neg_Y);
+    qDebug() << "[SEQ ROT CALC] Chosen Target A (deg):" << target_A;
+    // --- [✨ 수정 끝] ---
+
+    // 7. 시퀀스 좌표 설정
+    QVector3D rotatePos_mm = liftPos_mm; // 높이는 lift와 동일
+    QVector3D rotateOri_deg = rotatedOri_deg; // 계산된 최종 (A, B, C)
+
+    QVector3D placePos_mm = graspPos_mm; // 위치는 grasp와 동일 (회전 전 위치)
+    QVector3D placeOri_deg = rotatedOri_deg; // 계산된 최종 (A, B, C)
 
     qDebug() << "[SEQ] Emitting requestFullPickAndPlaceSequence to RobotController.";
     emit requestFullPickAndPlaceSequence(
@@ -888,23 +945,31 @@ void RealSenseWidget::onMoveToYAlignedPoseRequested()
     }
     const float LIFT_HEIGHT_M = 0.03f;
     QVector3D graspPos_mm = m_calculatedTargetPos_m * 1000.0f;
-    QVector3D graspOri_deg = m_calculatedTargetOri_deg;
+    QVector3D graspOri_deg = m_calculatedTargetOri_deg; // (A, B, C)
     QVector3D liftPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, LIFT_HEIGHT_M);
     QVector3D liftPos_mm = liftPos_m * 1000.0f;
-    float original_rz_rad = qDegreesToRadians(m_calculatedTargetOri_deg.z());
-    float target_rz_option1 = M_PI / 2.0f;
-    float target_rz_option2 = -M_PI / 2.0f;
-    float rotation1 = target_rz_option1 - original_rz_rad;
-    float rotation2 = target_rz_option2 - original_rz_rad;
-    while (rotation1 > M_PI) rotation1 -= 2 * M_PI;
-    while (rotation1 < -M_PI) rotation1 += 2 * M_PI;
-    while (rotation2 > M_PI) rotation2 -= 2 * M_PI;
-    while (rotation2 < -M_PI) rotation2 += 2 * M_PI;
-    float y_aligned_rz_rad = (std::abs(rotation1) < std::abs(rotation2)) ? target_rz_option1 : target_rz_option2;
-    QVector3D rotatedOri_deg = QVector3D(m_calculatedTargetOri_deg.x(), m_calculatedTargetOri_deg.y(), qRadiansToDegrees(y_aligned_rz_rad));
-    QVector3D placePos_mm = graspPos_mm;
+
+    // --- [✨ 수정] 로봇 베이스 Y축 정렬 회전 계산 (X축 기준, A값 직접 설정) ---
+    QVector3D grasp_X_axis = m_calculatedTargetPose.column(0).toVector3D().normalized();
+    float rz_rad_for_X = atan2(grasp_X_axis.y(), grasp_X_axis.x());
+    float target_A_option1 = -90.0f;
+    float target_A_option2 = 90.0f;
+    float diff_to_pos_Y = rz_rad_for_X - (M_PI / 2.0f);
+    float diff_to_neg_Y = rz_rad_for_X - (-M_PI / 2.0f);
+    while (diff_to_pos_Y > M_PI) diff_to_pos_Y -= 2 * M_PI;
+    while (diff_to_pos_Y <= -M_PI) diff_to_pos_Y += 2 * M_PI; // 등호 <= 추가
+    while (diff_to_neg_Y > M_PI) diff_to_neg_Y -= 2 * M_PI;
+    while (diff_to_neg_Y <= -M_PI) diff_to_neg_Y += 2 * M_PI; // 등호 <= 추가
+    float target_A = (std::abs(diff_to_pos_Y) < std::abs(diff_to_neg_Y)) ? target_A_option1 : target_A_option2;
+    QVector3D rotatedOri_deg = graspOri_deg;
+    rotatedOri_deg.setX(target_A);
+    // --- [✨ 수정 끝] ---
+
+    QVector3D placePos_mm = graspPos_mm; // 내려놓는 위치는 회전 전 grasp 위치와 동일
+
     qDebug() << "[SEQUENCE] Lift to:" << liftPos_mm << "| Rotate to:" << rotatedOri_deg << "| Place at:" << placePos_mm;
 
+    // 시그널 전송: liftPos, graspOri -> liftPos, rotatedOri -> placePos, rotatedOri
     emit requestLiftRotatePlaceSequence(liftPos_mm, graspOri_deg, liftPos_mm, rotatedOri_deg, placePos_mm, rotatedOri_deg);
 }
 
