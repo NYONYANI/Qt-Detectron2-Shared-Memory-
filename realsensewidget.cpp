@@ -849,44 +849,84 @@ void RealSenseWidget::runFullAutomatedSequence()
     QVector3D liftPos_mm = liftPos_m * 1000.0f;
     QVector3D liftOri_deg = graspOri_deg; // (A, B, C)
 
-    // --- [✨ 수정] 로봇 베이스 Y축 정렬 회전 계산 (X축 기준, A값 직접 설정) ---
+    // --- [✨ 수정] 로봇 베이스 Y축 정렬 회전 계산 (X축 기준, A값 직접 설정 + 각도 제한 고려) ---
     // 1. 현재 파지 자세(m_calculatedTargetPose - 4x4 행렬)에서 X축 벡터 가져오기
     QVector3D grasp_X_axis = m_calculatedTargetPose.column(0).toVector3D().normalized();
 
     // 2. X축 벡터의 현재 Rz 각도(라디안) 계산
     float rz_rad_for_X = atan2(grasp_X_axis.y(), grasp_X_axis.x());
 
-    // 3. 목표 각도 (+Y축 또는 -Y축 방향의 A값) 결정
-    //    Target ZYZ = (90, 180, 0) -> A = -90  (X축이 +Y베이스 향함)
-    //    Target ZYZ = (-90, 180, 0) -> A = 90 (X축이 -Y베이스 향함)
+    // 3. 목표 각도 (+Y축 또는 -Y축 방향의 A값) 정의
     float target_A_option1 = -90.0f; // Target: TCP X along +Y base
     float target_A_option2 = 90.0f;  // Target: TCP X along -Y base
 
-    // 4. 현재 X축 각도와 목표 방향(+Y 또는 -Y) 사이의 각도 차이 계산
-    float diff_to_pos_Y = rz_rad_for_X - (M_PI / 2.0f); // Diff to +Y base axis (PI/2)
-    float diff_to_neg_Y = rz_rad_for_X - (-M_PI / 2.0f);// Diff to -Y base axis (-PI/2)
+    // 4. 현재 X축 각도와 목표 방향(+Y 또는 -Y) 사이의 각도 차이(회전량) 계산
+    float rotation1_rad = (M_PI / 2.0f) - rz_rad_for_X; // Rotation to align X with +Y base
+    float rotation2_rad = (-M_PI / 2.0f) - rz_rad_for_X;// Rotation to align X with -Y base
 
     // 각도 차이를 (-PI, PI] 범위로 정규화
-    while (diff_to_pos_Y > M_PI) diff_to_pos_Y -= 2 * M_PI;
-    while (diff_to_pos_Y <= -M_PI) diff_to_pos_Y += 2 * M_PI; // 등호 <= 추가
-    while (diff_to_neg_Y > M_PI) diff_to_neg_Y -= 2 * M_PI;
-    while (diff_to_neg_Y <= -M_PI) diff_to_neg_Y += 2 * M_PI; // 등호 <= 추가
+    while (rotation1_rad > M_PI) rotation1_rad -= 2 * M_PI;
+    while (rotation1_rad <= -M_PI) rotation1_rad += 2 * M_PI; // 등호 <= 추가
+    while (rotation2_rad > M_PI) rotation2_rad -= 2 * M_PI;
+    while (rotation2_rad <= -M_PI) rotation2_rad += 2 * M_PI; // 등호 <= 추가
 
-    // 5. 더 작은 각도 차이를 가진 목표 A값 선택
-    float target_A = (std::abs(diff_to_pos_Y) < std::abs(diff_to_neg_Y)) ? target_A_option1 : target_A_option2;
+    float rotation1_deg = qRadiansToDegrees(rotation1_rad);
+    float rotation2_deg = qRadiansToDegrees(rotation2_rad);
 
-    // 6. 회전된 최종 Orientation (A, B, C) 설정
+    // 5. 현재 A축 각도 가져오기
+    float current_A_deg = graspOri_deg.x();
+
+    // 6. 각 회전 경로 적용 시 예상되는 최종 A값 계산 및 정규화
+    float final_A1 = current_A_deg + rotation1_deg;
+    float final_A2 = current_A_deg + rotation2_deg;
+
+    while (final_A1 > 180.0f) final_A1 -= 360.0f;
+    while (final_A1 <= -180.0f) final_A1 += 360.0f;
+    while (final_A2 > 180.0f) final_A2 -= 360.0f;
+    while (final_A2 <= -180.0f) final_A2 += 360.0f;
+
+    // 7. 각도 제한 설정 (예: -170 ~ +170)
+    const float LIMIT_HIGH = 170.0f;
+    const float LIMIT_LOW = -170.0f;
+
+    bool is_A1_valid = (final_A1 > LIMIT_LOW && final_A1 < LIMIT_HIGH);
+    bool is_A2_valid = (final_A2 > LIMIT_LOW && final_A2 < LIMIT_HIGH);
+
+    // 8. 최종 회전 방향 결정 (각도 제한 우선 고려)
+    float target_A = 0.0f;
+    if (is_A1_valid && !is_A2_valid) {
+        target_A = target_A_option1; // 경로 1만 유효하면 경로 1 선택
+        qDebug() << "[SEQ ROT SEL] Path 1 chosen (Only Path 1 is valid)";
+    } else if (!is_A1_valid && is_A2_valid) {
+        target_A = target_A_option2; // 경로 2만 유효하면 경로 2 선택
+        qDebug() << "[SEQ ROT SEL] Path 2 chosen (Only Path 2 is valid)";
+    } else if (is_A1_valid && is_A2_valid) {
+        // 둘 다 유효하면 더 작은 회전량 선택
+        if (std::abs(rotation1_rad) <= std::abs(rotation2_rad)) {
+            target_A = target_A_option1;
+            qDebug() << "[SEQ ROT SEL] Path 1 chosen (Both valid, smaller rotation)";
+        } else {
+            target_A = target_A_option2;
+            qDebug() << "[SEQ ROT SEL] Path 2 chosen (Both valid, smaller rotation)";
+        }
+    } else {
+        // 둘 다 유효하지 않으면, 일단 최소 회전 경로 선택하고 경고
+        qWarning() << "[SEQ ROT SEL] Warning: Both rotation paths exceed angle limits!";
+        if (std::abs(rotation1_rad) <= std::abs(rotation2_rad)) {
+            target_A = target_A_option1;
+            qDebug() << "[SEQ ROT SEL] Path 1 chosen (Both invalid, fallback to smaller rotation)";
+        } else {
+            target_A = target_A_option2;
+            qDebug() << "[SEQ ROT SEL] Path 2 chosen (Both invalid, fallback to smaller rotation)";
+        }
+    }
+
+    // 9. 회전된 최종 Orientation (A, B, C) 설정
     QVector3D rotatedOri_deg = graspOri_deg; // 시작은 원래 파지 자세 A, B, C
     rotatedOri_deg.setX(target_A);           // 계산된 목표 A 값으로 설정 (B, C는 유지)
-
-    // 디버깅 로그 추가
-    qDebug() << "[SEQ ROT CALC] Current X-Axis Angle (deg):" << qRadiansToDegrees(rz_rad_for_X);
-    qDebug() << "[SEQ ROT CALC] Diff to +Y Base (deg):" << qRadiansToDegrees(diff_to_pos_Y);
-    qDebug() << "[SEQ ROT CALC] Diff to -Y Base (deg):" << qRadiansToDegrees(diff_to_neg_Y);
-    qDebug() << "[SEQ ROT CALC] Chosen Target A (deg):" << target_A;
     // --- [✨ 수정 끝] ---
 
-    // 7. 시퀀스 좌표 설정
+    // 10. 시퀀스 좌표 설정
     QVector3D rotatePos_mm = liftPos_mm; // 높이는 lift와 동일
     QVector3D rotateOri_deg = rotatedOri_deg; // 계산된 최종 (A, B, C)
 
@@ -949,18 +989,35 @@ void RealSenseWidget::onMoveToYAlignedPoseRequested()
     QVector3D liftPos_m = m_calculatedTargetPos_m + QVector3D(0, 0, LIFT_HEIGHT_M);
     QVector3D liftPos_mm = liftPos_m * 1000.0f;
 
-    // --- [✨ 수정] 로봇 베이스 Y축 정렬 회전 계산 (X축 기준, A값 직접 설정) ---
+    // --- [✨ 수정] 로봇 베이스 Y축 정렬 회전 계산 (X축 기준, A값 직접 설정 + 각도 제한 고려) ---
     QVector3D grasp_X_axis = m_calculatedTargetPose.column(0).toVector3D().normalized();
     float rz_rad_for_X = atan2(grasp_X_axis.y(), grasp_X_axis.x());
     float target_A_option1 = -90.0f;
     float target_A_option2 = 90.0f;
-    float diff_to_pos_Y = rz_rad_for_X - (M_PI / 2.0f);
-    float diff_to_neg_Y = rz_rad_for_X - (-M_PI / 2.0f);
-    while (diff_to_pos_Y > M_PI) diff_to_pos_Y -= 2 * M_PI;
-    while (diff_to_pos_Y <= -M_PI) diff_to_pos_Y += 2 * M_PI; // 등호 <= 추가
-    while (diff_to_neg_Y > M_PI) diff_to_neg_Y -= 2 * M_PI;
-    while (diff_to_neg_Y <= -M_PI) diff_to_neg_Y += 2 * M_PI; // 등호 <= 추가
-    float target_A = (std::abs(diff_to_pos_Y) < std::abs(diff_to_neg_Y)) ? target_A_option1 : target_A_option2;
+    float rotation1_rad = (M_PI / 2.0f) - rz_rad_for_X;
+    float rotation2_rad = (-M_PI / 2.0f) - rz_rad_for_X;
+    while (rotation1_rad > M_PI) rotation1_rad -= 2 * M_PI;
+    while (rotation1_rad <= -M_PI) rotation1_rad += 2 * M_PI; // 등호 <= 추가
+    while (rotation2_rad > M_PI) rotation2_rad -= 2 * M_PI;
+    while (rotation2_rad <= -M_PI) rotation2_rad += 2 * M_PI; // 등호 <= 추가
+    float rotation1_deg = qRadiansToDegrees(rotation1_rad);
+    float rotation2_deg = qRadiansToDegrees(rotation2_rad);
+    float current_A_deg = graspOri_deg.x();
+    float final_A1 = current_A_deg + rotation1_deg;
+    float final_A2 = current_A_deg + rotation2_deg;
+    while (final_A1 > 180.0f) final_A1 -= 360.0f;
+    while (final_A1 <= -180.0f) final_A1 += 360.0f;
+    while (final_A2 > 180.0f) final_A2 -= 360.0f;
+    while (final_A2 <= -180.0f) final_A2 += 360.0f;
+    const float LIMIT_HIGH = 170.0f;
+    const float LIMIT_LOW = -170.0f;
+    bool is_A1_valid = (final_A1 > LIMIT_LOW && final_A1 < LIMIT_HIGH);
+    bool is_A2_valid = (final_A2 > LIMIT_LOW && final_A2 < LIMIT_HIGH);
+    float target_A = 0.0f;
+    if (is_A1_valid && !is_A2_valid) { target_A = target_A_option1; }
+    else if (!is_A1_valid && is_A2_valid) { target_A = target_A_option2; }
+    else if (is_A1_valid && is_A2_valid) { target_A = (std::abs(rotation1_rad) <= std::abs(rotation2_rad)) ? target_A_option1 : target_A_option2; }
+    else { qWarning() << "[SEQ ROT SEL] Warning: Both rotation paths exceed angle limits!"; target_A = (std::abs(rotation1_rad) <= std::abs(rotation2_rad)) ? target_A_option1 : target_A_option2; }
     QVector3D rotatedOri_deg = graspOri_deg;
     rotatedOri_deg.setX(target_A);
     // --- [✨ 수정 끝] ---
@@ -1003,8 +1060,8 @@ void RealSenseWidget::onCalculateHandleViewPose()
 
     // Step 4: 뷰 포지션 계산
     QMatrix4x4 viewPoseMatrix = m_calculatedTargetPose;
-    const float VIEW_OFFSET_X_M = -0.3f; // 파지 좌표계 기준 X축 방향으로 이동 (-0.3m)
-    viewPoseMatrix.translate(VIEW_OFFSET_X_M, 0.0f, 0.0f);
+    const float VIEW_OFFSET_Y_M = 0.3f; // 파지 좌표계 기준 X축 방향으로 이동 (-0.3m)
+    viewPoseMatrix.translate(0.0f,VIEW_OFFSET_Y_M, 0.0f);
     const float VIEW_OFFSET_Z_M = -0.0f; // 파지 좌표계 기준 Z축 방향으로 이동 (-0.1m)
     viewPoseMatrix.translate(0.0f, 0.0f, VIEW_OFFSET_Z_M); // ✨ 추가된 Z축 위치 오프셋 적용
     QVector3D viewPos = viewPoseMatrix.column(3).toVector3D(); // 최종 뷰 위치
@@ -1027,7 +1084,7 @@ void RealSenseWidget::onCalculateHandleViewPose()
     lookAtMatrix.setColumn(1, QVector4D(newY, 0));
     lookAtMatrix.setColumn(2, QVector4D(desiredZ, 0));
     lookAtMatrix.setColumn(3, QVector4D(viewPos, 1));
-    const float RELATIVE_RZ_DEG = 180.0f;
+    const float RELATIVE_RZ_DEG = 90.0f;
     lookAtMatrix.rotate(RELATIVE_RZ_DEG, 0, 0, 1); // 로컬 Z축 기준 회전
 
     // Step 9: 시각화 업데이트
