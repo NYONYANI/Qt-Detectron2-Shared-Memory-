@@ -17,6 +17,9 @@
 #include <limits>
 #include <QElapsedTimer>
 #include <QApplication>
+#include <QMatrix3x3> // ✨ [추가] Euler 각도 변환 위해
+#include <QQuaternion> // ✨ [추가] Euler 각도 변환 위해
+#include <utility> // std::swap 사용
 
 // ===================================================================
 // PointCloudWidget 구현
@@ -435,7 +438,8 @@ const char* SEM_CONTROL_NAME = "/sem_detection_control";
 RealSenseWidget::RealSenseWidget(QWidget *parent)
     : QWidget(parent), m_align(RS2_STREAM_COLOR), m_isProcessing(false),
     m_showPlotWindow(false),
-    m_depth_to_disparity(true), m_disparity_to_depth(false)
+    m_depth_to_disparity(true), m_disparity_to_depth(false),
+    m_hasCalculatedViewPose(false) // ✨ [추가] 플래그 초기화
 {
     initSharedMemory();
     m_config.enable_stream(RS2_STREAM_DEPTH, IMAGE_WIDTH, IMAGE_HEIGHT, RS2_FORMAT_Z16, 30);
@@ -903,84 +907,133 @@ void RealSenseWidget::onMoveToYAlignedPoseRequested()
 
     emit requestLiftRotatePlaceSequence(liftPos_mm, graspOri_deg, liftPos_mm, rotatedOri_deg, placePos_mm, rotatedOri_deg);
 }
-void RealSenseWidget::onMoveToHandleViewPose()
+
+// ✨ [수정] 함수 이름을 onCalculateHandleViewPose로 변경
+void RealSenseWidget::onCalculateHandleViewPose()
 {
-    qInfo() << "[VIEW] 'Move to Handle View' requested (Look-At Grasp Point).";
+    // ✨ [수정] 로그 메시지 변경
+    qInfo() << "[VIEW] 'Move View' requested. Calculating Look-At Pose...";
 
     // Step 1: 파지 좌표계 계산
     if (!calculateGraspingPoses(false)) {
         qWarning() << "[VIEW] Grasp Pose calculation failed. Aborting move.";
+        m_hasCalculatedViewPose = false; // ✨ 계산 실패 시 플래그 초기화
         return;
     }
 
     // Step 2: 파지 좌표계 유효성 확인
     if (m_calculatedTargetPose.isIdentity()) {
         qWarning() << "[VIEW] Grasp pose data is invalid after calculation. Aborting.";
+        m_hasCalculatedViewPose = false; // ✨ 계산 실패 시 플래그 초기화
         return;
     }
 
-    // Step 3: 파지 포인트 위치 추출 (빨간 구체가 표시되는 위치)
+    // Step 3: 파지 포인트 위치 추출
     if (m_graspingTargets.isEmpty()) {
         qWarning() << "[VIEW] No grasping targets available. Cannot create look-at view.";
+        m_hasCalculatedViewPose = false; // ✨ 계산 실패 시 플래그 초기화
         return;
     }
-
-    // 첫 번째 파지 타겟의 포인트를 사용 (또는 가장 가까운 포인트 선택 가능)
     QVector3D graspPoint = m_graspingTargets[0].point;
 
-    // Step 4: 뷰 포지션 계산 (파지 좌표계 기준 상대 이동)
+    // Step 4: 뷰 포지션 계산
     QMatrix4x4 viewPoseMatrix = m_calculatedTargetPose;
     const float VIEW_OFFSET_X_M = -0.3f;
     viewPoseMatrix.translate(VIEW_OFFSET_X_M, 0.0f, 0.0f);
-
-    // 현재 뷰 위치 추출
     QVector3D viewPos = viewPoseMatrix.column(3).toVector3D();
 
-    // Step 5: 원래 파지 자세의 X, Y축 방향 추출
+    // Step 5 & 6: 목표 Z축 계산
     QVector3D originalX = m_calculatedTargetPose.column(0).toVector3D().normalized();
-    QVector3D originalY = m_calculatedTargetPose.column(1).toVector3D().normalized();
-
-    // Step 6: Z축이 파지 포인트를 향하도록 계산
     QVector3D desiredZ = (graspPoint - viewPos).normalized();
 
-    // Step 7: 원래 X축 방향 유지하면서 새로운 좌표계 구성
-    // 방법 1: X축 우선 (X축 방향 최대한 유지)
+    // Step 7: 새로운 X, Y축 계산
     QVector3D newY = QVector3D::crossProduct(desiredZ, originalX).normalized();
     QVector3D newX = QVector3D::crossProduct(newY, desiredZ).normalized();
 
-    // 회전 행렬 구성 (열 우선 방식)
+    // Step 8: LookAt 행렬 구성 및 Z축 180도 회전 적용
     QMatrix4x4 lookAtMatrix;
     lookAtMatrix.setColumn(0, QVector4D(newX, 0));
     lookAtMatrix.setColumn(1, QVector4D(newY, 0));
     lookAtMatrix.setColumn(2, QVector4D(desiredZ, 0));
     lookAtMatrix.setColumn(3, QVector4D(viewPos, 1));
-
-    // Step 8: Z축 180도 회전 적용 (원래 코드에서 사용하던 부분)
     const float RELATIVE_RZ_DEG = 180.0f;
-    lookAtMatrix.rotate(RELATIVE_RZ_DEG, 0, 0, 1); // 로컬 Z축(Yaw) 기준 회전
+    lookAtMatrix.rotate(RELATIVE_RZ_DEG, 0, 0, 1);
 
-    // Step 8: 로그 출력 및 시각화
-    qInfo() << "[VIEW] Look-At View Pose Calculated (with Z-axis 180° rotation):";
-    qInfo() << "  - View Pos (m):" << viewPos;
-    qInfo() << "  - Grasp Point (m):" << graspPoint;
-    qInfo() << "  - Desired Z (Forward):" << desiredZ;
-    qInfo() << "  - New X:" << newX;
-    qInfo() << "  - New Y:" << newY;
-    qInfo() << "  - Z-axis Rotation: 180°";
-    qInfo() << "  - Distance:" << viewPos.distanceToPoint(graspPoint) << "m";
-
+    // Step 9: 시각화 업데이트
     m_pointCloudWidget->updateTargetPoses(
-        m_calculatedTargetPose, m_pointCloudWidget->m_showTargetPose,  // 파지 Pose (보라색)
-        QMatrix4x4(), false,                                             // Y-Aligned Pose (숨김)
-        lookAtMatrix, true                                               // 뷰 Pose (노란색)
+        m_calculatedTargetPose, m_pointCloudWidget->m_showTargetPose,
+        QMatrix4x4(), false,
+        lookAtMatrix, true // 계산된 lookAtMatrix 시각화
         );
 
-    // Step 9: 실제 로봇 이동 (필요 시 활성화)
-    QVector3D viewOri_deg = extractEulerAngles(lookAtMatrix);
-    emit requestRobotMove(viewPos * 1000.0f, viewOri_deg);
+    // Step 10: 계산된 값 저장 (이동 명령 위해)
+    QVector3D viewOri_deg_ZYX = extractEulerAngles(lookAtMatrix); // 디버깅용 ZYX
+    QVector3D viewPos_m = lookAtMatrix.column(3).toVector3D();   // ✨ lookAtMatrix에서 직접 위치 추출
+    m_calculatedViewPos_mm = viewPos_m * 1000.0f;
+    m_calculatedViewMatrix = lookAtMatrix; // ✨ 계산된 최종 행렬 저장
+    m_hasCalculatedViewPose = true;        // ✨ 계산 성공 플래그 설정
+
+    // 디버깅 메시지 출력 (계산 결과 확인용)
+    qInfo() << "[VIEW] 1. Calculated Look-At Pose (m / ZYX deg):" // ZYX 기준 로그
+            << "Pos:" << viewPos_m
+            << "Rot:" << viewOri_deg_ZYX;
+    QVector3D current_robot_pos_m = m_baseToTcpTransform.column(3).toVector3D();
+    QVector3D current_robot_ori_deg = extractEulerAngles(m_baseToTcpTransform);
+    qInfo() << "[VIEW] 2. Current Robot Pose (m / ZYX deg):" // ZYX 기준 로그
+            << "Pos:" << current_robot_pos_m
+            << "Rot:" << current_robot_ori_deg;
+    qInfo() << "[VIEW] Calculated pose is ready for movement (Press MovepointButton).";
+
 }
 
-// 보조 함수: QMatrix4x4에서 Euler 각도 추출 (ZYX 순서)
+// ✨ [수정] onMoveToCalculatedHandleViewPose 함수 수정
+void RealSenseWidget::onMoveToCalculatedHandleViewPose()
+{
+    qInfo() << "[VIEW] 'MovepointButton' pressed. Executing move.";
+    if (!m_hasCalculatedViewPose) {
+        qWarning() << "[VIEW] Move failed: No view pose has been calculated. Press 'Move View' first.";
+        return;
+    }
+
+    // 1. 저장된 회전 행렬로부터 ZYZ 오일러 각도 계산
+    // QMatrix4x4에서 3x3 회전 부분만 추출
+    QMatrix3x3 rotMat = m_calculatedViewMatrix.toGenericMatrix<3,3>();
+    // ZYZ 오일러 각도 (Z1, Y', Z'') 계산
+    QVector3D viewOri_deg_ZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
+
+    // 2. ZYZ 각도를 로봇 명령용 A, B, C로 변환 (추정된 관계식 적용)
+    float cmd_A = viewOri_deg_ZYZ.x() + 180.0f; // Z1 + 180
+    float cmd_B = -viewOri_deg_ZYZ.y();         // -Y'
+    float cmd_C = viewOri_deg_ZYZ.z() + 180.0f; // Z'' + 180
+
+    // 각도 범위를 -180 ~ 180 으로 조정 (±360 주기성 활용)
+    // 참고: 로봇 컨트롤러가 이 범위를 자동으로 처리할 수도 있음
+    while (cmd_A > 180.0f) cmd_A -= 360.0f;
+    while (cmd_A <= -180.0f) cmd_A += 360.0f;
+    while (cmd_B > 180.0f) cmd_B -= 360.0f;
+    while (cmd_B <= -180.0f) cmd_B += 360.0f;
+    while (cmd_C > 180.0f) cmd_C -= 360.0f;
+    while (cmd_C <= -180.0f) cmd_C += 360.0f;
+
+    // 로봇에게 전달할 최종 A, B, C 각도
+    QVector3D robotCmdOri_deg(cmd_A, cmd_B, cmd_C);
+
+    // 3. 디버깅 메시지 출력 (ZYZ 값과 최종 명령 A,B,C 값 확인)
+    qInfo() << "[VIEW] Moving to calculated pose:";
+    qInfo() << "  - Pos (mm):" << m_calculatedViewPos_mm;
+    // qInfo() << "  - Original Rot (ZYX deg):" << extractEulerAngles(m_calculatedViewMatrix); // ZYX는 이제 참고용
+    qInfo() << "  - Calculated Rot (ZYZ deg):" << viewOri_deg_ZYZ; // 계산된 ZYZ 값
+    qInfo() << "  - Command Rot (A, B, C deg):" << robotCmdOri_deg; // 최종 변환된 명령 각도
+
+    // 4. 로봇 이동 명령 전송 (변환된 A, B, C 각도 사용)
+    emit requestRobotMove(m_calculatedViewPos_mm, robotCmdOri_deg);
+
+    // ✨ 이동 후 계산 플래그 리셋 (선택 사항: 다시 계산해야만 움직이게 하려면 주석 해제)
+    // m_hasCalculatedViewPose = false;
+}
+
+
+// 보조 함수: QMatrix4x4에서 Euler 각도 추출 (ZYX 순서) - 기존 함수 유지
 QVector3D RealSenseWidget::extractEulerAngles(const QMatrix4x4& matrix)
 {
     // R = Rz(yaw) * Ry(pitch) * Rx(roll)
@@ -1004,6 +1057,64 @@ QVector3D RealSenseWidget::extractEulerAngles(const QMatrix4x4& matrix)
         qRadiansToDegrees(pitch),
         qRadiansToDegrees(yaw)
         );
+}
+
+// ✨ [추가] Euler 각도 변환 함수 (robotcontroller.cpp에서 가져와 수정)
+QVector3D RealSenseWidget::rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order)
+{
+    float r11 = R(0,0), r12 = R(0,1), r13 = R(0,2);
+    float r21 = R(1,0), r22 = R(1,1), r23 = R(1,2);
+    float r31 = R(2,0), r32 = R(2,1), r33 = R(2,2);
+    float x=0, y=0, z=0; // 결과 각도를 저장할 변수 (라디안)
+
+    // 참고: qBound는 값을 특정 범위로 제한합니다. asin, acos 입력은 -1 ~ 1 사이여야 함.
+    // atan2(y, x)는 아크탄젠트를 계산하며, x와 y의 부호를 고려하여 올바른 사분면의 각도를 반환합니다.
+
+    if (order == "XYZ") { // Roll, Pitch, Yaw 순서 (X먼저 회전)
+        y = asin(qBound(-1.0f, r13, 1.0f)); // Pitch
+        if (qAbs(qCos(y)) > 1e-6) { // 짐벌락 방지 (Pitch가 +/- 90도일 때)
+            x = atan2(-r23, r33); // Roll
+            z = atan2(-r12, r11); // Yaw
+        } else { // 짐벌락 상태
+            x = atan2(r32, r22); // Roll
+            z = 0; // Yaw는 Roll과 묶이므로 하나를 0으로 설정
+        }
+    } else if (order == "ZYX") { // Yaw, Pitch, Roll 순서 (Z먼저 회전, Qt 기본)
+        y = asin(-qBound(-1.0f, r31, 1.0f)); // Pitch
+        if (qAbs(qCos(y)) > 1e-6) { // 짐벌락 방지
+            x = atan2(r32, r33); // Roll
+            z = atan2(r21, r11); // Yaw
+        } else { // 짐벌락 상태
+            // 이 경우 Yaw=0으로 설정하고 Roll 계산 (다른 방법도 가능)
+            x = atan2(-r23, r22); // Roll
+            z = 0; // Yaw
+        }
+    } else if (order == "ZYZ") { // Z, Y', Z'' 순서 (로봇 추정 규약)
+        y = acos(qBound(-1.0f, r33, 1.0f)); // 두 번째 회전각 (Y')
+        if (qAbs(sin(y)) > 1e-6) { // 짐벌락 방지 (Y'가 0 또는 180도일 때)
+            x = atan2(r23, r13); // 첫 번째 회전각 (Z1)
+            z = atan2(r32, -r31); // 세 번째 회전각 (Z'')
+        } else { // 짐벌락 상태
+            // Y'가 0 또는 180이면 Z1과 Z''가 같은 축에 대한 회전이 됨
+            // Z1+Z'' 또는 Z1-Z'' 만 의미 있고, 개별 값은 결정 불가
+            // 여기서는 Z''=0으로 두고 Z1 계산 (관례)
+            x = atan2(-r12, r22); // Z1
+            z = 0; // Z''
+        }
+        // ✨ [수정] ZYZ 순서에 맞게 변수 할당: x=Z1, y=Y', z=Z''
+        // 위 계산에서 x=Z1, y=Y', z=Z'' 이므로 추가적인 swap 불필요
+    }
+    // ... (다른 규약 추가 가능: XZY, YXZ, YZX 등) ...
+    else {
+        qWarning() << "[Angle Debug] Unsupported Euler order:" << order;
+        // 지원하지 않는 규약이면 ZYX 결과 반환 (디버깅용)
+        QQuaternion quat = QQuaternion::fromRotationMatrix(R);
+        QVector3D eulerAngles = quat.toEulerAngles(); // ZYX 순서 (Yaw, Pitch, Roll)
+        return eulerAngles;
+    }
+
+    // 라디안을 도로 변환하여 반환
+    return QVector3D(qRadiansToDegrees(x), qRadiansToDegrees(y), qRadiansToDegrees(z));
 }
 
 

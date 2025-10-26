@@ -126,7 +126,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->ResetPosButton, &QPushButton::clicked, this, &MainWindow::on_ResetPosButton_clicked);
     connect(ui->GripperOpenButton, &QPushButton::clicked, this, &MainWindow::on_GripperOpenButton_clicked);
     connect(ui->GripperCloseButton, &QPushButton::clicked, this, &MainWindow::on_GripperCloseButton_clicked);
-    // (MoveButton, HandlePlotButton, MoveViewButton은 on_..._clicked() 슬롯으로 자동 연결됩니다)
+    // (MoveButton, HandlePlotButton, MoveViewButton, MovepointButton은 on_..._clicked() 슬롯으로 자동 연결됩니다)
 
     // RealSenseWidget -> MainWindow (수동 시그널 전달용)
     connect(ui->widget, &RealSenseWidget::requestRobotMove, this, &MainWindow::requestMoveRobot);
@@ -279,11 +279,18 @@ void MainWindow::on_HandlePlotButton_clicked()
     ui->widget->onShowHandlePlot();
 }
 
-// ✨ [추가] MoveViewButton 클릭 시 RealSenseWidget의 새 함수를 호출
+// ✨ [수정] MoveViewButton 클릭 시 '계산' 함수 호출
 void MainWindow::on_MoveViewButton_clicked()
 {
-    qDebug() << "[MAIN] 'Move View' button clicked. Requesting move to handle view pose.";
-    ui->widget->onMoveToHandleViewPose();
+    qDebug() << "[MAIN] 'Move View' button clicked. Requesting handle view pose CALCULATION.";
+    ui->widget->onCalculateHandleViewPose(); // ✨ 수정된 함수 호출
+}
+
+// ✨ [수정] MovepointButton 클릭 시 '이동' 함수 호출
+void MainWindow::on_MovepointButton_clicked()
+{
+    qDebug() << "[MAIN] 'MovepointButton' clicked. Requesting robot MOVE to handle view pose.";
+    ui->widget->onMoveToCalculatedHandleViewPose(); // ✨ 수정된 함수 호출
 }
 
 

@@ -64,6 +64,9 @@ private slots:
     void on_HandlePlotButton_clicked();
     void on_MoveViewButton_clicked();
 
+    // ✨ [수정] MovepointButton 슬롯 선언 추가
+    void on_MovepointButton_clicked();
+
 private:
     Ui::MainWindow *ui;
 

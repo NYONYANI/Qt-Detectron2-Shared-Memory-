@@ -30,6 +30,7 @@
 #include "handleplotwidget.h"
 #include <Eigen/Dense>
 #include <Eigen/SVD>
+#include <QMatrix3x3> // ✨ [추가] Euler 각도 변환 위해
 
 
 struct GraspingTarget
@@ -138,7 +139,10 @@ public slots:
     void onPickAndReturnRequested();
     void onToggleMaskedPoints();
     void onShowHandlePlot();
-    void onMoveToHandleViewPose();
+
+    // ✨ [수정] 버튼 로직 분리를 위해 슬롯 이름 변경 및 추가
+    void onCalculateHandleViewPose(); // (계산만 수행)
+    void onMoveToCalculatedHandleViewPose(); // (계산된 값으로 이동)
 
     // (Move 버튼이 호출할 메인 함수)
     void runFullAutomatedSequence();
@@ -168,7 +172,9 @@ private:
     // (계산 로직을 담당하는 비공개 함수)
     bool calculateGraspingPoses(bool showPlot);
     void calculatePCA(const QVector<QVector3D>& points, QVector<QPointF>& projectedPoints);
-    QVector3D extractEulerAngles(const QMatrix4x4& matrix);
+    QVector3D extractEulerAngles(const QMatrix4x4& matrix); // ZYX 추출용 (기존 함수)
+    // ✨ [추가] 다양한 규약 변환용 함수 선언
+    QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
     void findFloorPlaneRANSAC();
     void runDbscanClustering();
 
@@ -217,6 +223,11 @@ private:
 
     QMatrix4x4 m_calculatedTargetPose_Y_Aligned;
     QVector3D m_calculatedTargetOri_deg_Y_Aligned;
+
+    // ✨ [수정] View Pose 계산 값 저장을 위한 변수 수정
+    QMatrix4x4 m_calculatedViewMatrix; // ✨ 최종 계산된 뷰 자세 행렬 저장
+    QVector3D m_calculatedViewPos_mm;
+    bool m_hasCalculatedViewPose;
 
     std::vector<int> m_clusterIds;
     const float APPROACH_HEIGHT_M = 0.15f;

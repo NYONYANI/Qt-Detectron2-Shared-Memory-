@@ -4,7 +4,10 @@
 #include <QObject>
 #include <QVector3D>
 #include <QTimer>
+#include <QQuaternion> // ✨ [추가]
+#include <QMatrix3x3>  // ✨ [추가] QMatrix4x4 대신 3x3 사용 및 계산 용이성 위해
 #include "DRFLEx.h"
+
 
 using namespace DRAFramework;
 extern CDRFLEx GlobalDrfl;
@@ -45,7 +48,14 @@ private slots:
 
 private:
     QTimer *m_timer;
+    // ✨ [추가] 각도 디버그 메시지 출력 여부 플래그
+    bool m_angleDebugPrinted;
+
     void moveToPositionAndWait(const QVector3D& pos_mm, const QVector3D& ori_deg);
+
+    // ✨ [추가] Euler 각도 변환 함수 선언 (다양한 규약 지원 위해)
+    QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
+
 };
 
 #endif // ROBOTCONTROLLER_H

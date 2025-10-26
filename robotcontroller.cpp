@@ -2,8 +2,12 @@
 #include <QDebug>
 #include <QThread>
 #include <QMatrix4x4>
+#include <QtMath> // qRadiansToDegrees 사용
+#include <cstring> // memcpy 사용
 
-RobotController::RobotController(QObject *parent) : QObject(parent)
+RobotController::RobotController(QObject *parent)
+    : QObject(parent)
+    , m_angleDebugPrinted(false) // ✨ [추가] 플래그 초기화
 {
     m_timer = new QTimer(this);
     connect(m_timer, &QTimer::timeout, this, &RobotController::checkRobotState);
@@ -13,6 +17,7 @@ void RobotController::startMonitoring()
 {
     if (!m_timer->isActive()) {
         qDebug() << "[ROBOT_THREAD] Starting robot monitoring (100ms interval).";
+        m_angleDebugPrinted = false; // ✨ [추가] 모니터링 시작 시 플래그 리셋
         m_timer->start(100);
     }
 }
@@ -23,13 +28,56 @@ void RobotController::checkRobotState()
     emit robotStateChanged((int)currentState);
 
     LPROBOT_TASK_POSE pose_struct = GlobalDrfl.get_current_posx();
-    float(*rotation_matrix)[3] = GlobalDrfl.get_current_rotm();
+    float(*rotation_matrix_ptr)[3] = GlobalDrfl.get_current_rotm(); // 포인터로 받음
 
-    if (pose_struct && rotation_matrix)
+    if (pose_struct && rotation_matrix_ptr)
     {
+        // ✨ [수정] rotation_matrix 선언 및 memcpy를 if 블록 밖으로 이동
+        float rotation_matrix[3][3];
+        memcpy(rotation_matrix, rotation_matrix_ptr, sizeof(rotation_matrix));
+
+        // ✨ [수정] m_angleDebugPrinted 플래그 확인 후 한 번만 출력
+        if (!m_angleDebugPrinted) {
+            // 1. GUI 값 (API 직접 제공 A, B, C)
+            float gui_a = pose_struct->_fTargetPos[3];
+            float gui_b = pose_struct->_fTargetPos[4];
+            float gui_c = pose_struct->_fTargetPos[5];
+            qDebug() << "[Angle Debug] GUI (A, B, C):" << gui_a << gui_b << gui_c;
+
+            // 2. 회전 행렬 기반 다양한 오일러 각도 계산
+            // ✨ [수정] QMatrix3x3 생성자 수정 (float* 받는 생성자 사용)
+            QMatrix3x3 rotMat(rotation_matrix[0]);
+
+            QQuaternion quat = QQuaternion::fromRotationMatrix(rotMat);
+
+            // 다양한 규약으로 변환 및 출력
+            QVector3D eulerXYZ = rotationMatrixToEulerAngles(rotMat, "XYZ");
+            qDebug() << "[Angle Debug] Euler XYZ (Roll, Pitch, Yaw):" << eulerXYZ;
+
+            QVector3D eulerZYX = rotationMatrixToEulerAngles(rotMat, "ZYX");
+            qDebug() << "[Angle Debug] Euler ZYX (Yaw, Pitch, Roll):" << eulerZYX; // realsensewidget에서 사용하던 규약
+
+            QVector3D eulerZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
+            qDebug() << "[Angle Debug] Euler ZYZ:" << eulerZYZ;
+
+            QVector3D eulerXZY = rotationMatrixToEulerAngles(rotMat, "XZY");
+            qDebug() << "[Angle Debug] Euler XZY:" << eulerXZY;
+
+            QVector3D eulerYXZ = rotationMatrixToEulerAngles(rotMat, "YXZ");
+            qDebug() << "[Angle Debug] Euler YXZ:" << eulerYXZ;
+
+            QVector3D eulerYZX = rotationMatrixToEulerAngles(rotMat, "YZX");
+            qDebug() << "[Angle Debug] Euler YZX:" << eulerYZX;
+            qDebug() << "---------------------------------------------";
+
+            m_angleDebugPrinted = true; // ✨ [추가] 플래그 설정하여 다시 출력되지 않도록 함
+        }
+
+        // 기존 시그널 전송 (유지)
         emit robotPoseUpdated(pose_struct->_fTargetPos);
 
         const float* pos = pose_struct->_fTargetPos;
+        // ✨ [수정] memcpy로 가져온 rotation_matrix 사용 (이제 접근 가능)
         QMatrix4x4 transform(
             rotation_matrix[0][0], rotation_matrix[0][1], rotation_matrix[0][2], pos[0] / 1000.0f,
             rotation_matrix[1][0], rotation_matrix[1][1], rotation_matrix[1][2], pos[1] / 1000.0f,
@@ -39,6 +87,83 @@ void RobotController::checkRobotState()
         emit robotTransformUpdated(transform);
     }
 }
+
+
+// ✨ [추가] 회전 행렬을 지정된 순서의 Euler 각도로 변환하는 함수
+QVector3D RobotController::rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order)
+{
+    float r11 = R(0,0), r12 = R(0,1), r13 = R(0,2);
+    float r21 = R(1,0), r22 = R(1,1), r23 = R(1,2);
+    float r31 = R(2,0), r32 = R(2,1), r33 = R(2,2);
+    float x=0, y=0, z=0;
+
+    if (order == "XYZ") {
+        y = asin(qBound(-1.0f, r13, 1.0f));
+        if (qAbs(qCos(y)) > 1e-6) {
+            x = atan2(-r23, r33);
+            z = atan2(-r12, r11);
+        } else {
+            x = atan2(r32, r22);
+            z = 0;
+        }
+    } else if (order == "ZYX") { // Yaw, Pitch, Roll (Default for QQuaternion::toEulerAngles())
+        y = asin(-r31); // Pitch
+        if (qAbs(qCos(y)) > 1e-6) {
+            x = atan2(r32, r33); // Roll
+            z = atan2(r21, r11); // Yaw
+        } else {
+            x = atan2(-r23, r22); // Roll
+            z = 0; // Yaw
+        }
+    } else if (order == "ZYZ") {
+        y = acos(qBound(-1.0f, r33, 1.0f));
+        if (qAbs(sin(y)) > 1e-6) {
+            x = atan2(r23, r13);
+            z = atan2(r32, -r31);
+        } else {
+            x = atan2(-r12, r22); // 또는 atan2(r12, -r22) - 분기 필요
+            z = 0;
+        }
+    } else if (order == "XZY") {
+        z = asin(-qBound(-1.0f, r12, 1.0f));
+        if (qAbs(qCos(z)) > 1e-6) {
+            x = atan2(r32, r22);
+            y = atan2(r13, r11);
+        } else {
+            x = atan2(-r23, r33);
+            y = 0;
+        }
+    } else if (order == "YXZ") {
+        x = asin(qBound(-1.0f, r23, 1.0f));
+        if (qAbs(qCos(x)) > 1e-6) {
+            y = atan2(-r13, r33);
+            z = atan2(-r21, r22);
+        } else {
+            y = atan2(r31, r11);
+            z = 0;
+        }
+    } else if (order == "YZX") {
+        z = asin(qBound(-1.0f, r21, 1.0f));
+        if (qAbs(qCos(z)) > 1e-6) {
+            x = atan2(-r23, r22);
+            y = atan2(-r31, r11);
+        } else {
+            x = 0;
+            y = atan2(r13, r33);
+        }
+    }
+    // 다른 규약 추가 가능...
+    else {
+        qWarning() << "[Angle Debug] Unsupported Euler order:" << order;
+        // 기본값으로 ZYX (QQuaternion::toEulerAngles와 유사) 반환 시도
+        QQuaternion quat = QQuaternion::fromRotationMatrix(R);
+        return quat.toEulerAngles(); // ZYX 순서로 반환됨 (Yaw, Pitch, Roll)
+    }
+
+    // 라디안을 도로 변환하여 반환
+    return QVector3D(qRadiansToDegrees(x), qRadiansToDegrees(y), qRadiansToDegrees(z));
+}
+
 
 void RobotController::onMoveRobot(const QVector3D& position_mm, const QVector3D& orientation_deg)
 {
