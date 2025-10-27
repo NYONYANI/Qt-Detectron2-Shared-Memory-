@@ -30,7 +30,7 @@
 #include "handleplotwidget.h"
 #include <Eigen/Dense>
 #include <Eigen/SVD>
-#include <QMatrix3x3> // ✨ [추가] Euler 각도 변환 위해
+#include <QMatrix3x3> // ✨ Euler 각도 변환 위해
 
 
 struct GraspingTarget
@@ -47,17 +47,19 @@ class PointCloudWidget : public QOpenGLWidget, protected QOpenGLFunctions
 
 public:
     explicit PointCloudWidget(QWidget *parent = nullptr);
-    virtual ~PointCloudWidget(); // ✨ virtual 추가
+    virtual ~PointCloudWidget();
 
     void updatePointCloud(const rs2::points& points, const rs2::video_frame& color, const QImage& maskOverlay);
     void setTransforms(const QMatrix4x4& baseToTcp, const QMatrix4x4& tcpToCam);
     void updateGraspingPoints(const QVector<QVector3D>& points);
-    // ✨ 파라미터 6개짜리 선언 확인
     void updateTargetPoses(const QMatrix4x4& pose, bool show,
                            const QMatrix4x4& pose_y_aligned, bool show_y_aligned,
                            const QMatrix4x4& view_pose, bool show_view_pose);
-public slots: // ✨ [추가] public slots: 섹션 및 슬롯 선언
-    void updateHandleCenterline(const QVector<QVector3D>& centerline);
+
+public slots:
+    // ✨ [수정] 슬롯 파라미터 변경: 세그먼트 ID 추가
+    void updateHandleCenterline(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
+
 signals:
     void denoisingToggled();
     void zFilterToggled();
@@ -76,7 +78,6 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
 
 private:
-    // ✨ processPoints 선언 확인
     void processPoints(const std::vector<int>& clusterIds = {});
     void drawAxes(float length, float lineWidth = 2.0f);
     void drawGrid(float size, int divisions);
@@ -84,9 +85,9 @@ private:
     void drawGripper();
     void drawTargetPose();
     void drawTargetPose_Y_Aligned();
-    // ✨ drawViewPose 선언 확인
     void drawViewPose();
-    void drawHandleCenterline();
+    void drawHandleCenterline(); // ✨ 그리기 함수 자체는 변경 없음
+
     std::vector<float> m_vertexData;
     rs2::points m_points;
     rs2::video_frame m_colorFrame;
@@ -102,10 +103,13 @@ private:
     bool m_showTargetPose = false;
     QMatrix4x4 m_targetTcpTransform_Y_Aligned;
     bool m_showTargetPose_Y_Aligned = false;
-    // ✨ 뷰포인트 Pose 시각화용 변수
     QMatrix4x4 m_viewPoseTransform;
     bool m_showViewPose = false;
+
+    // ✨ [수정] 3D 핸들 중심선 및 세그먼트 ID 저장용
     QVector<QVector3D> m_handleCenterlinePoints;
+    QVector<int> m_handleCenterlineSegmentIds; // ✨ [추가]
+
     friend class RealSenseWidget;
 
     QMatrix4x4 m_baseToTcpTransform;
@@ -131,7 +135,7 @@ public slots:
     void onRobotTransformUpdated(const QMatrix4x4 &transform);
     void onMoveToYAlignedPoseRequested();
 
-    // (MainWindow에서 호출하기 위해 public으로 이동)
+    // (MainWindow에서 호출)
     void onDenoisingToggled();
     void onZFilterToggled();
     void onShowXYPlot();
@@ -140,12 +144,8 @@ public slots:
     void onPickAndReturnRequested();
     void onToggleMaskedPoints();
     void onShowHandlePlot();
-
-    // ✨ [수정] 버튼 로직 분리를 위해 슬롯 이름 변경 및 추가
-    void onCalculateHandleViewPose(); // (계산만 수행)
-    void onMoveToCalculatedHandleViewPose(); // (계산된 값으로 이동)
-
-    // (Move 버튼이 호출할 메인 함수)
+    void onCalculateHandleViewPose();
+    void onMoveToCalculatedHandleViewPose();
     void runFullAutomatedSequence();
 
 signals:
@@ -155,8 +155,6 @@ signals:
     void requestLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
                                         const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
                                         const QVector3D& place_pos_mm, const QVector3D& place_ori_deg);
-
-    // (로봇 컨트롤러에게 보낼 전체 시퀀스 시그널)
     void requestFullPickAndPlaceSequence(
         const QVector3D& pre_grasp_pos_mm, const QVector3D& pre_grasp_ori_deg,
         const QVector3D& grasp_pos_mm, const QVector3D& grasp_ori_deg,
@@ -164,18 +162,18 @@ signals:
         const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
         const QVector3D& place_pos_mm, const QVector3D& place_ori_deg
         );
-    void requestHandleCenterlineUpdate(const QVector<QVector3D>& centerline);
+
+    // ✨ [수정] 시그널 파라미터 변경: 세그먼트 ID 추가
+    void requestHandleCenterlineUpdate(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
 
 private slots:
     void updateFrame();
     void checkProcessingResult();
 
 private:
-    // (계산 로직을 담당하는 비공개 함수)
     bool calculateGraspingPoses(bool showPlot);
     void calculatePCA(const QVector<QVector3D>& points, QVector<QPointF>& projectedPoints);
-    QVector3D extractEulerAngles(const QMatrix4x4& matrix); // ZYX 추출용 (기존 함수)
-    // ✨ [추가] 다양한 규약 변환용 함수 선언
+    QVector3D extractEulerAngles(const QMatrix4x4& matrix);
     QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
     void findFloorPlaneRANSAC();
     void runDbscanClustering();
@@ -189,67 +187,41 @@ private:
     QMatrix4x4 m_baseToTcpTransform;
     QMatrix4x4 m_tcpToCameraTransform;
 
-    rs2::pipeline m_pipeline;
-    rs2::config m_config;
-    rs2::pointcloud m_pointcloud;
-    rs2::align m_align;
-
-    rs2::decimation_filter m_dec_filter;
-    rs2::spatial_filter m_spat_filter;
-    rs2::disparity_transform m_depth_to_disparity;
-    rs2::disparity_transform m_disparity_to_depth;
+    rs2::pipeline m_pipeline; rs2::config m_config;
+    rs2::pointcloud m_pointcloud; rs2::align m_align;
+    rs2::decimation_filter m_dec_filter; rs2::spatial_filter m_spat_filter;
+    rs2::disparity_transform m_depth_to_disparity, m_disparity_to_depth;
     bool m_isDenoisingOn = false;
 
-    QTimer *m_timer;
-    QTimer *m_resultTimer;
-    QImage m_currentImage;
-    cv::Mat m_latestFrame;
-
-    rs2::points m_capturedPoints;
-    QMatrix4x4 m_capturedBaseToTcpTransform;
+    QTimer *m_timer, *m_resultTimer;
+    QImage m_currentImage; cv::Mat m_latestFrame;
+    rs2::points m_capturedPoints; QMatrix4x4 m_capturedBaseToTcpTransform;
     std::vector<int> m_uv_to_point_idx;
 
     int fd_image, fd_result, fd_control;
     void *data_image, *data_result, *data_control;
     sem_t *sem_image, *sem_result, *sem_control;
 
-    QJsonArray m_detectionResults;
-    bool m_isProcessing;
-    bool m_showPlotWindow;
-
+    QJsonArray m_detectionResults; bool m_isProcessing; bool m_showPlotWindow;
     QVector<GraspingTarget> m_graspingTargets;
-    // ✨ [추가] PCA 역변환을 위한 정보 저장
-    Eigen::Vector3f m_pcaMean;
-    Eigen::Vector3f m_pcaPC1;
-    Eigen::Vector3f m_pcaPC2;
+
+    // PCA 역변환 정보
+    Eigen::Vector3f m_pcaMean; Eigen::Vector3f m_pcaPC1; Eigen::Vector3f m_pcaPC2;
     bool m_hasPCAData;
     QVector<QVector3D> m_handleCenterline3D;
-    QMatrix4x4 m_calculatedTargetPose;
-    QVector3D m_calculatedTargetPos_m;
-    QVector3D m_calculatedTargetOri_deg;
+    QVector<int> m_handleSegmentIds; // ✨ [추가] 세그먼트 ID 저장용
 
-    QMatrix4x4 m_calculatedTargetPose_Y_Aligned;
-    QVector3D m_calculatedTargetOri_deg_Y_Aligned;
+    QMatrix4x4 m_calculatedTargetPose; QVector3D m_calculatedTargetPos_m; QVector3D m_calculatedTargetOri_deg;
+    QMatrix4x4 m_calculatedTargetPose_Y_Aligned; QVector3D m_calculatedTargetOri_deg_Y_Aligned;
+    QMatrix4x4 m_calculatedViewMatrix; QVector3D m_calculatedViewPos_mm; bool m_hasCalculatedViewPose;
 
-    // ✨ [수정] View Pose 계산 값 저장을 위한 변수 수정
-    QMatrix4x4 m_calculatedViewMatrix; // ✨ 최종 계산된 뷰 자세 행렬 저장
-    QVector3D m_calculatedViewPos_mm;
-    bool m_hasCalculatedViewPose;
+    std::vector<int> m_clusterIds; // DBSCAN용
 
-    std::vector<int> m_clusterIds;
     const float APPROACH_HEIGHT_M = 0.15f;
-    const int IMAGE_WIDTH = 640;
-    const int IMAGE_HEIGHT = 480;
-    const int IMAGE_CHANNELS = 3;
+    const int IMAGE_WIDTH = 640, IMAGE_HEIGHT = 480, IMAGE_CHANNELS = 3;
     const int IMAGE_SIZE = IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS;
-    const int RESULT_SIZE = 100 * 1024;
-    const int CONTROL_SIZE = 16;
-
-    enum ControlOffset {
-        OFFSET_NEW_FRAME = 0,
-        OFFSET_RESULT_READY = 1,
-        OFFSET_SHUTDOWN = 2
-    };
+    const int RESULT_SIZE = 100 * 1024, CONTROL_SIZE = 16;
+    enum ControlOffset { OFFSET_NEW_FRAME = 0, OFFSET_RESULT_READY = 1, OFFSET_SHUTDOWN = 2 };
 
     QImage cvMatToQImage(const cv::Mat &mat);
     bool initSharedMemory();
