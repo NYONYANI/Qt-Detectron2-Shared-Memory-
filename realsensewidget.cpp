@@ -20,6 +20,7 @@
 #include <QMatrix3x3>
 #include <QQuaternion>
 #include <utility> // std::swap
+#include <QRandomGenerator> // 랜덤 선택용
 
 // ===================================================================
 // PointCloudWidget 구현
@@ -100,10 +101,10 @@ void PointCloudWidget::paintGL()
     drawTargetPose_Y_Aligned();
     drawViewPose();
     drawHandleCenterline(); // 핸들 중심선 그리기
+    drawRandomGraspPose(); // 랜덤 파지 좌표계 그리기
     glEnable(GL_DEPTH_TEST); // 깊이 테스트 다시 켜기
 }
 
-// ✨ initializeGL() 함수 구현부
 void PointCloudWidget::initializeGL()
 {
     initializeOpenGLFunctions(); // OpenGL 함수 초기화 (QOpenGLFunctions 상속 필요)
@@ -296,6 +297,25 @@ void PointCloudWidget::drawHandleCenterline()
     glLineWidth(1.0f);
 }
 
+void PointCloudWidget::updateRandomGraspPose(const QMatrix4x4 &pose, bool show)
+{
+    m_randomGraspPose = pose;
+    m_showRandomGraspPose = show;
+    update();
+}
+
+void PointCloudWidget::drawRandomGraspPose()
+{
+    if (!m_showRandomGraspPose) return;
+    glPushMatrix();
+    glMultMatrixf(m_randomGraspPose.constData());
+    glPushAttrib(GL_CURRENT_BIT);
+    glColor3f(1.0f, 0.5f, 0.0f); // Orange
+    drawAxes(0.08f, 5.0f);
+    glPopAttrib();
+    glPopMatrix();
+}
+
 
 // ===================================================================
 // RealSenseWidget 구현
@@ -311,7 +331,8 @@ const char* SEM_CONTROL_NAME = "/sem_detection_control";
 RealSenseWidget::RealSenseWidget(QWidget *parent)
     : QWidget(parent), m_align(RS2_STREAM_COLOR), m_isProcessing(false),
     m_showPlotWindow(false), m_depth_to_disparity(true), m_disparity_to_depth(false),
-    m_hasCalculatedViewPose(false), m_hasPCAData(false)
+    m_hasCalculatedViewPose(false), m_hasPCAData(false),
+    m_showRandomGraspPose(false)
 {
     initSharedMemory();
     m_config.enable_stream(RS2_STREAM_DEPTH, IMAGE_WIDTH, IMAGE_HEIGHT, RS2_FORMAT_Z16, 30);
@@ -340,6 +361,8 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
 
     connect(this, &RealSenseWidget::requestHandleCenterlineUpdate,
             m_pointCloudWidget, &PointCloudWidget::updateHandleCenterline);
+    connect(this, &RealSenseWidget::requestRandomGraspPoseUpdate,
+            m_pointCloudWidget, &PointCloudWidget::updateRandomGraspPose);
 
     m_pointCloudWidget->setFocus();
 }
@@ -368,6 +391,7 @@ void RealSenseWidget::onToggleMaskedPoints()
 void RealSenseWidget::calculatePCA(const QVector<QVector3D>& points, QVector<QPointF>& projectedPoints)
 {
     m_handleSegmentIds.clear();
+    m_pcaNormal = Eigen::Vector3f::Zero(); // Initialize normal
 
     if (points.size() < 3) {
         qDebug() << "[PCA] Not enough points for PCA:" << points.size();
@@ -384,10 +408,12 @@ void RealSenseWidget::calculatePCA(const QVector<QVector3D>& points, QVector<QPo
     mean /= points.size();
     eigenPoints.rowwise() -= mean.transpose();
     Eigen::JacobiSVD<Eigen::MatrixXf> svd(eigenPoints, Eigen::ComputeThinU | Eigen::ComputeThinV);
-    Eigen::Vector3f pc1 = svd.matrixV().col(0); Eigen::Vector3f pc2 = svd.matrixV().col(1); Eigen::Vector3f pc3 = svd.matrixV().col(2);
+    Eigen::Vector3f pc1 = svd.matrixV().col(0);
+    Eigen::Vector3f pc2 = svd.matrixV().col(1);
+    Eigen::Vector3f pc3 = svd.matrixV().col(2);
     qDebug() << "[PCA] Handle Plane Normal (PC3):" << pc3(0) << "," << pc3(1) << "," << pc3(2);
 
-    m_pcaMean = mean; m_pcaPC1 = pc1; m_pcaPC2 = pc2;
+    m_pcaMean = mean; m_pcaPC1 = pc1; m_pcaPC2 = pc2; m_pcaNormal = pc3;
     m_hasPCAData = true;
 
     projectedPoints.clear(); projectedPoints.reserve(points.size());
@@ -400,12 +426,13 @@ void RealSenseWidget::calculatePCA(const QVector<QVector3D>& points, QVector<QPo
 void RealSenseWidget::onShowHandlePlot()
 {
     qDebug() << "[PLOT] Handle Plot requested.";
-    m_handleCenterline3D.clear();
-    m_handleSegmentIds.clear();
+    m_handleCenterline3D.clear(); m_handleSegmentIds.clear();
+    m_randomGraspPose.setToIdentity(); m_showRandomGraspPose = false;
 
     if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
         qDebug() << "[PLOT] No detection results or point cloud available.";
         emit requestHandleCenterlineUpdate(m_handleCenterline3D, m_handleSegmentIds);
+        emit requestRandomGraspPoseUpdate(m_randomGraspPose, m_showRandomGraspPose);
         return;
     }
     const rs2::points& currentPoints = m_pointCloudWidget->m_points;
@@ -425,9 +452,11 @@ void RealSenseWidget::onShowHandlePlot()
         for(int y = 0; y < H; ++y) for(int x = 0; x < W; ++x) if(mask_buffer[y * W + x] == 255) { int u = ox + x; int v = oy + y; if (u < 0 || u >= width || v < 0 || v >= height) continue; int p_idx = m_uv_to_point_idx[v * width + u]; if (p_idx != -1) { const rs2::vertex& p = vertices[p_idx]; if (p.z > 0) { QVector3D p_cam(p.x, p.y, p.z); QVector3D p_base = camToBaseTransform * p_cam; if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) continue; allHandlePoints3D.append(p_base); } } }
     }
 
+
     if (allHandlePoints3D.isEmpty()) {
         qDebug() << "[PLOT] No 'handle' 3D points found.";
         emit requestHandleCenterlineUpdate(m_handleCenterline3D, m_handleSegmentIds);
+        emit requestRandomGraspPoseUpdate(m_randomGraspPose, m_showRandomGraspPose);
         return;
     }
 
@@ -451,22 +480,110 @@ void RealSenseWidget::onShowHandlePlot()
         }
         if(m_handleCenterline3D.size() != m_handleSegmentIds.size()){
             qWarning() << "[PLOT WARN] Mismatch between 3D points (" << m_handleCenterline3D.size()
-            << ") and segment IDs (" << m_handleSegmentIds.size() << "). Clearing IDs.";
+            << ") and segment IDs (" << m_handleSegmentIds.size() << "). Adjusting IDs.";
+            // ID 개수가 안 맞으면, 3D 포인트 개수에 맞춰서 다시 생성 (2D플롯에서 가져온 ID 사용 불가)
             m_handleSegmentIds.clear();
             m_handleSegmentIds.resize(m_handleCenterline3D.size());
-            m_handleSegmentIds.fill(1); // Use blue if IDs are invalid
+            // 간단하게 3등분하여 ID 할당 (임시방편)
+            int third = m_handleCenterline3D.size() / 3;
+            for(int i=0; i<m_handleCenterline3D.size(); ++i){
+                if (i < third) m_handleSegmentIds[i] = 0;
+                else if (i < 2 * third) m_handleSegmentIds[i] = 1;
+                else m_handleSegmentIds[i] = 2;
+            }
         }
+
     } else {
         qDebug() << "[PLOT] Cannot convert to 3D: PCA data missing or not enough 2D points.";
         m_handleCenterline3D.clear();
         m_handleSegmentIds.clear();
     }
 
+    calculateRandomGraspPoseOnSegment(2); // ID 2 = Red segment
+
     qDebug() << "[PLOT] Emitting update request with" << m_handleCenterline3D.size() << "points and" << m_handleSegmentIds.size() << "IDs.";
     emit requestHandleCenterlineUpdate(m_handleCenterline3D, m_handleSegmentIds);
+    emit requestRandomGraspPoseUpdate(m_randomGraspPose, m_showRandomGraspPose);
 }
 
+// ✨ [수정] calculateRandomGraspPoseOnSegment: 최종 X축 방향 반전
+void RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId)
+{
+    m_randomGraspPose.setToIdentity();
+    m_showRandomGraspPose = false;
 
+    if (!m_hasPCAData || m_handleCenterline3D.size() < 2 || m_handleSegmentIds.size() != m_handleCenterline3D.size()) {
+        qDebug() << "[RandGrasp] Cannot calculate: Missing PCA data or valid centerline/segment info.";
+        return;
+    }
+
+    // 1. 목표 세그먼트 인덱스 수집 (변경 없음)
+    QVector<int> targetIndices;
+    for (int i = 0; i < m_handleCenterline3D.size(); ++i) {
+        if (m_handleSegmentIds[i] == targetSegmentId) {
+            targetIndices.append(i);
+        }
+    }
+    if (targetIndices.isEmpty()) {
+        qDebug() << "[RandGrasp] No points found for target segment ID:" << targetSegmentId;
+        return;
+    }
+
+    // 2. 랜덤 인덱스 선택 (변경 없음)
+    int randomIndex = -1;
+    if (targetIndices.size() > 2) {
+        int randIdxInList = QRandomGenerator::global()->bounded(1, targetIndices.size() - 1);
+        randomIndex = targetIndices[randIdxInList];
+    } else {
+        randomIndex = targetIndices[0];
+    }
+    QVector3D selectedPoint = m_handleCenterline3D[randomIndex];
+
+    // 3. 접선(Tangent) 계산 (변경 없음)
+    QVector3D tangent;
+    if (randomIndex == 0) tangent = (m_handleCenterline3D[1] - selectedPoint).normalized();
+    else if (randomIndex == m_handleCenterline3D.size() - 1) tangent = (selectedPoint - m_handleCenterline3D[randomIndex - 1]).normalized();
+    else tangent = ((selectedPoint - m_handleCenterline3D[randomIndex - 1]).normalized() + (m_handleCenterline3D[randomIndex + 1] - selectedPoint).normalized()).normalized();
+
+    // --- 4. 좌표계(Orientation) 축 계산 ---
+    // Y축: 곡선 접선 방향
+    QVector3D yAxis = tangent.normalized();
+    // 초기 X축: PCA 평면 법선 방향
+    QVector3D initialXAxis = QVector3D(m_pcaNormal.x(), m_pcaNormal.y(), m_pcaNormal.z()).normalized();
+    // Z축: 초기 X축과 Y축 모두에 직교하는 방향 (Z = X x Y) - 위치 계산용
+    QVector3D zAxisForPosition = QVector3D::crossProduct(initialXAxis, yAxis).normalized();
+    // 최종 X축: Y축과 위치 계산용 Z축에 모두 직교하도록 (X = Y x Z) -> 오른손 좌표계 보장
+    QVector3D finalXAxis = QVector3D::crossProduct(yAxis, zAxisForPosition).normalized();
+    // 최종 Z축: 방향 설정용 (위치 계산용 Z의 반대)
+    QVector3D finalZAxisForOrientation = -zAxisForPosition;
+
+    // --- 5. 최종 TCP Pose 계산 ---
+    // 위치(Position): 선택된 포인트에서 *위쪽을 향하는* Z축(zAxisForPosition) 방향으로 오프셋 적용
+    QVector3D tcpPosition = selectedPoint + zAxisForPosition * GRIPPER_Z_OFFSET;
+
+    // 방향(Orientation): X축 방향만 반전시켜서 설정
+    m_randomGraspPose.setToIdentity();
+    m_randomGraspPose.setColumn(0, QVector4D(-finalXAxis, 0.0f)); // ✨ X축 방향 반전 적용
+    m_randomGraspPose.setColumn(1, QVector4D(yAxis, 0.0f));
+    m_randomGraspPose.setColumn(2, QVector4D(finalZAxisForOrientation, 0.0f)); // 반전된 Z축 사용
+    m_randomGraspPose.setColumn(3, QVector4D(tcpPosition, 1.0f)); // 위치 설정
+
+    // --- 6. 로컬 Z축 기준 90도 회전 추가 ---
+    m_randomGraspPose.rotate(90.0f, 0.0f, 0.0f, 1.0f); // 로컬 Z축(0,0,1) 기준 90도 회전
+
+    m_showRandomGraspPose = true;
+
+    // 로깅 정보 업데이트
+    QVector3D finalXAxisRot = m_randomGraspPose.column(0).toVector3D();
+    QVector3D finalYAxisRot = m_randomGraspPose.column(1).toVector3D();
+    QVector3D finalZAxisRot = m_randomGraspPose.column(2).toVector3D();
+
+    qDebug() << "[RandGrasp] Calculated random grasp pose on segment" << targetSegmentId << "at index" << randomIndex;
+    qDebug() << "  - Position (m):" << tcpPosition;
+    qDebug() << "  - Final X-Axis (Flipped, After Rz 90):" << finalXAxisRot; // 로그 메시지 수정
+    qDebug() << "  - Final Y-Axis (After Rz 90):" << finalYAxisRot;
+    qDebug() << "  - Final Z-Axis (After Rz 90 - Pointing Down):" << finalZAxisRot;
+}
 bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
 {
     qDebug() << "[CALC] Calculating grasping poses... (ShowPlot: " << showPlot << ")";
@@ -517,8 +634,15 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
     m_pointCloudWidget->updateGraspingPoints(graspingPointsForViz);
     qDebug() << "[CALC] Grasping point calculation finished in" << timer.elapsed() << "ms.";
 
-    if (showPlot && !detectedBodyPoints.isEmpty()) { /* ... (Show plot logic) ... */ }
-    else if (showPlot) qDebug() << "[CALC] No body points for plotting.";
+    if (showPlot && !detectedBodyPoints.isEmpty()) {
+        for (int i = detectedBodyPoints.size(); i < m_plotWidgets.size(); ++i) m_plotWidgets[i]->hide();
+        for (int i = 0; i < detectedBodyPoints.size(); ++i) {
+            if (i >= m_plotWidgets.size()) m_plotWidgets.append(new XYPlotWidget());
+            m_plotWidgets[i]->updateData(detectedBodyPoints[i], detectedHandlePoints[i]);
+            m_plotWidgets[i]->setWindowTitle(QString("Cup %1 Fitting Result").arg(i + 1));
+            m_plotWidgets[i]->show(); m_plotWidgets[i]->activateWindow();
+        }
+    } else if (showPlot) qDebug() << "[CALC] No body points for plotting.";
 
     if (m_graspingTargets.isEmpty()) {
         qDebug() << "[CALC] No grasping points calculated.";
@@ -530,8 +654,7 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
     GraspingTarget bestTarget = m_graspingTargets[0];
     for (const auto& target : m_graspingTargets) { float dist = currentTcpPos.distanceToPoint(target.point); if (dist < minDist) { minDist = dist; bestTarget = target; } }
 
-    const float gripper_z_offset = 0.146f;
-    m_calculatedTargetPos_m = bestTarget.point + QVector3D(0, 0, gripper_z_offset);
+    m_calculatedTargetPos_m = bestTarget.point + QVector3D(0, 0, GRIPPER_Z_OFFSET); // Use constant
     const QVector3D& N = bestTarget.direction;
     float target_rz_rad = atan2(N.y(), N.x()) - (M_PI / 2.0f); // Align Y with N
     while (target_rz_rad > M_PI) target_rz_rad -= 2*M_PI; while (target_rz_rad <= -M_PI) target_rz_rad += 2*M_PI;

@@ -30,7 +30,7 @@
 #include "handleplotwidget.h"
 #include <Eigen/Dense>
 #include <Eigen/SVD>
-#include <QMatrix3x3> // ✨ Euler 각도 변환 위해
+#include <QMatrix3x3>
 
 
 struct GraspingTarget
@@ -57,8 +57,10 @@ public:
                            const QMatrix4x4& view_pose, bool show_view_pose);
 
 public slots:
-    // ✨ [수정] 슬롯 파라미터 변경: 세그먼트 ID 추가
     void updateHandleCenterline(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
+    // ✨ [추가] 랜덤 파지 좌표계 업데이트 슬롯
+    void updateRandomGraspPose(const QMatrix4x4& pose, bool show);
+
 
 signals:
     void denoisingToggled();
@@ -86,7 +88,9 @@ private:
     void drawTargetPose();
     void drawTargetPose_Y_Aligned();
     void drawViewPose();
-    void drawHandleCenterline(); // ✨ 그리기 함수 자체는 변경 없음
+    void drawHandleCenterline();
+    // ✨ [추가] 랜덤 파지 좌표계 그리기 함수 선언
+    void drawRandomGraspPose();
 
     std::vector<float> m_vertexData;
     rs2::points m_points;
@@ -99,16 +103,17 @@ private:
 
     QVector<QVector3D> m_graspingPoints;
 
-    QMatrix4x4 m_targetTcpTransform;
-    bool m_showTargetPose = false;
-    QMatrix4x4 m_targetTcpTransform_Y_Aligned;
-    bool m_showTargetPose_Y_Aligned = false;
-    QMatrix4x4 m_viewPoseTransform;
-    bool m_showViewPose = false;
+    QMatrix4x4 m_targetTcpTransform; bool m_showTargetPose = false;
+    QMatrix4x4 m_targetTcpTransform_Y_Aligned; bool m_showTargetPose_Y_Aligned = false;
+    QMatrix4x4 m_viewPoseTransform; bool m_showViewPose = false;
 
-    // ✨ [수정] 3D 핸들 중심선 및 세그먼트 ID 저장용
     QVector<QVector3D> m_handleCenterlinePoints;
-    QVector<int> m_handleCenterlineSegmentIds; // ✨ [추가]
+    QVector<int> m_handleCenterlineSegmentIds;
+
+    // ✨ [추가] 랜덤 파지 좌표계 저장용
+    QMatrix4x4 m_randomGraspPose;
+    bool m_showRandomGraspPose = false;
+
 
     friend class RealSenseWidget;
 
@@ -134,8 +139,6 @@ public slots:
     void captureAndProcess();
     void onRobotTransformUpdated(const QMatrix4x4 &transform);
     void onMoveToYAlignedPoseRequested();
-
-    // (MainWindow에서 호출)
     void onDenoisingToggled();
     void onZFilterToggled();
     void onShowXYPlot();
@@ -162,9 +165,10 @@ signals:
         const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
         const QVector3D& place_pos_mm, const QVector3D& place_ori_deg
         );
-
-    // ✨ [수정] 시그널 파라미터 변경: 세그먼트 ID 추가
     void requestHandleCenterlineUpdate(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
+    // ✨ [추가] 랜덤 파지 좌표계 업데이트 시그널
+    void requestRandomGraspPoseUpdate(const QMatrix4x4& pose, bool show);
+
 
 private slots:
     void updateFrame();
@@ -177,6 +181,9 @@ private:
     QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
     void findFloorPlaneRANSAC();
     void runDbscanClustering();
+    // ✨ [추가] 랜덤 파지 좌표계 계산 함수 선언
+    void calculateRandomGraspPoseOnSegment(int targetSegmentId);
+
 
     QHBoxLayout *m_layout;
     QLabel *m_colorLabel;
@@ -205,11 +212,15 @@ private:
     QJsonArray m_detectionResults; bool m_isProcessing; bool m_showPlotWindow;
     QVector<GraspingTarget> m_graspingTargets;
 
-    // PCA 역변환 정보
+    // PCA 정보
     Eigen::Vector3f m_pcaMean; Eigen::Vector3f m_pcaPC1; Eigen::Vector3f m_pcaPC2;
+    Eigen::Vector3f m_pcaNormal; // ✨ [추가] PCA 법선 벡터 (PC3) 저장용
     bool m_hasPCAData;
     QVector<QVector3D> m_handleCenterline3D;
-    QVector<int> m_handleSegmentIds; // ✨ [추가] 세그먼트 ID 저장용
+    QVector<int> m_handleSegmentIds;
+    // ✨ [추가] 랜덤 파지 좌표계
+    QMatrix4x4 m_randomGraspPose; bool m_showRandomGraspPose;
+
 
     QMatrix4x4 m_calculatedTargetPose; QVector3D m_calculatedTargetPos_m; QVector3D m_calculatedTargetOri_deg;
     QMatrix4x4 m_calculatedTargetPose_Y_Aligned; QVector3D m_calculatedTargetOri_deg_Y_Aligned;
@@ -218,6 +229,7 @@ private:
     std::vector<int> m_clusterIds; // DBSCAN용
 
     const float APPROACH_HEIGHT_M = 0.15f;
+    const float GRIPPER_Z_OFFSET = 0.146f; // ✨ [추가] 그리퍼 Z 오프셋 상수화
     const int IMAGE_WIDTH = 640, IMAGE_HEIGHT = 480, IMAGE_CHANNELS = 3;
     const int IMAGE_SIZE = IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS;
     const int RESULT_SIZE = 100 * 1024, CONTROL_SIZE = 16;
