@@ -569,7 +569,7 @@ void RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId)
     m_randomGraspPose.setColumn(3, QVector4D(tcpPosition, 1.0f)); // 위치 설정
 
     // --- 6. 로컬 Z축 기준 90도 회전 추가 ---
-    m_randomGraspPose.rotate(90.0f, 0.0f, 0.0f, 1.0f); // 로컬 Z축(0,0,1) 기준 90도 회전
+    m_randomGraspPose.rotate(-90.0f, 0.0f, 0.0f, 1.0f); // 로컬 Z축(0,0,1) 기준 90도 회전
 
     m_showRandomGraspPose = true;
 
