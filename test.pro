@@ -12,6 +12,7 @@ DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000
 # 소스 및 헤더 파일
 # -------------------------------------------------
 SOURCES += \
+    handleplotwidget.cpp \
     main.cpp \
     mainwindow.cpp \
     realsensewidget.cpp \
