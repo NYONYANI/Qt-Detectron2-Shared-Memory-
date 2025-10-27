@@ -56,7 +56,8 @@ public:
     void updateTargetPoses(const QMatrix4x4& pose, bool show,
                            const QMatrix4x4& pose_y_aligned, bool show_y_aligned,
                            const QMatrix4x4& view_pose, bool show_view_pose);
-
+public slots: // ✨ [추가] public slots: 섹션 및 슬롯 선언
+    void updateHandleCenterline(const QVector<QVector3D>& centerline);
 signals:
     void denoisingToggled();
     void zFilterToggled();
@@ -85,7 +86,7 @@ private:
     void drawTargetPose_Y_Aligned();
     // ✨ drawViewPose 선언 확인
     void drawViewPose();
-
+    void drawHandleCenterline();
     std::vector<float> m_vertexData;
     rs2::points m_points;
     rs2::video_frame m_colorFrame;
@@ -104,7 +105,7 @@ private:
     // ✨ 뷰포인트 Pose 시각화용 변수
     QMatrix4x4 m_viewPoseTransform;
     bool m_showViewPose = false;
-
+    QVector<QVector3D> m_handleCenterlinePoints;
     friend class RealSenseWidget;
 
     QMatrix4x4 m_baseToTcpTransform;
@@ -163,6 +164,7 @@ signals:
         const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
         const QVector3D& place_pos_mm, const QVector3D& place_ori_deg
         );
+    void requestHandleCenterlineUpdate(const QVector<QVector3D>& centerline);
 
 private slots:
     void updateFrame();
@@ -216,7 +218,12 @@ private:
     bool m_showPlotWindow;
 
     QVector<GraspingTarget> m_graspingTargets;
-
+    // ✨ [추가] PCA 역변환을 위한 정보 저장
+    Eigen::Vector3f m_pcaMean;
+    Eigen::Vector3f m_pcaPC1;
+    Eigen::Vector3f m_pcaPC2;
+    bool m_hasPCAData;
+    QVector<QVector3D> m_handleCenterline3D;
     QMatrix4x4 m_calculatedTargetPose;
     QVector3D m_calculatedTargetPos_m;
     QVector3D m_calculatedTargetOri_deg;

@@ -40,7 +40,7 @@ class HandlePlotWidget : public QWidget
 public:
     explicit HandlePlotWidget(QWidget *parent = nullptr);
     void updateData(const QVector<QPointF>& points);
-
+    QVector<QPointF> getSmoothedCenterlinePoints() const { return m_smoothedCenterlinePoints; };
 protected:
     void paintEvent(QPaintEvent *event) override;
 

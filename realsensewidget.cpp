@@ -94,6 +94,8 @@ void PointCloudWidget::drawGrid(float size, int divisions)
     glEnd();
 }
 
+// realsensewidget.cpp
+
 void PointCloudWidget::paintGL()
 {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -115,14 +117,9 @@ void PointCloudWidget::paintGL()
     glRotatef(m_yaw, 0.0f, 1.0f, 0.0f);   // Y축 기준 회전
 
 
-    // --- 월드 요소 그리기 ---
+    // --- 1. 월드 및 3D 데이터 그리기 (깊이 테스트 활성화 상태) ---
     drawGrid(2.0f, 20); // 2x2 크기, 20칸짜리 그리드
     drawAxes(0.2f);     // 월드 좌표계 축 (크기 0.2)
-
-    drawGraspingSpheres();      // 계산된 파지점 시각화 (빨간 구)
-    drawTargetPose();           // 계산된 파지 Pose 시각화 (보라색 축)
-    drawTargetPose_Y_Aligned(); // Y축 정렬된 Pose 시각화 (청록색 축)
-    drawViewPose();             // 계산된 뷰포인트 Pose 시각화 (노란색 축)
 
     // --- 로봇 및 포인트 클라우드 그리기 ---
     glPushMatrix(); // 현재 변환 상태 저장
@@ -150,8 +147,63 @@ void PointCloudWidget::paintGL()
     }
 
     glPopMatrix(); // 이전 변환 상태 복원
+
+    // --- 2. 3D 오버레이 그리기 (깊이 테스트 비활성화) ---
+    glDisable(GL_DEPTH_TEST); // ✨ [핵심] 깊이 테스트 비활성화
+
+    // (기존) 파지점/좌표계 그리기
+    drawGraspingSpheres();
+    drawTargetPose();
+    drawTargetPose_Y_Aligned();
+    drawViewPose();
+
+    // (디버깅) 핸들 중심선 및 테스트용 구 그리기
+    drawHandleCenterline(); // ✨ 이제 깊이 테스트 없이 그려집니다.
+
+    glEnable(GL_DEPTH_TEST); // ✨ [핵심] 깊이 테스트 다시 활성화
 }
 
+// realsensewidget.cpp
+
+// ✨ [수정] 디버깅 구체는 모두 제거. 데이터가 있을 때만 점과 선을 그림.
+void PointCloudWidget::drawHandleCenterline()
+{
+    // 데이터가 없으면(버튼 누르기 전) 아무것도 그리지 않고 즉시 리턴
+    if (m_handleCenterlinePoints.isEmpty()) {
+        return;
+    }
+
+    // --- 1. [디버깅] 곡선의 첫 번째 포인트 위치에 매우 큰 빨간색 점 그리기 ---
+    const QVector3D& firstPoint = m_handleCenterlinePoints[0];
+
+    // (데이터 좌표 확인용 로그 - 필요시 주석 해제)
+    // qDebug() << "[DEBUG] drawHandleCenterline - First curve point:" << firstPoint;
+
+    glPointSize(10.0f); // 매우 큰 10px 점
+    glColor3f(1.0f, 0.0f, 0.0f); // 밝은 빨간색
+    glBegin(GL_POINTS);
+    glVertex3f(firstPoint.x(), firstPoint.y(), firstPoint.z());
+    glEnd();
+    glPointSize(1.5f); // 포인트 크기 복원
+
+    // --- 2. [원본] 곡선 그리기 ---
+    if (m_handleCenterlinePoints.size() < 2) return; // 점이 2개 이상일 때만 선 그리기
+
+    glLineWidth(8.0f); // 굵은 선
+    glColor3f(1.0f, 0.0f, 1.0f); // 마젠타색
+    glBegin(GL_LINE_STRIP);
+    for (const auto& point : m_handleCenterlinePoints) {
+        glVertex3f(point.x(), point.y(), point.z());
+    }
+    glEnd();
+    glLineWidth(1.0f);
+}
+// ✨ [추가] 3D 핸들 중심선 업데이트 슬롯 구현
+void PointCloudWidget::updateHandleCenterline(const QVector<QVector3D> &centerline)
+{
+    m_handleCenterlinePoints = centerline;
+    update(); // 다시 그리도록 요청
+}
 void PointCloudWidget::initializeGL()
 {
     initializeOpenGLFunctions(); // OpenGL 함수 초기화
@@ -439,7 +491,8 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     : QWidget(parent), m_align(RS2_STREAM_COLOR), m_isProcessing(false),
     m_showPlotWindow(false),
     m_depth_to_disparity(true), m_disparity_to_depth(false),
-    m_hasCalculatedViewPose(false) // ✨ [추가] 플래그 초기화
+    m_hasCalculatedViewPose(false), // ✨ [추가] 플래그 초기화
+    m_hasPCAData(false) // ✨ [추가] 플래그 초기화
 {
     initSharedMemory();
     m_config.enable_stream(RS2_STREAM_DEPTH, IMAGE_WIDTH, IMAGE_HEIGHT, RS2_FORMAT_Z16, 30);
@@ -468,7 +521,8 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
 
     m_handlePlotWidget = new HandlePlotWidget();
     m_handlePlotWidget->setWindowTitle("Handle Shape Projection (PCA)");
-
+    connect(this, &RealSenseWidget::requestHandleCenterlineUpdate,
+            m_pointCloudWidget, &PointCloudWidget::updateHandleCenterline);
     m_pointCloudWidget->setFocus();
 }
 
@@ -499,6 +553,7 @@ void RealSenseWidget::calculatePCA(const QVector<QVector3D>& points, QVector<QPo
 {
     if (points.size() < 3) {
         qDebug() << "[PCA] Not enough points for PCA:" << points.size();
+        m_hasPCAData = false; // ✨ [추가] PCA 실패 시 플래그 설정
         return;
     }
 
@@ -522,6 +577,12 @@ void RealSenseWidget::calculatePCA(const QVector<QVector3D>& points, QVector<QPo
 
     qDebug() << "[PCA] Handle Plane Normal (PC3):" << pc3(0) << "," << pc3(1) << "," << pc3(2);
 
+    // ✨ [추가] PCA 변환 정보 저장
+    m_pcaMean = mean;
+    m_pcaPC1 = pc1;
+    m_pcaPC2 = pc2;
+    m_hasPCAData = true;
+
     projectedPoints.clear();
     projectedPoints.reserve(points.size());
     for (int i = 0; i < points.size(); ++i) {
@@ -530,6 +591,8 @@ void RealSenseWidget::calculatePCA(const QVector<QVector3D>& points, QVector<QPo
         projectedPoints.append(QPointF(proj1, proj2));
     }
 }
+
+// realsensewidget.cpp
 
 void RealSenseWidget::onShowHandlePlot()
 {
@@ -546,19 +609,17 @@ void RealSenseWidget::onShowHandlePlot()
 
     QVector<QVector3D> allHandlePoints3D;
 
+    // ... (기존 3D 포인트 수집 로직 ...
     for (const QJsonValue &cupValue : m_detectionResults) {
         QJsonObject cupResult = cupValue.toObject();
-
         QString part = "handle";
         if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
-
         QJsonObject partData = cupResult[part].toObject();
         QJsonArray rle = partData["mask_rle"].toArray();
         QJsonArray shape = partData["mask_shape"].toArray();
         QJsonArray offset = partData["offset"].toArray();
         int H = shape[0].toInt(); int W = shape[1].toInt();
         int ox = offset[0].toInt(); int oy = offset[1].toInt();
-
         QVector<uchar> mask_buffer(W * H, 0);
         int idx = 0; uchar val = 0;
         for(const QJsonValue& run_val : rle) {
@@ -568,7 +629,6 @@ void RealSenseWidget::onShowHandlePlot()
             idx += len; val = (val == 0 ? 255 : 0);
             if(idx >= W * H) break;
         }
-
         for(int y = 0; y < H; ++y) {
             for(int x = 0; x < W; ++x) {
                 if(mask_buffer[y * W + x] == 255) {
@@ -589,22 +649,60 @@ void RealSenseWidget::onShowHandlePlot()
             }
         }
     }
+    // ... (기존 3D 포인트 수집 로직 끝) ...
 
     if (allHandlePoints3D.isEmpty()) {
         qDebug() << "[PLOT] No 'handle' 3D points found.";
+        m_handleCenterline3D.clear();
+        emit requestHandleCenterlineUpdate(m_handleCenterline3D);
         return;
     }
 
     qDebug() << "[PLOT] Found" << allHandlePoints3D.size() << "handle points. Running PCA...";
 
     QVector<QPointF> projectedPoints;
-    calculatePCA(allHandlePoints3D, projectedPoints);
+    calculatePCA(allHandlePoints3D, projectedPoints); // m_hasPCAData 등이 여기서 설정됨
 
     m_handlePlotWidget->updateData(projectedPoints);
     m_handlePlotWidget->show();
     m_handlePlotWidget->activateWindow();
-}
 
+    // --- ✨ [수정] 2D 중심선을 3D로 역변환 (디버깅 로그 추가) ---
+    m_handleCenterline3D.clear();
+    if (m_hasPCAData) {
+        qDebug() << "[PLOT DEBUG] PCA data is valid. Getting 2D centerline...";
+        QVector<QPointF> centerline2D = m_handlePlotWidget->getSmoothedCenterlinePoints();
+
+        qDebug() << "[PLOT DEBUG] Got" << centerline2D.size() << "2D centerline points.";
+
+        if (centerline2D.size() < 2) {
+            qDebug() << "[PLOT WARN] No 2D centerline data found from plot.";
+        } else {
+            // (로그가 너무 많을 수 있으니 첫 번째 점만 확인)
+            const QPointF& p2d_first = centerline2D[0];
+            Eigen::Vector3f p3d_first_eigen = m_pcaMean + (p2d_first.x() * m_pcaPC1) + (p2d_first.y() * m_pcaPC2);
+            qDebug() << "[PLOT DEBUG] PCA Mean (x,y,z):" << m_pcaMean.x() << m_pcaMean.y() << m_pcaMean.z();
+            qDebug() << "[PLOT DEBUG] PCA PC1 (x,y,z):" << m_pcaPC1.x() << m_pcaPC1.y() << m_pcaPC1.z();
+            qDebug() << "[PLOT DEBUG] PCA PC2 (x,y,z):" << m_pcaPC2.x() << m_pcaPC2.y() << m_pcaPC2.z();
+            qDebug() << "[PLOT DEBUG] First 2D pt (x,y):" << p2d_first.x() << p2d_first.y();
+            qDebug() << "[PLOT DEBUG] ==> First 3D pt (x,y,z):" << p3d_first_eigen.x() << p3d_first_eigen.y() << p3d_first_eigen.z();
+
+            m_handleCenterline3D.reserve(centerline2D.size());
+            for (const QPointF& p2d : centerline2D) {
+                Eigen::Vector3f p3d_eigen = m_pcaMean + (p2d.x() * m_pcaPC1) + (p2d.y() * m_pcaPC2);
+                m_handleCenterline3D.append(QVector3D(p3d_eigen.x(), p3d_eigen.y(), p3d_eigen.z()));
+            }
+            qDebug() << "[PLOT] Converted 2D centerline (" << centerline2D.size() << "pts) to 3D centerline (" << m_handleCenterline3D.size() << "pts).";
+        }
+    } else {
+        qDebug() << "[PLOT ERROR] Cannot convert centerline to 3D: m_hasPCAData is false.";
+    }
+
+    // PointCloudWidget에 3D 중심선 전송 (비어있더라도 전송하여 갱신)
+    qDebug() << "[PLOT DEBUG] Emitting requestHandleCenterlineUpdate with" << m_handleCenterline3D.size() << "points.";
+    emit requestHandleCenterlineUpdate(m_handleCenterline3D);
+    // --- [수정] 끝 ---
+}
 bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
 {
     qDebug() << "[CALC] Calculating grasping poses... (ShowPlot: " << showPlot << ")";
