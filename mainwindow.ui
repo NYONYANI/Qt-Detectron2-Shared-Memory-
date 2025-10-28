@@ -133,7 +133,7 @@
      <rect>
       <x>410</x>
       <y>640</y>
-      <width>261</width>
+      <width>141</width>
       <height>61</height>
      </rect>
     </property>
@@ -165,6 +165,19 @@
     </property>
     <property name="text">
      <string>Move View point</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="HandleGrapsButton">
+    <property name="geometry">
+     <rect>
+      <x>560</x>
+      <y>640</y>
+      <width>111</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Graps Handle</string>
     </property>
    </widget>
   </widget>
