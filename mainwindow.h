@@ -67,6 +67,9 @@ private slots:
     // ✨ [수정] MovepointButton 슬롯 선언 추가
     void on_MovepointButton_clicked();
 
+    // ✨ [추가] HandleGrapsButton 슬롯 선언 추가
+    void on_HandleGrapsButton_clicked();
+
 private:
     Ui::MainWindow *ui;
 

@@ -58,7 +58,6 @@ public:
 
 public slots:
     void updateHandleCenterline(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
-    // ✨ [추가] 랜덤 파지 좌표계 업데이트 슬롯
     void updateRandomGraspPose(const QMatrix4x4& pose, bool show);
 
 
@@ -89,7 +88,6 @@ private:
     void drawTargetPose_Y_Aligned();
     void drawViewPose();
     void drawHandleCenterline();
-    // ✨ [추가] 랜덤 파지 좌표계 그리기 함수 선언
     void drawRandomGraspPose();
 
     std::vector<float> m_vertexData;
@@ -110,7 +108,6 @@ private:
     QVector<QVector3D> m_handleCenterlinePoints;
     QVector<int> m_handleCenterlineSegmentIds;
 
-    // ✨ [추가] 랜덤 파지 좌표계 저장용
     QMatrix4x4 m_randomGraspPose;
     bool m_showRandomGraspPose = false;
 
@@ -150,6 +147,7 @@ public slots:
     void onCalculateHandleViewPose();
     void onMoveToCalculatedHandleViewPose();
     void runFullAutomatedSequence();
+    void onMoveToRandomGraspPoseRequested();
 
 signals:
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
@@ -166,8 +164,10 @@ signals:
         const QVector3D& place_pos_mm, const QVector3D& place_ori_deg
         );
     void requestHandleCenterlineUpdate(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
-    // ✨ [추가] 랜덤 파지 좌표계 업데이트 시그널
     void requestRandomGraspPoseUpdate(const QMatrix4x4& pose, bool show);
+
+    // ✨ [추가] 1. (5cm 뒤) 접근 -> 2. (목표) 파지 2단계 이동 요청 시그널
+    void requestApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg);
 
 
 private slots:
@@ -181,7 +181,6 @@ private:
     QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
     void findFloorPlaneRANSAC();
     void runDbscanClustering();
-    // ✨ [추가] 랜덤 파지 좌표계 계산 함수 선언
     void calculateRandomGraspPoseOnSegment(int targetSegmentId);
 
 
@@ -214,11 +213,11 @@ private:
 
     // PCA 정보
     Eigen::Vector3f m_pcaMean; Eigen::Vector3f m_pcaPC1; Eigen::Vector3f m_pcaPC2;
-    Eigen::Vector3f m_pcaNormal; // ✨ [추가] PCA 법선 벡터 (PC3) 저장용
+    Eigen::Vector3f m_pcaNormal;
     bool m_hasPCAData;
     QVector<QVector3D> m_handleCenterline3D;
     QVector<int> m_handleSegmentIds;
-    // ✨ [추가] 랜덤 파지 좌표계
+
     QMatrix4x4 m_randomGraspPose; bool m_showRandomGraspPose;
 
 
@@ -229,7 +228,7 @@ private:
     std::vector<int> m_clusterIds; // DBSCAN용
 
     const float APPROACH_HEIGHT_M = 0.15f;
-    const float GRIPPER_Z_OFFSET = 0.146f; // ✨ [추가] 그리퍼 Z 오프셋 상수화
+    const float GRIPPER_Z_OFFSET = 0.146f;
     const int IMAGE_WIDTH = 640, IMAGE_HEIGHT = 480, IMAGE_CHANNELS = 3;
     const int IMAGE_SIZE = IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS;
     const int RESULT_SIZE = 100 * 1024, CONTROL_SIZE = 16;

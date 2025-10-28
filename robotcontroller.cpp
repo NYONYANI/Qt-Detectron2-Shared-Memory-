@@ -389,3 +389,35 @@ void RobotController::onFullPickAndPlaceSequence(
 
     qDebug() << "[ROBOT_SEQ] ========== Full Automated Sequence Completed! ==========";
 }
+// ... (기존 onFullPickAndPlaceSequence 함수 끝난 뒤) ...
+
+void RobotController::onApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg)
+{
+    if (!g_bHasControlAuthority || GlobalDrfl.GetRobotState() != STATE_STANDBY) {
+        qWarning() << "[ROBOT_SEQ] Cannot start Approach-Then-Grasp: No control or not STANDBY.";
+        return;
+    }
+
+    qInfo() << "[ROBOT_SEQ] ========== Starting Approach-Then-Grasp (Grasp Handle) ==========";
+
+    // Step 1: 5cm 뒤(접근 위치)로 이동
+    qDebug() << "[ROBOT] Step 1/2: Moving to Approach Pose (-5cm)";
+    moveToPositionAndWait(approach_pos_mm, orientation_deg); // (일반 속도 사용)
+    QThread::msleep(1500); // ✨ 1. 접근 이동 완료 대기
+
+    // Step 2: 최종 목표 위치로 이동 (느리게)
+    qDebug() << "[ROBOT] Step 2/2: Moving to Final Grasp Pose (Slowly)";
+    float velx_slow[2] = {50.0f, 30.0f}; // V: 50, W: 30
+    float accx_slow[2] = {50.0f, 30.0f}; // A: 50, W: 30
+
+    float target_posx[6];
+    target_posx[0] = final_pos_mm.x(); target_posx[1] = final_pos_mm.y(); target_posx[2] = final_pos_mm.z();
+    target_posx[3] = orientation_deg.x(); target_posx[4] = orientation_deg.y(); target_posx[5] = orientation_deg.z();
+
+    if (!GlobalDrfl.movel(target_posx, velx_slow, accx_slow)) {
+        qWarning() << "[ROBOT] Final move command failed!";
+    }
+    QThread::msleep(1500); // ✨ 2. 최종 이동 완료 대기
+
+    qInfo() << "[ROBOT_SEQ] ========== Approach-Then-Grasp Completed! ==========";
+}

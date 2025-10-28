@@ -11,7 +11,7 @@
 #include <QPixmap>
 #include <cmath>
 #include <QKeyEvent>
-#include <random>
+#include <random> // <--- std::mt19937, std::random_device 사용 위해 필요
 #include <GL/glu.h>
 #include <map>
 #include <limits>
@@ -142,7 +142,9 @@ void PointCloudWidget::processPoints(const std::vector<int>& clusterIds)
     if (useClusters) {
         int maxClusterId = 0;
         for (int id : clusterIds) { if (id > maxClusterId) maxClusterId = id; }
-        std::mt19937 gen(12345); std::uniform_real_distribution<float> distrib(0.0, 1.0);
+        // ✨ [오타 수정] mt19f37 -> mt19937
+        std::mt19937 gen(12345);
+        std::uniform_real_distribution<float> distrib(0.0, 1.0);
         for (int i = 1; i <= maxClusterId; ++i) clusterColors[i] = QVector3D(distrib(gen), distrib(gen), distrib(gen));
         clusterColors[-1] = QVector3D(0.5f, 0.5f, 0.5f);
     }
@@ -506,7 +508,7 @@ void RealSenseWidget::onShowHandlePlot()
     emit requestRandomGraspPoseUpdate(m_randomGraspPose, m_showRandomGraspPose);
 }
 
-// ✨ [수정] calculateRandomGraspPoseOnSegment: 최종 X축 방향 반전
+// ✨ [수정] calculateRandomGraspPoseOnSegment: zAxisForPosition이 항상 Z+를 향하도록 보정
 void RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId)
 {
     m_randomGraspPose.setToIdentity();
@@ -517,7 +519,7 @@ void RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId)
         return;
     }
 
-    // 1. 목표 세그먼트 인덱스 수집 (변경 없음)
+    // 1. 목표 세그먼트 인덱스 수집
     QVector<int> targetIndices;
     for (int i = 0; i < m_handleCenterline3D.size(); ++i) {
         if (m_handleSegmentIds[i] == targetSegmentId) {
@@ -529,7 +531,7 @@ void RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId)
         return;
     }
 
-    // 2. 랜덤 인덱스 선택 (변경 없음)
+    // 2. 랜덤 인덱스 선택
     int randomIndex = -1;
     if (targetIndices.size() > 2) {
         int randIdxInList = QRandomGenerator::global()->bounded(1, targetIndices.size() - 1);
@@ -539,7 +541,7 @@ void RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId)
     }
     QVector3D selectedPoint = m_handleCenterline3D[randomIndex];
 
-    // 3. 접선(Tangent) 계산 (변경 없음)
+    // 3. 접선(Tangent) 계산
     QVector3D tangent;
     if (randomIndex == 0) tangent = (m_handleCenterline3D[1] - selectedPoint).normalized();
     else if (randomIndex == m_handleCenterline3D.size() - 1) tangent = (selectedPoint - m_handleCenterline3D[randomIndex - 1]).normalized();
@@ -552,9 +554,19 @@ void RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId)
     QVector3D initialXAxis = QVector3D(m_pcaNormal.x(), m_pcaNormal.y(), m_pcaNormal.z()).normalized();
     // Z축: 초기 X축과 Y축 모두에 직교하는 방향 (Z = X x Y) - 위치 계산용
     QVector3D zAxisForPosition = QVector3D::crossProduct(initialXAxis, yAxis).normalized();
+
+    // ✨ [추가] zAxisForPosition이 항상 베이스 Z+ 방향(위쪽)을 향하도록 보정
+    // 이 벡터는 그리퍼 오프셋(GRIPPER_Z_OFFSET)에 사용되므로,
+    // 항상 컵 손잡이 평면 기준 '위쪽'(베이스 Z+ 방향)을 향해야 합니다.
+    if (zAxisForPosition.z() < 0.0f) {
+        qDebug() << "[RandGrasp] Flipping zAxisForPosition (was" << zAxisForPosition << ")";
+        zAxisForPosition = -zAxisForPosition; // 벡터 방향 뒤집기
+        qDebug() << "[RandGrasp] Flipped zAxisForPosition (now" << zAxisForPosition << ")";
+    }
+
     // 최종 X축: Y축과 위치 계산용 Z축에 모두 직교하도록 (X = Y x Z) -> 오른손 좌표계 보장
     QVector3D finalXAxis = QVector3D::crossProduct(yAxis, zAxisForPosition).normalized();
-    // 최종 Z축: 방향 설정용 (위치 계산용 Z의 반대)
+    // 최종 Z축: 방향 설정용 (위치 계산용 Z의 반대, 즉 손잡이를 향함)
     QVector3D finalZAxisForOrientation = -zAxisForPosition;
 
     // --- 5. 최종 TCP Pose 계산 ---
@@ -563,7 +575,7 @@ void RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId)
 
     // 방향(Orientation): X축 방향만 반전시켜서 설정
     m_randomGraspPose.setToIdentity();
-    m_randomGraspPose.setColumn(0, QVector4D(-finalXAxis, 0.0f)); // ✨ X축 방향 반전 적용
+    m_randomGraspPose.setColumn(0, QVector4D(-finalXAxis, 0.0f)); // X축 방향 반전 적용
     m_randomGraspPose.setColumn(1, QVector4D(yAxis, 0.0f));
     m_randomGraspPose.setColumn(2, QVector4D(finalZAxisForOrientation, 0.0f)); // 반전된 Z축 사용
     m_randomGraspPose.setColumn(3, QVector4D(tcpPosition, 1.0f)); // 위치 설정
@@ -580,7 +592,7 @@ void RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId)
 
     qDebug() << "[RandGrasp] Calculated random grasp pose on segment" << targetSegmentId << "at index" << randomIndex;
     qDebug() << "  - Position (m):" << tcpPosition;
-    qDebug() << "  - Final X-Axis (Flipped, After Rz 90):" << finalXAxisRot; // 로그 메시지 수정
+    qDebug() << "  - Final X-Axis (Flipped, After Rz 90):" << finalXAxisRot;
     qDebug() << "  - Final Y-Axis (After Rz 90):" << finalYAxisRot;
     qDebug() << "  - Final Z-Axis (After Rz 90 - Pointing Down):" << finalZAxisRot;
 }
@@ -783,9 +795,18 @@ void RealSenseWidget::onCalculateHandleViewPose()
     QVector3D graspPoint = m_graspingTargets[0].point;
 
     QMatrix4x4 viewMat = m_calculatedTargetPose;
-    const float OFF_Y=0.3f, OFF_Z=0.0f; // View offsets relative to grasp pose
-    viewMat.translate(0.0f, OFF_Y, 0.0f); viewMat.translate(0.0f, 0.0f, OFF_Z);
+    const float OFF_Y=0.2f, OFF_Z=0.0f; // View offsets relative to grasp pose
+    viewMat.translate(0.0f, OFF_Y, 0.0f);
+    viewMat.translate(0.0f, 0.0f, OFF_Z);
     QVector3D viewPos = viewMat.column(3).toVector3D();
+
+    // ✨ [수정] 뷰(카메라) Z 위치가 베이스(0)보다 아래인지 확인
+    if (viewPos.z() < 0.0f)
+    {
+        qInfo() << "[VIEW] Original view Z-pos was negative:" << viewPos.z();
+        viewPos.setZ(qAbs(viewPos.z())); // Z축을 양수 값으로 대칭 이동 (e.g., -0.2 -> +0.2)
+        qInfo() << "[VIEW] Mirrored view Z-pos to positive:" << viewPos.z();
+    }
 
     QVector3D origX = m_calculatedTargetPose.column(0).toVector3D().normalized();
     const float LOOK_BELOW=0.1f;
@@ -943,7 +964,10 @@ void RealSenseWidget::runDbscanClustering()
 void RealSenseWidget::findFloorPlaneRANSAC() {
     const rs2::points& points = m_pointCloudWidget->m_points; if (!points || points.size() < 100) { qDebug() << "[INFO] Floor: Not enough points."; m_pointCloudWidget->m_isFloorFiltered = false; return; }
     const rs2::vertex* vertices = points.get_vertices(); const size_t num_points = points.size();
-    std::vector<int> best_inliers; std::mt19937 gen(std::random_device{}()); std::uniform_int_distribution<> distrib(0, num_points - 1);
+    std::vector<int> best_inliers;
+    // ✨ [오타 수정] mt19f37 -> mt19937
+    std::mt19937 gen(std::random_device{}());
+    std::uniform_int_distribution<> distrib(0, num_points - 1);
     for (int i = 0; i < 100; ++i) {
         rs2::vertex p1=vertices[distrib(gen)], p2=vertices[distrib(gen)], p3=vertices[distrib(gen)];
         float a=(p2.y-p1.y)*(p3.z-p1.z)-(p2.z-p1.z)*(p3.y-p1.y), b=(p2.z-p1.z)*(p3.x-p1.x)-(p2.x-p1.x)*(p3.z-p1.z), c=(p2.x-p1.x)*(p3.y-p1.y)-(p2.y-p1.y)*(p3.x-p1.x);
@@ -1016,4 +1040,45 @@ QJsonArray RealSenseWidget::receiveResultsFromPython() {
     sem_post(sem_result);
     sem_wait(sem_control); static_cast<char*>(data_control)[OFFSET_RESULT_READY] = 0; sem_post(sem_control);
     return results;
+}
+
+// ✨ [확인!] onMoveToRandomGraspPoseRequested 함수 전체가 아래와 같은지 확인
+void RealSenseWidget::onMoveToRandomGraspPoseRequested()
+{
+    qInfo() << "[GRASP] 'Grasp Handle' move requested (with 5cm approach).";
+
+    if (!m_showRandomGraspPose || m_randomGraspPose.isIdentity()) {
+        qWarning() << "[GRASP] Move failed: No random grasp pose calculated. Press 'View handle Plot' first.";
+        return;
+    }
+
+    // 1. 최종 파지 위치(m) 및 방향(deg) 계산
+    QVector3D graspPos_m = m_randomGraspPose.column(3).toVector3D();
+    QMatrix3x3 rotMat = m_randomGraspPose.toGenericMatrix<3,3>();
+
+    QVector3D graspOriZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
+    float cmdA = graspOriZYZ.x() + 180.0f;
+    float cmdB = -graspOriZYZ.y();
+    float cmdC = graspOriZYZ.z() + 180.0f;
+    while(cmdA > 180.0f) cmdA -= 360.0f; while(cmdA <= -180.0f) cmdA += 360.0f;
+    while(cmdB > 180.0f) cmdB -= 360.0f; while(cmdB <= -180.0f) cmdB += 360.0f;
+    while(cmdC > 180.0f) cmdC -= 360.0f; while(cmdC <= -180.0f) cmdC += 360.0f;
+    QVector3D robotCmdOri_deg(cmdA, cmdB, cmdC);
+
+    // 2. 접근(Approach) 위치 계산 (5cm 뒤)
+    QVector3D ef_z_axis = m_randomGraspPose.column(2).toVector3D().normalized();
+    float approach_distance_m = 0.05f; // 5cm
+    QVector3D approachPos_m = graspPos_m - (ef_z_axis * approach_distance_m);
+
+    // 3. mm 단위로 변환
+    QVector3D robotGraspPos_mm = graspPos_m * 1000.0f;
+    QVector3D robotApproachPos_mm = approachPos_m * 1000.0f;
+
+    qInfo() << "[GRASP] Requesting Approach-Then-Grasp Sequence:";
+    qInfo() << "  - 1. Approach Pos (mm):" << robotApproachPos_mm;
+    qInfo() << "  - 2. Final Pos (mm):"    << robotGraspPos_mm;
+    qInfo() << "  - Cmd Rot (A, B, C deg):" << robotCmdOri_deg;
+
+    // 4. ✨ [확인!] 이 시그널을 정확히 발생시켜야 합니다. (다른 emit 호출은 없어야 함)
+    emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg);
 }

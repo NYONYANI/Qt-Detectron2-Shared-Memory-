@@ -4,8 +4,8 @@
 #include <QObject>
 #include <QVector3D>
 #include <QTimer>
-#include <QQuaternion> // ✨ [추가]
-#include <QMatrix3x3>  // ✨ [추가] QMatrix4x4 대신 3x3 사용 및 계산 용이성 위해
+#include <QQuaternion>
+#include <QMatrix3x3>
 #include "DRFLEx.h"
 
 
@@ -34,7 +34,6 @@ public slots:
                                    const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
                                    const QVector3D& place_pos_mm, const QVector3D& place_ori_deg);
 
-    // ✨ [추가] RealSenseWidget에서 모든 좌표를 받아 전체 시퀀스를 실행하는 슬롯
     void onFullPickAndPlaceSequence(
         const QVector3D& pre_grasp_pos_mm, const QVector3D& pre_grasp_ori_deg,
         const QVector3D& grasp_pos_mm, const QVector3D& grasp_ori_deg,
@@ -43,17 +42,17 @@ public slots:
         const QVector3D& place_pos_mm, const QVector3D& place_ori_deg
         );
 
+    // ✨ [추가] 1. (5cm 뒤) 접근 -> 2. (목표) 파지 2단계 이동을 처리할 슬롯
+    void onApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg);
+
 private slots:
     void checkRobotState();
 
 private:
     QTimer *m_timer;
-    // ✨ [추가] 각도 디버그 메시지 출력 여부 플래그
     bool m_angleDebugPrinted;
 
     void moveToPositionAndWait(const QVector3D& pos_mm, const QVector3D& ori_deg);
-
-    // ✨ [추가] Euler 각도 변환 함수 선언 (다양한 규약 지원 위해)
     QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
 
 };
