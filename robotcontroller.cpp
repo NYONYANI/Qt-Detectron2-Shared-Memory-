@@ -230,7 +230,7 @@ void RobotController::onResetPosition()
         return;
     }
     qInfo() << "[ROBOT_THREAD] Moving to Reset Position.";
-    float target_posx[6] = {349.0f, 9.21f, 378.46f, 172.0f, -139.0f, -179.0f};
+    float target_posx[6] = {240,0,329,0,138,0};
     float velx[2] = {150.0f, 90.0f};
     float accx[2] = {300.0f, 180.0f};
 
@@ -389,8 +389,9 @@ void RobotController::onFullPickAndPlaceSequence(
 
     qDebug() << "[ROBOT_SEQ] ========== Full Automated Sequence Completed! ==========";
 }
-// ... (기존 onFullPickAndPlaceSequence 함수 끝난 뒤) ...
 
+
+// ✨ [수정] onApproachThenGrasp: 그리퍼 닫기 및 10cm 상승 추가
 void RobotController::onApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg)
 {
     if (!g_bHasControlAuthority || GlobalDrfl.GetRobotState() != STATE_STANDBY) {
@@ -398,15 +399,15 @@ void RobotController::onApproachThenGrasp(const QVector3D& approach_pos_mm, cons
         return;
     }
 
-    qInfo() << "[ROBOT_SEQ] ========== Starting Approach-Then-Grasp (Grasp Handle) ==========";
+    qInfo() << "[ROBOT_SEQ] ========== Starting Approach-Then-Grasp & Lift (Grasp Handle) ==========";
 
     // Step 1: 5cm 뒤(접근 위치)로 이동
-    qDebug() << "[ROBOT] Step 1/2: Moving to Approach Pose (-5cm)";
+    qDebug() << "[ROBOT] Step 1/4: Moving to Approach Pose (-5cm)";
     moveToPositionAndWait(approach_pos_mm, orientation_deg); // (일반 속도 사용)
-    QThread::msleep(1500); // ✨ 1. 접근 이동 완료 대기
+    QThread::msleep(1500); // 1. 접근 이동 완료 대기
 
     // Step 2: 최종 목표 위치로 이동 (느리게)
-    qDebug() << "[ROBOT] Step 2/2: Moving to Final Grasp Pose (Slowly)";
+    qDebug() << "[ROBOT] Step 2/4: Moving to Final Grasp Pose (Slowly)";
     float velx_slow[2] = {50.0f, 30.0f}; // V: 50, W: 30
     float accx_slow[2] = {50.0f, 30.0f}; // A: 50, W: 30
 
@@ -416,8 +417,21 @@ void RobotController::onApproachThenGrasp(const QVector3D& approach_pos_mm, cons
 
     if (!GlobalDrfl.movel(target_posx, velx_slow, accx_slow)) {
         qWarning() << "[ROBOT] Final move command failed!";
+        qInfo() << "[ROBOT_SEQ] ========== Sequence Aborted ========== ";
+        return; // 이동 실패 시 시퀀스 중단
     }
-    QThread::msleep(1500); // ✨ 2. 최종 이동 완료 대기
+    QThread::msleep(1500); // 2. 최종 이동 완료 대기
 
-    qInfo() << "[ROBOT_SEQ] ========== Approach-Then-Grasp Completed! ==========";
+    // ✨ Step 3: 그리퍼 닫기
+    qDebug() << "[ROBOT] Step 3/4: Closing Gripper";
+    onGripperAction(1); // 1 = Close
+    QThread::msleep(1500); // 3. 그리퍼 닫힘 대기
+
+    // ✨ Step 4: 글로벌 Z축 기준 10cm (100mm) 위로 이동
+    qDebug() << "[ROBOT] Step 4/4: Lifting up 10cm (Global Z)";
+    QVector3D lift_pos_mm = final_pos_mm + QVector3D(0.0f, 0.0f, 100.0f);
+    moveToPositionAndWait(lift_pos_mm, orientation_deg); // 방향은 그대로 유지
+    QThread::msleep(1500); // 4. 상승 이동 완료 대기
+
+    qInfo() << "[ROBOT_SEQ] ========== Approach-Then-Grasp & Lift Completed! ==========";
 }

@@ -795,7 +795,8 @@ void RealSenseWidget::onCalculateHandleViewPose()
     QVector3D graspPoint = m_graspingTargets[0].point;
 
     QMatrix4x4 viewMat = m_calculatedTargetPose;
-    const float OFF_Y=0.2f, OFF_Z=0.0f; // View offsets relative to grasp pose
+    const float OFF_X = -0.05f,OFF_Y=0.2f, OFF_Z=0.05f; // View offsets relative to grasp pose
+    viewMat.translate(OFF_X, 0.0f, 0.0f);
     viewMat.translate(0.0f, OFF_Y, 0.0f);
     viewMat.translate(0.0f, 0.0f, OFF_Z);
     QVector3D viewPos = viewMat.column(3).toVector3D();
