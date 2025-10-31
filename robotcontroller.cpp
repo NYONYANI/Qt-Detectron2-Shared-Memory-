@@ -230,7 +230,7 @@ void RobotController::onResetPosition()
         return;
     }
     qInfo() << "[ROBOT_THREAD] Moving to Reset Position.";
-    float target_posx[6] = {240,0,329,0,138,0};
+    float target_posx[6] = {260,0,350,0,138,0};
     float velx[2] = {150.0f, 90.0f};
     float accx[2] = {300.0f, 180.0f};
 

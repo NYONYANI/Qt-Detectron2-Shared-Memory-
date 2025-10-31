@@ -792,16 +792,47 @@ void RealSenseWidget::onCalculateHandleViewPose()
     if (!calculateGraspingPoses(false)) { qWarning() << "[VIEW] Grasp Pose calc failed."; m_hasCalculatedViewPose=false; return; }
     if (m_calculatedTargetPose.isIdentity()) { qWarning() << "[VIEW] Grasp pose invalid."; m_hasCalculatedViewPose=false; return; }
     if (m_graspingTargets.isEmpty()) { qWarning() << "[VIEW] No grasping targets."; m_hasCalculatedViewPose=false; return; }
-    QVector3D graspPoint = m_graspingTargets[0].point;
+
+    // --- ✨ [수정] 동적 X 오프셋 계산 로직 ---
+    GraspingTarget& targetData = m_graspingTargets[0];
+    QPointF bodyCenter2D = targetData.circleCenter;
+    QPointF handleCentroid2D = targetData.handleCentroid;
+    QVector3D graspPoint = targetData.point;
+
+    // 파지 좌표계의 X축
+    QVector3D graspX_axis = m_calculatedTargetPose.column(0).toVector3D().normalized();
+    // 손잡이 위치 (3D, Z는 파지점과 동일하다고 가정)
+    QVector3D handlePos3D(handleCentroid2D.x(), handleCentroid2D.y(), graspPoint.z());
+    // 파지점에서 손잡이로 향하는 벡터
+    QVector3D vecGraspToHandle = handlePos3D - graspPoint;
+    // 내적을 통해 방향 판별
+    float dot = QVector3D::dotProduct(vecGraspToHandle, graspX_axis);
+
+    const float OFF_X_BASE = 0.1f; // 기본 X 오프셋 값 (절대값)
+    const float OFF_Y = 0.2f;
+    const float OFF_Z = 0.05f;
+
+    float DYNAMIC_OFF_X;
+    if (dot > 0) {
+        // 손잡이가 파지 좌표계의 +X 쪽에 있음 -> X 오프셋을 +로
+        DYNAMIC_OFF_X = OFF_X_BASE;
+        qInfo() << "[VIEW] Handle is on +X side (dot=" << dot << "). Setting OFF_X to +" << OFF_X_BASE;
+    } else {
+        // 손잡이가 파지 좌표계의 -X 쪽에 있음 -> X 오프셋을 -로
+        DYNAMIC_OFF_X = -OFF_X_BASE;
+        qInfo() << "[VIEW] Handle is on -X side (dot=" << dot << "). Setting OFF_X to -" << OFF_X_BASE;
+    }
+    // --- ✨ 동적 X 오프셋 계산 종료 ---
 
     QMatrix4x4 viewMat = m_calculatedTargetPose;
-    const float OFF_X = -0.05f,OFF_Y=0.2f, OFF_Z=0.05f; // View offsets relative to grasp pose
-    viewMat.translate(OFF_X, 0.0f, 0.0f);
-    viewMat.translate(0.0f, OFF_Y, 0.0f);
-    viewMat.translate(0.0f, 0.0f, OFF_Z);
+
+    // ✨ [수정] 동적 X 오프셋 및 고정 Y/Z 오프셋 적용
+    viewMat.translate(DYNAMIC_OFF_X, 0.0f, 0.0f); // X 오프셋
+    viewMat.translate(0.0f, OFF_Y, 0.0f);       // Y 오프셋
+    viewMat.translate(0.0f, 0.0f, OFF_Z);       // Z 오프셋
     QVector3D viewPos = viewMat.column(3).toVector3D();
 
-    // ✨ [수정] 뷰(카메라) Z 위치가 베이스(0)보다 아래인지 확인
+    // 뷰(카메라) Z 위치가 베이스(0)보다 아래인지 확인
     if (viewPos.z() < 0.0f)
     {
         qInfo() << "[VIEW] Original view Z-pos was negative:" << viewPos.z();
@@ -811,7 +842,43 @@ void RealSenseWidget::onCalculateHandleViewPose()
 
     QVector3D origX = m_calculatedTargetPose.column(0).toVector3D().normalized();
     const float LOOK_BELOW=0.1f;
-    QVector3D lookTarget = graspPoint - QVector3D(0,0,LOOK_BELOW);
+
+    // --- ✨ [수정] LookAt Target 계산 로직 (손잡이 쪽 교차점) ---
+    QVector3D lookTarget;
+
+    // 2D 반경 계산 (파지점은 원 위에 있으므로)
+    QPointF graspPoint2D(targetData.point.x(), targetData.point.y());
+    float radius = QLineF(bodyCenter2D, graspPoint2D).length();
+
+    // 바디 중심에서 손잡이 중심을 향하는 라인
+    QLineF lineBodyToHandle(bodyCenter2D, handleCentroid2D);
+
+    // 반경이나 라인 길이가 유효한지 확인
+    if (radius < 0.001f || lineBodyToHandle.length() < 0.001f) {
+        qWarning() << "[VIEW] Radius or handle-body line is too small. Defaulting to graspPoint LookAt.";
+        // 폴백: 원본 로직 (파지점 바라보기)
+        lookTarget = graspPoint - QVector3D(0, 0, LOOK_BELOW);
+    } else {
+        // 새 로직: 바디 중심 -> 손잡이 방향으로 (반지름)만큼 이동한 교차점
+
+        // 1. 바디 중심->손잡이 방향으로 (반지름) 길이만큼의 라인 생성
+        lineBodyToHandle.setLength(radius);
+        QPointF intersectionPoint2D = lineBodyToHandle.p2();
+
+        // 2. 3D 포인트로 변환 (Z는 파지점의 Z 사용)
+        float lookAtZ = targetData.point.z();
+        lookTarget = QVector3D(intersectionPoint2D.x(), intersectionPoint2D.y(), lookAtZ);
+
+        qInfo() << "[VIEW] Original LookAt (GraspPt):" << graspPoint;
+        qInfo() << "[VIEW] New LookAt (Intersection on Handle Side):" << lookTarget;
+
+        // 3. 원본 로직과 동일하게 Z 오프셋(LOOK_BELOW) 적용
+        lookTarget -= QVector3D(0, 0, LOOK_BELOW);
+        qInfo() << "[VIEW] Final LookAt (Intersection - Lowered):" << lookTarget;
+    }
+    // --- ✨ LookAt Target 계산 로직 종료 ---
+
+
     QVector3D desiredZ = (lookTarget - viewPos).normalized();
     QVector3D newY = QVector3D::crossProduct(desiredZ, origX).normalized();
     QVector3D newX = QVector3D::crossProduct(newY, desiredZ).normalized();
