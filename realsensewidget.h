@@ -31,6 +31,7 @@
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 #include <QMatrix3x3>
+#include "DRFLEx.h" // ✨ [추가] IK Check를 위해 포함
 
 
 struct GraspingTarget
@@ -175,13 +176,44 @@ private slots:
     void checkProcessingResult();
 
 private:
+    // ✨ [추가] onShowHandlePlot에서 사용할 손잡이 분석 결과 구조체
+    struct HandleAnalysisResult {
+        int cupIndex = -1;
+        QVector<QVector3D> handlePoints3D;
+        QVector<QPointF> projectedPoints2D;
+        Eigen::Vector3f pcaMean;
+        Eigen::Vector3f pcaPC1;
+        Eigen::Vector3f pcaPC2;
+        Eigen::Vector3f pcaNormal;
+        bool isValid = false;
+        float distanceToRobot = std::numeric_limits<float>::max();
+    };
+
+
     bool calculateGraspingPoses(bool showPlot);
-    void calculatePCA(const QVector<QVector3D>& points, QVector<QPointF>& projectedPoints);
+    bool calculatePCA(const QVector<QVector3D>& points,
+                      QVector<QPointF>& projectedPoints,
+                      Eigen::Vector3f& outMean,
+                      Eigen::Vector3f& outPC1,
+                      Eigen::Vector3f& outPC2,
+                      Eigen::Vector3f& outNormal);
     QVector3D extractEulerAngles(const QMatrix4x4& matrix);
     QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
     void findFloorPlaneRANSAC();
     void runDbscanClustering();
-    void calculateRandomGraspPoseOnSegment(int targetSegmentId);
+
+    // ✨ [수정] 파지 자세 계산 함수 시그니처 변경: 계산 결과를 out 매개변수로 반환
+    bool calculateRandomGraspPoseOnSegment(int targetSegmentId,
+                                           const Eigen::Vector3f& mean,
+                                           const Eigen::Vector3f& pc1,
+                                           const Eigen::Vector3f& pc2,
+                                           const Eigen::Vector3f& normal,
+                                           QMatrix4x4& outPose,
+                                           QVector3D& outPos_m,
+                                           QVector3D& outOri_deg);
+
+    // ✨ [추가] IK 체크 헬퍼 함수
+    bool checkPoseReachable(const QVector3D& pos_mm, const QVector3D& ori_deg);
 
 
     QHBoxLayout *m_layout;

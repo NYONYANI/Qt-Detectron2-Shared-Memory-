@@ -42,7 +42,6 @@ public slots:
         const QVector3D& place_pos_mm, const QVector3D& place_ori_deg
         );
 
-    // ✨ [추가] 1. (5cm 뒤) 접근 -> 2. (목표) 파지 2단계 이동을 처리할 슬롯
     void onApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg);
 
 private slots:
@@ -52,7 +51,8 @@ private:
     QTimer *m_timer;
     bool m_angleDebugPrinted;
 
-    void moveToPositionAndWait(const QVector3D& pos_mm, const QVector3D& ori_deg);
+    // ✨ [수정] 반환 타입을 void에서 bool로 변경
+    bool moveToPositionAndWait(const QVector3D& pos_mm, const QVector3D& ori_deg);
     QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
 
 };
