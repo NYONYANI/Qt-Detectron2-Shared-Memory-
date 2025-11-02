@@ -25,24 +25,20 @@ signals:
     void robotTransformUpdated(const QMatrix4x4 &transform);
 
 public slots:
+    // --- 기본 기능 ---
     void startMonitoring();
     void onMoveRobot(const QVector3D& position_mm, const QVector3D& orientation_deg);
-    void onRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg);
     void onResetPosition();
     void onGripperAction(int action);
-    void onLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
-                                   const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
-                                   const QVector3D& place_pos_mm, const QVector3D& place_ori_deg);
 
-    void onFullPickAndPlaceSequence(
-        const QVector3D& pre_grasp_pos_mm, const QVector3D& pre_grasp_ori_deg,
-        const QVector3D& grasp_pos_mm, const QVector3D& grasp_ori_deg,
-        const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
-        const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
-        const QVector3D& place_pos_mm, const QVector3D& place_ori_deg
-        );
+    // --- 시퀀스 헬퍼 (RobotSequencer가 호출할 수 있도록 public slot으로 변경) ---
+    bool moveToPositionAndWait(const QVector3D& pos_mm, const QVector3D& ori_deg);
 
-    void onApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg);
+    // --- 시퀀스 슬롯 (RobotSequencer로 이동) ---
+    // void onRobotPickAndReturn(...); // <--- 이동됨
+    // void onLiftRotatePlaceSequence(...); // <--- 이동됨
+    // void onFullPickAndPlaceSequence(...); // <--- 이동됨
+    // void onApproachThenGrasp(...); // <--- 이동됨
 
 private slots:
     void checkRobotState();
@@ -51,8 +47,7 @@ private:
     QTimer *m_timer;
     bool m_angleDebugPrinted;
 
-    // ✨ [수정] 반환 타입을 void에서 bool로 변경
-    bool moveToPositionAndWait(const QVector3D& pos_mm, const QVector3D& ori_deg);
+    // --- 헬퍼 함수 ---
     QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
 
 };

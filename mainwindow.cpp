@@ -17,6 +17,9 @@ bool g_TpInitailizingComplted = false;
 QLabel* MainWindow::s_robotStateLabel = nullptr;
 MainWindow* MainWindow::s_instance = nullptr;
 
+//
+// --- (콜백 함수들은 변경 없음) ---
+//
 void OnMonitoringStateCB(const ROBOT_STATE eState) {
     if (!g_bHasControlAuthority) { return; }
     switch (eState) {
@@ -91,10 +94,12 @@ void OnMonitroingAccessControlCB(const MONITORING_ACCESS_CONTROL eTrasnsitContro
     }
 }
 
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , m_isGripperOpenPending(false)
+    // ✨ [오류 수정] 실수로 삭제되었던 생성자 초기화 리스트 복원
     , m_robotConnectionState(RobotConnectionState::Disconnected)
 {
     ui->setupUi(this);
@@ -102,51 +107,61 @@ MainWindow::MainWindow(QWidget *parent)
     MainWindow::s_instance = this;
     s_robotStateLabel->setText("Robot Status: Disconnected");
 
-    // 로봇 컨트롤러 스레드 설정
+    // --- ✨ [수정] RobotController 및 RobotSequencer 스레드 설정 ---
     m_robotController = new RobotController();
     m_robotController->moveToThread(&m_robotControllerThread);
     connect(&m_robotControllerThread, &QThread::finished, m_robotController, &QObject::deleteLater);
 
-    // MainWindow -> RobotController (명령)
+    m_robotSequencer = new RobotSequencer(); // ✨ [추가] Sequencer 생성
+    m_robotSequencer->setRobotController(m_robotController); // ✨ [추가] Controller 주입
+    m_robotSequencer->moveToThread(&m_robotControllerThread); // ✨ [추가] 동일 스레드로 이동
+    connect(&m_robotControllerThread, &QThread::finished, m_robotSequencer, &QObject::deleteLater);
+
+
+    // --- MainWindow -> RobotController (기본 명령) ---
     connect(this, &MainWindow::requestMoveRobot, m_robotController, &RobotController::onMoveRobot);
-    connect(this, &MainWindow::requestRobotPickAndReturn, m_robotController, &RobotController::onRobotPickAndReturn); // 이름 확인
     connect(this, &MainWindow::requestResetPosition, m_robotController, &RobotController::onResetPosition);
     connect(this, &MainWindow::requestGripperAction, m_robotController, &RobotController::onGripperAction);
     connect(this, &MainWindow::startRobotMonitoring, m_robotController, &RobotController::startMonitoring);
 
-    // RobotController -> MainWindow (상태 업데이트)
+    // --- MainWindow -> RobotSequencer (시퀀스 명령) ---
+    // (이 시그널들은 this가 아닌 RealSenseWidget에서 발생하지만, 편의상 this를 거침)
+    connect(this, &MainWindow::requestRobotPickAndReturn, m_robotSequencer, &RobotSequencer::onRobotPickAndReturn);
+    connect(this, &MainWindow::requestLiftRotatePlaceSequence, m_robotSequencer, &RobotSequencer::onLiftRotatePlaceSequence);
+
+
+    // --- RobotController -> MainWindow (상태 업데이트) ---
     connect(m_robotController, &RobotController::robotStateChanged, this, &MainWindow::updateRobotStateLabel);
     connect(m_robotController, &RobotController::robotPoseUpdated, this, &MainWindow::updateRobotPoseLabel);
     connect(m_robotController, &RobotController::robotTransformUpdated, ui->widget, &RealSenseWidget::onRobotTransformUpdated);
 
     m_robotControllerThread.start();
 
-    // UI 위젯 시그널 연결
+    // --- UI 위젯 시그널 연결 ---
     connect(ui->CaptureButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::captureAndProcess);
     connect(ui->ResetPosButton, &QPushButton::clicked, this, &MainWindow::on_ResetPosButton_clicked);
     connect(ui->GripperOpenButton, &QPushButton::clicked, this, &MainWindow::on_GripperOpenButton_clicked);
     connect(ui->GripperCloseButton, &QPushButton::clicked, this, &MainWindow::on_GripperCloseButton_clicked);
     // (MoveButton, HandlePlotButton, MoveViewButton, MovepointButton, HandleGrapsButton은 on_..._clicked() 슬롯으로 자동 연결됩니다)
 
-    // RealSenseWidget -> MainWindow (수동 시그널 전달용)
+
+    // --- RealSenseWidget -> MainWindow (기본 명령 전달용) ---
     connect(ui->widget, &RealSenseWidget::requestRobotMove, this, &MainWindow::requestMoveRobot);
     connect(ui->widget, &RealSenseWidget::requestGripperAction, this, &MainWindow::requestGripperAction);
 
-    // ✨ [오류 발생했던 지점] 이제 mainwindow.h의 시그널 이름과 일치합니다.
-    connect(ui->widget, &RealSenseWidget::requestRobotPickAndReturn, this, &MainWindow::requestRobotPickAndReturn);
+    // --- ✨ [수정] RealSenseWidget -> RobotSequencer (시퀀스 명령 전달용) ---
+    connect(ui->widget, &RealSenseWidget::requestRobotPickAndReturn, m_robotSequencer, &RobotSequencer::onRobotPickAndReturn);
 
     connect(ui->widget, &RealSenseWidget::requestLiftRotatePlaceSequence,
-            this, &MainWindow::requestLiftRotatePlaceSequence);
+            m_robotSequencer, &RobotSequencer::onLiftRotatePlaceSequence); // ✨ [수정] m_robotSequencer로 연결
 
-    // MainWindow -> RobotController (수동 시그널 전달용)
-    connect(this, &MainWindow::requestLiftRotatePlaceSequence,
-            m_robotController, &RobotController::onLiftRotatePlaceSequence);
-
-    // ✨ [추가] RealSenseWidget의 새 전체 시퀀스 시그널을 RobotController의 새 슬롯에 연결
+    // (이 시그널은 this를 거치지 않고 직접 연결)
     connect(ui->widget, &RealSenseWidget::requestFullPickAndPlaceSequence,
-            m_robotController, &RobotController::onFullPickAndPlaceSequence);
+            m_robotSequencer, &RobotSequencer::onFullPickAndPlaceSequence); // ✨ [수정] m_robotSequencer로 연결
     connect(ui->widget, &RealSenseWidget::requestApproachThenGrasp,
-            m_robotController, &RobotController::onApproachThenGrasp);
+            m_robotSequencer, &RobotSequencer::onApproachThenGrasp); // ✨ [수정] m_robotSequencer로 연결
+
+
     ui->widget->setShowPlot(true);
 }
 
@@ -158,6 +173,10 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
+//
+// --- (showEvent, on_RobotInit_clicked 및 나머지 UI 슬롯, 상태 업데이트 함수들은 변경 없음) ---
+//
+
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
@@ -168,7 +187,7 @@ void MainWindow::showEvent(QShowEvent *event)
 
 void MainWindow::on_RobotInit_clicked()
 {
-    switch (m_robotConnectionState)
+    switch (m_robotConnectionState) // ✨ [오류 수정] 이제 m_robotConnectionState가 선언되어 있음
     {
     case RobotConnectionState::Disconnected:
     {
@@ -235,12 +254,12 @@ void MainWindow::on_RobotInit_clicked()
 
 MainWindow::RobotConnectionState MainWindow::getConnectionState() const
 {
-    return m_robotConnectionState;
+    return m_robotConnectionState; // ✨ [오류 수정] 이제 m_robotConnectionState가 선언되어 있음
 }
 
 void MainWindow::updateUiForState(RobotConnectionState state)
 {
-    m_robotConnectionState = state;
+    m_robotConnectionState = state; // ✨ [오류 수정] 이제 m_robotConnectionState가 선언되어 있음
     switch (state) {
     case RobotConnectionState::Disconnected:
         ui->RobotInit->setText("Init");
@@ -265,36 +284,30 @@ void MainWindow::on_GripperOpenButton_clicked() { emit requestGripperAction(0); 
 void MainWindow::on_GripperCloseButton_clicked() { emit requestGripperAction(1); }
 void MainWindow::on_ResetPosButton_clicked() { emit requestResetPosition(); }
 
-// ✨ [수정] Move 버튼 클릭 시 RealSenseWidget의 새 함수를 호출
 void MainWindow::on_MoveButton_clicked()
 {
     qDebug() << "[MAIN] 'Move' button clicked. Initiating full automated sequence.";
-    // 1~5번(계산) + M, D, Move(로봇동작)을 모두 처리하는 함수 호출
     ui->widget->runFullAutomatedSequence();
 }
 
-// ✨ [추가] HandlePlotButton 클릭 시 RealSenseWidget의 새 함수를 호출
 void MainWindow::on_HandlePlotButton_clicked()
 {
     qDebug() << "[MAIN] 'Handle Plot' button clicked. Requesting handle PCA plot.";
     ui->widget->onShowHandlePlot();
 }
 
-// ✨ [수정] MoveViewButton 클릭 시 '계산' 함수 호출
 void MainWindow::on_MoveViewButton_clicked()
 {
     qDebug() << "[MAIN] 'Move View' button clicked. Requesting handle view pose CALCULATION.";
-    ui->widget->onCalculateHandleViewPose(); // ✨ 수정된 함수 호출
+    ui->widget->onCalculateHandleViewPose();
 }
 
-// ✨ [수정] MovepointButton 클릭 시 '이동' 함수 호출
 void MainWindow::on_MovepointButton_clicked()
 {
     qDebug() << "[MAIN] 'MovepointButton' clicked. Requesting robot MOVE to handle view pose.";
-    ui->widget->onMoveToCalculatedHandleViewPose(); // ✨ 수정된 함수 호출
+    ui->widget->onMoveToCalculatedHandleViewPose();
 }
 
-// ✨ [추가] HandleGrapsButton 클릭 시 RealSenseWidget의 파지 이동 함수 호출
 void MainWindow::on_HandleGrapsButton_clicked()
 {
     qDebug() << "[MAIN] 'Grasp Handle' button clicked. Requesting move to random grasp pose.";

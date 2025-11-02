@@ -18,7 +18,8 @@ SOURCES += \
     realsensewidget.cpp \
     robotcontroller.cpp \
     robotmonitor.cpp \
-    xyplotwidget.cpp
+    xyplotwidget.cpp \
+    robotsequencer.cpp # ✨ [추가]
 
 HEADERS += \
     circlefitter.h \
@@ -27,7 +28,8 @@ HEADERS += \
     realsensewidget.h \
     robotcontroller.h \
     robotmonitor.h \
-    xyplotwidget.h
+    xyplotwidget.h \
+    robotsequencer.h # ✨ [추가]
 
 FORMS += \
     mainwindow.ui
@@ -43,7 +45,7 @@ LIBS += -lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_imgcodecs
 # RealSense
 LIBS += -lrealsense2
 
-# ✨ [수정] OpenGL 유틸리티 라이브러리(GLU) 추가
+# OpenGL 유틸리티 라이브러리(GLU) 추가
 LIBS += -lGLU
 
 # POSIX 공유 메모리 및 세마포어

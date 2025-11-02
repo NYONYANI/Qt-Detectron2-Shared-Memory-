@@ -12,6 +12,7 @@
 #include "DRFLEx.h"
 #include "realsensewidget.h"
 #include "robotcontroller.h"
+#include "robotsequencer.h" // ✨ [추가] RobotSequencer 헤더 포함
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -40,16 +41,18 @@ public:
     RobotConnectionState getConnectionState() const;
 
 signals:
+    // --- RobotController로 직접 가는 시그널 ---
     void requestMoveRobot(const QVector3D& position_mm, const QVector3D& orientation_deg);
-    // ✨ [오류 수정] 시그널 이름을 connect 구문과 일치하도록 수정 (Robot 추가)
-    void requestRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg);
     void requestResetPosition();
     void requestGripperAction(int action);
     void startRobotMonitoring();
 
+    // --- RobotSequencer로 가는 시그널 (이름은 RealSenseWidget와 동일하게 유지) ---
+    void requestRobotPickAndReturn(const QVector3D& target_pos_mm, const QVector3D& target_ori_deg, const QVector3D& approach_pos_mm, const QVector3D& approach_ori_deg);
     void requestLiftRotatePlaceSequence(const QVector3D& lift_pos_mm, const QVector3D& lift_ori_deg,
                                         const QVector3D& rotate_pos_mm, const QVector3D& rotate_ori_deg,
                                         const QVector3D& place_pos_mm, const QVector3D& place_ori_deg);
+
 protected:
     void showEvent(QShowEvent *event) override;
 
@@ -63,11 +66,7 @@ private slots:
     void on_MoveButton_clicked();
     void on_HandlePlotButton_clicked();
     void on_MoveViewButton_clicked();
-
-    // ✨ [수정] MovepointButton 슬롯 선언 추가
     void on_MovepointButton_clicked();
-
-    // ✨ [추가] HandleGrapsButton 슬롯 선언 추가
     void on_HandleGrapsButton_clicked();
 
 private:
@@ -75,7 +74,9 @@ private:
 
     QThread m_robotControllerThread;
     RobotController* m_robotController;
+    RobotSequencer* m_robotSequencer; // ✨ [추가] RobotSequencer 멤버 변수
 
+    // ✨ [오류 수정] 실수로 삭제되었던 멤버 변수 복원
     RobotConnectionState m_robotConnectionState;
 };
 #endif // MAINWINDOW_H
