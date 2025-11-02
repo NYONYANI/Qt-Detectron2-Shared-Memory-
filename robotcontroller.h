@@ -12,6 +12,8 @@
 using namespace DRAFramework;
 extern CDRFLEx GlobalDrfl;
 extern bool g_bHasControlAuthority;
+extern bool g_bServoOnAttempted; // ✨ [추가] mainwindow.cpp의 전역 변수
+extern bool g_TpInitailizingComplted; // ✨ [추가] mainwindow.cpp의 전역 변수
 
 class RobotController : public QObject
 {
@@ -23,6 +25,7 @@ signals:
     void robotStateChanged(int state);
     void robotPoseUpdated(const float* poseMatrix);
     void robotTransformUpdated(const QMatrix4x4 &transform);
+    void initializationFailed(QString error); // ✨ [추가] 초기화 실패 시그널
 
 public slots:
     // --- 기본 기능 ---
@@ -30,6 +33,11 @@ public slots:
     void onMoveRobot(const QVector3D& position_mm, const QVector3D& orientation_deg);
     void onResetPosition();
     void onGripperAction(int action);
+
+    // ✨ [추가] MainWindow로부터 로봇 연결/제어 요청을 받는 슬롯
+    void onInitializeRobot();
+    void onServoOn();
+    void onCloseConnection();
 
     // --- 시퀀스 헬퍼 (RobotSequencer가 호출할 수 있도록 public slot으로 변경) ---
     bool moveToPositionAndWait(const QVector3D& pos_mm, const QVector3D& ori_deg);

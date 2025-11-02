@@ -10,12 +10,140 @@ extern bool g_bHasControlAuthority;
 RobotSequencer::RobotSequencer(QObject *parent)
     : QObject(parent)
     , m_robotController(nullptr)
+    , m_autoState(Idle) // ✨ [추가]
+    , m_visionWaitLoop(nullptr) // ✨ [추가]
 {
 }
 
 void RobotSequencer::setRobotController(RobotController *controller)
 {
     m_robotController = controller;
+}
+
+
+//
+// ✨ [수정] 자동화 시퀀스 메인 함수 (두 번째 필터 토글 제거)
+//
+void RobotSequencer::onStartFullAutomation()
+{
+    if (m_autoState != Idle) {
+        qWarning() << "[SEQ] 자동화 시퀀스가 이미 실행 중입니다.";
+        return;
+    }
+    if (!m_robotController) {
+        qWarning() << "[SEQ] RobotController가 설정되지 않았습니다!";
+        return;
+    }
+
+    qInfo() << "[SEQ] ========== 전체 자동화 시퀀스 시작 ==========";
+
+    // --- 1. Capture ---
+    m_autoState = Step1_Capture;
+    qInfo() << "[SEQ] 1/9: Capture 요청 (비전 작업 대기...)";
+    m_visionWaitLoop = new QEventLoop();
+    emit requestVisionCapture(); // RealSenseWidget::captureAndProcess(true) 슬롯 호출
+    m_visionWaitLoop->exec();    // onVisionTaskComplete()가 호출될 때까지 대기
+    delete m_visionWaitLoop; m_visionWaitLoop = nullptr;
+    if (m_autoState == Idle) { qWarning() << "[SEQ] 시퀀스 중단 (Capture 1)"; return; }
+    qInfo() << "[SEQ] 1/9: Capture 완료.";
+    QThread::msleep(500); // 안정화 대기
+
+    // --- 2. 필터 적용 (키 1, 2, 3) ---
+    m_autoState = Step2_Filter;
+    qInfo() << "[SEQ] 2/9: 필터 적용 (Toggle Mask, Denoise, Z-Filter)";
+    emit requestToggleMask();
+    emit requestToggleDenoise();
+    emit requestToggleZFilter();
+    QThread::msleep(100); // UI가 필터를 적용할 시간을 줌
+
+    // --- 3. Move Viewpoint (계산) ---
+    m_autoState = Step3_CalcView;
+    qInfo() << "[SEQ] 3/9: Move Viewpoint 계산 요청 (비전 작업 대기...)";
+    m_visionWaitLoop = new QEventLoop();
+    emit requestVisionMoveViewpoint(); // RealSenseWidget::onCalculateHandleViewPose() 슬롯 호출
+    m_visionWaitLoop->exec();
+    delete m_visionWaitLoop; m_visionWaitLoop = nullptr;
+    if (m_autoState == Idle) { qWarning() << "[SEQ] 시퀀스 중단 (Calc View)"; return; }
+    qInfo() << "[SEQ] 3/9: Viewpoint 계산 완료.";
+    QThread::msleep(500);
+
+    // --- 4. Move Viewpoint (이동) ---
+    m_autoState = Step4_MoveView;
+    qInfo() << "[SEQ] 4/9: Move Viewpoint 이동 요청 (로봇 이동 대기...)";
+    emit requestMoveToViewpoint();
+    qInfo() << "[SEQ] 4/9: Viewpoint 이동 완료.";
+    QThread::msleep(1000); // 이동 후 안정화 대기
+
+    // --- 5. Capture (두 번째) ---
+    m_autoState = Step5_Capture;
+    qInfo() << "[SEQ] 5/9: 두 번째 Capture 요청 (비전 작업 대기...)";
+    m_visionWaitLoop = new QEventLoop();
+    emit requestVisionCapture();
+    m_visionWaitLoop->exec();
+    delete m_visionWaitLoop; m_visionWaitLoop = nullptr;
+    if (m_autoState == Idle) { qWarning() << "[SEQ] 시퀀스 중단 (Capture 2)"; return; }
+    qInfo() << "[SEQ] 5/9: 두 번째 Capture 완료.";
+    QThread::msleep(500);
+
+    // --- 6. ✨ [삭제] 두 번째 필터 적용 단계 제거 ---
+    // m_autoState = Step4_5_Filter; // <-- 삭제
+    // qInfo() << "[SEQ] 6/8: 필터 적용 (Toggle Mask, Denoise, Z-Filter)"; // <-- 삭제
+    // emit requestToggleMask(); // <-- 삭제
+    // emit requestToggleDenoise(); // <-- 삭제
+    // emit requestToggleZFilter(); // <-- 삭제
+    // QThread::msleep(100); // <-- 삭제
+
+    // --- 7. View Handle (계산) ---
+    m_autoState = Step6_CalcHandle;
+    qInfo() << "[SEQ] 6/9: View Handle 계산 요청 (비전 작업 대기...)"; // <-- 단계 번호 수정
+    m_visionWaitLoop = new QEventLoop();
+    emit requestVisionHandlePlot(); // RealSenseWidget::onShowHandlePlot() 슬롯 호출
+    m_visionWaitLoop->exec();
+    delete m_visionWaitLoop; m_visionWaitLoop = nullptr;
+    if (m_autoState == Idle) { qWarning() << "[SEQ] 시퀀스 중단 (Calc Handle)"; return; }
+    qInfo() << "[SEQ] 6/9: View Handle 계산 완료."; // <-- 단계 번호 수정
+    QThread::msleep(500);
+
+    // --- 8. Reset Position (이동) ---
+    m_autoState = Step7_Reset;
+    qInfo() << "[SEQ] 7/9: Reset Position 이동 요청 (로봇 이동 대기...)"; // <-- 단계 번호 수정
+    m_robotController->onResetPosition(); // 이 함수는 블로킹
+    qInfo() << "[SEQ] 7/9: Reset Position 이동 완료."; // <-- 단계 번호 수정
+    QThread::msleep(1000);
+
+    // --- 9. Grasp Handle (이동) ---
+    m_autoState = Step8_Grasp;
+    qInfo() << "[SEQ] 8/9: Grasp Handle 이동 요청 (로봇 이동 대기...)"; // <-- 단계 번호 수정
+    emit requestGraspHandle();
+    qInfo() << "[SEQ] 8/9: Grasp Handle 이동 완료."; // <-- 단계 번호 수정
+    QThread::msleep(1000);
+
+    // --- 10. (추가) 최종 리셋 ---
+    m_autoState = Step9_FinalReset;
+    qInfo() << "[SEQ] 9/9: 최종 Reset Position 이동 요청 (로봇 이동 대기...)"; // <-- 단계 번호 수정
+    m_robotController->onResetPosition();
+    qInfo() << "[SEQ] 9/9: 최종 Reset Position 이동 완료."; // <-- 단계 번호 수정
+
+
+    qInfo() << "[SEQ] ========== 전체 자동화 시퀀스 완료 ==========";
+    m_autoState = Idle;
+    emit automationFinished(); // MainWindow UI 활성화를 위해 시그널 전송
+}
+
+//
+// ✨ [추가] 비전 작업 완료 시 호출될 슬롯
+//
+void RobotSequencer::onVisionTaskComplete()
+{
+    // ✨ [수정] 시퀀스가 중단되었을 때(예: 사용자가 다른 버튼을 누름) 루프가 없으면 quit()을 호출하지 않도록 함
+    qDebug() << "[SEQ] 비전 작업 완료 신호 수신 (State:" << m_autoState << ")";
+    if (m_visionWaitLoop && m_visionWaitLoop->isRunning()) {
+        m_visionWaitLoop->quit();
+    } else if (m_autoState == Idle) {
+        qWarning() << "[SEQ] Vision complete signal received, but auto-sequence is already Idle.";
+    } else {
+        qWarning() << "[SEQ] Vision complete signal received, but no wait loop is running!";
+    }
 }
 
 

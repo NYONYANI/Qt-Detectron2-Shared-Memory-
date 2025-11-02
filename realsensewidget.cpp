@@ -669,6 +669,7 @@ void RealSenseWidget::onShowHandlePlot()
     // 6. 3D 뷰 업데이트 (성공했으면 자세가 보이고, 실패했으면 아무것도 안 보임)
     emit requestHandleCenterlineUpdate(m_handleCenterline3D, m_handleSegmentIds);
     emit requestRandomGraspPoseUpdate(m_randomGraspPose, m_showRandomGraspPose);
+    emit visionTaskComplete();
 }
 
 
@@ -1082,6 +1083,7 @@ void RealSenseWidget::onCalculateHandleViewPose()
     qInfo() << "[VIEW] 1. Calc Look-At (m/ZYX deg): Pos:" << viewPos_m << "Rot:" << viewOriZYX;
     qInfo() << "[VIEW] 2. Curr Robot (m/ZYX deg): Pos:" << m_baseToTcpTransform.column(3).toVector3D() << "Rot:" << extractEulerAngles(m_baseToTcpTransform);
     qInfo() << "[VIEW] Pose ready for movement (Press MovepointButton).";
+    emit visionTaskComplete();
 }
 
 void RealSenseWidget::onMoveToCalculatedHandleViewPose()
@@ -1174,13 +1176,29 @@ void RealSenseWidget::startCameraStream()
 QImage RealSenseWidget::cvMatToQImage(const cv::Mat &mat)
 { if(mat.empty()) return QImage(); return QImage(mat.data, mat.cols, mat.rows, mat.step, QImage::Format_BGR888).rgbSwapped(); }
 
-void RealSenseWidget::captureAndProcess()
+void RealSenseWidget::captureAndProcess(bool isAutoSequence) // ✨ [수정] 파라미터 추가
 {
-    if (m_isProcessing || m_latestFrame.empty()) { qDebug() << "[WARN] Capture failed."; return; }
-    qDebug() << "[INFO] Sending frame to Python.";
-    sendImageToPython(m_latestFrame); m_isProcessing = true; m_resultTimer->start(100);
-}
+    if (m_isProcessing || m_latestFrame.empty()) {
+        qDebug() << "[WARN] Capture failed. (Processing:" << m_isProcessing << "FrameEmpty:" << m_latestFrame.empty() << ")";
 
+        // ✨ [추가] 만약 수동 클릭이 자동 시퀀스 중에 거부된 경우,
+        // 사용자에게는 작업이 완료된 것처럼 알려서 큐가 멈추지 않게 함
+        if (isAutoSequence && m_isProcessing) {
+            qWarning() << "[SEQ] Auto-sequence capture request ignored (already processing). Telling sequencer to continue.";
+            emit visionTaskComplete();
+        }
+        return;
+    }
+
+    qDebug() << "[INFO] Sending frame to Python. (AutoSequence:" << isAutoSequence << ")";
+
+    // ✨ [추가] 플래그 저장
+    m_isAutoSequenceCapture = isAutoSequence;
+
+    sendImageToPython(m_latestFrame);
+    m_isProcessing = true;
+    m_resultTimer->start(100);
+}
 void RealSenseWidget::checkProcessingResult()
 {
     if (!m_isProcessing) { m_resultTimer->stop(); return; }
@@ -1188,9 +1206,19 @@ void RealSenseWidget::checkProcessingResult()
     if (!results.isEmpty()) {
         qDebug() << "[INFO] Received" << results.size() << "results.";
         m_detectionResults = results; m_isProcessing = false; m_resultTimer->stop();
+
+        // ✨ [수정] 자동 시퀀스의 일부로 캡처된 경우에만 시퀀서에 완료 신호를 보냄
+        if (m_isAutoSequenceCapture) {
+            qDebug() << "[INFO] Emitting visionTaskComplete() for auto-sequence.";
+            emit visionTaskComplete();
+        } else {
+            qDebug() << "[INFO] Manual capture complete. (Not emitting signal)";
+        }
+
+        // 플래그 초기화
+        m_isAutoSequenceCapture = false;
     }
 }
-
 void RealSenseWidget::onDenoisingToggled()
 { m_isDenoisingOn = !m_isDenoisingOn; qDebug() << "[INFO] Denoising:" << m_isDenoisingOn; updateFrame(); }
 void RealSenseWidget::onZFilterToggled()

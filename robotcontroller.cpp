@@ -5,6 +5,13 @@
 #include <QtMath> // qRadiansToDegrees 사용
 #include <cstring> // memcpy 사용
 
+// ✨ [추가] mainwindow.cpp에 정의된 콜백 함수들의 전방 선언
+void OnMonitoringStateCB(const ROBOT_STATE eState);
+void OnTpInitializingCompleted();
+void OnDisConnected();
+void OnMonitroingAccessControlCB(const MONITORING_ACCESS_CONTROL eTrasnsitControl);
+
+
 RobotController::RobotController(QObject *parent)
     : QObject(parent)
     , m_angleDebugPrinted(false)
@@ -22,6 +29,74 @@ void RobotController::startMonitoring()
         m_timer->start(100);
     }
 }
+
+//
+// ✨ [추가] MainWindow의 Init 버튼 로직 (스레드에서 실행)
+//
+void RobotController::onInitializeRobot()
+{
+    const char* robot_ip = "192.168.137.100";
+    g_bServoOnAttempted = false;
+    g_bHasControlAuthority = false;
+    g_TpInitailizingComplted = false;
+
+    // 콜백 함수 설정
+    GlobalDrfl.set_on_tp_initializing_completed(OnTpInitializingCompleted);
+    GlobalDrfl.set_on_disconnected(OnDisConnected);
+    GlobalDrfl.set_on_monitoring_access_control(OnMonitroingAccessControlCB);
+    GlobalDrfl.set_on_monitoring_state(OnMonitoringStateCB);
+
+    // (블로킹될 수 있는) 연결 시도
+    if (GlobalDrfl.open_connection(robot_ip)) {
+        qDebug() << "[ROBOT_THREAD] Connection attempt successful, waiting for callbacks...";
+        SYSTEM_VERSION tSysVerion{};
+        GlobalDrfl.get_system_version(&tSysVerion);
+        GlobalDrfl.setup_monitoring_version(1);
+        GlobalDrfl.set_robot_mode(ROBOT_MODE_AUTONOMOUS);
+        GlobalDrfl.set_robot_system(ROBOT_SYSTEM_REAL);
+        GlobalDrfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_FORCE_REQUEST);
+
+        startMonitoring(); // ✨ [수정] 연결 성공 시 모니터링 직접 시작
+    } else {
+        qWarning() << "[ROBOT_THREAD] open_connection failed.";
+        emit initializationFailed("Failed to connect"); // ✨ [추가] 실패 시그널 전송
+    }
+}
+
+//
+// ✨ [추가] MainWindow의 Servo ON 버튼 로직 (스레드에서 실행)
+//
+void RobotController::onServoOn()
+{
+    qDebug() << "[ROBOT_THREAD] 'Servo ON' command received.";
+    if (g_bHasControlAuthority && !g_bServoOnAttempted) {
+        ROBOT_STATE currentState = GlobalDrfl.GetRobotState();
+        if (currentState == STATE_SAFE_OFF || currentState == STATE_STANDBY) {
+            if (GlobalDrfl.SetRobotControl(CONTROL_SERVO_ON)) {
+                qInfo() << "[ROBOT_THREAD] Servo ON command sent successfully.";
+                g_bServoOnAttempted = true;
+            } else {
+                qWarning() << "[ROBOT_THREAD] Failed to send Servo ON command.";
+            }
+        } else {
+            qWarning() << "[ROBOT_THREAD] Cannot turn servo on, robot is not in a valid state. Current state:" << currentState;
+        }
+    } else if (g_bServoOnAttempted) {
+        qDebug() << "[ROBOT_THREAD] Servo ON command was already sent.";
+    } else {
+        qWarning() << "[ROBOT_THREAD] Cannot turn servo on, no control authority.";
+    }
+}
+
+//
+// ✨ [추가] MainWindow의 Close 버튼 로직 (스레드에서 실행)
+//
+void RobotController::onCloseConnection()
+{
+    qInfo() << "[ROBOT_THREAD] 'Close' command received. Disconnecting from robot.";
+    GlobalDrfl.CloseConnection();
+}
+
 
 void RobotController::checkRobotState()
 {
@@ -204,6 +279,7 @@ void RobotController::onMoveRobot(const QVector3D& position_mm, const QVector3D&
 
 void RobotController::onResetPosition()
 {
+    // ✨ [수정] 이 함수를 블로킹(동기)으로 변경
     GlobalDrfl.set_robot_mode(ROBOT_MODE_AUTONOMOUS);
     GlobalDrfl.set_robot_system(ROBOT_SYSTEM_REAL);
 
@@ -211,20 +287,16 @@ void RobotController::onResetPosition()
         qWarning() << "[ROBOT_THREAD] Cannot move: No control authority or not in STANDBY.";
         return;
     }
-    qInfo() << "[ROBOT_THREAD] Moving to Reset Position.";
-    float target_posx[6] = {260,0,350,0,138,0};
+    qInfo() << "[ROBOT_THREAD] Moving to Reset Position (Blocking)...";
 
-    if (GlobalDrfl.ikin(target_posx, 2) == nullptr) {
-        qCritical() << "[ROBOT_THREAD] CRITICAL: IK CHECK FAILED for RESET POSE.";
-        return;
+    QVector3D target_pos_mm(260, 0, 350);
+    QVector3D target_ori_deg(0, 138, 0);
+
+    // moveToPositionAndWait 헬퍼 함수를 재사용
+    if (!moveToPositionAndWait(target_pos_mm, target_ori_deg)) {
+        qWarning() << "[ROBOT_THREAD] CRITICAL: moveToPositionAndWait FAILED for RESET POSE.";
     }
-
-    float velx[2] = {150.0f, 90.0f};
-    float accx[2] = {300.0f, 180.0f};
-
-    qDebug() << "[ROBOT_THREAD] Moving to Pos(mm):" << target_posx[0] << target_posx[1] << target_posx[2]
-             << "Rot(deg):" << target_posx[3] << target_posx[4] << target_posx[5];
-    GlobalDrfl.movel(target_posx, velx, accx);
+    qInfo() << "[ROBOT_THREAD] Reset Position complete.";
 }
 
 void RobotController::onGripperAction(int action)

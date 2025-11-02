@@ -134,7 +134,7 @@ public:
 
 public slots:
     void startCameraStream();
-    void captureAndProcess();
+    void captureAndProcess(bool isAutoSequence = false);
     void onRobotTransformUpdated(const QMatrix4x4 &transform);
     void onMoveToYAlignedPoseRequested();
     void onDenoisingToggled();
@@ -149,6 +149,7 @@ public slots:
     void onMoveToCalculatedHandleViewPose();
     void runFullAutomatedSequence();
     void onMoveToRandomGraspPoseRequested();
+
 
 signals:
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
@@ -169,7 +170,7 @@ signals:
 
     // ✨ [추가] 1. (5cm 뒤) 접근 -> 2. (목표) 파지 2단계 이동 요청 시그널
     void requestApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg);
-
+    void visionTaskComplete();
 
 private slots:
     void updateFrame();
@@ -265,7 +266,7 @@ private:
     const int IMAGE_SIZE = IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS;
     const int RESULT_SIZE = 100 * 1024, CONTROL_SIZE = 16;
     enum ControlOffset { OFFSET_NEW_FRAME = 0, OFFSET_RESULT_READY = 1, OFFSET_SHUTDOWN = 2 };
-
+    bool m_isAutoSequenceCapture;
     QImage cvMatToQImage(const cv::Mat &mat);
     bool initSharedMemory();
     void sendImageToPython(const cv::Mat &mat);

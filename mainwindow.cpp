@@ -119,15 +119,25 @@ MainWindow::MainWindow(QWidget *parent)
 
 
     // --- MainWindow -> RobotController (기본 명령) ---
-    connect(this, &MainWindow::requestMoveRobot, m_robotController, &RobotController::onMoveRobot);
+    // connect(this, &MainWindow::requestMoveRobot, m_robotController, &RobotController::onMoveRobot); // ✨ [삭제] 아래 RealSenseWidget 연결에서 대체
     connect(this, &MainWindow::requestResetPosition, m_robotController, &RobotController::onResetPosition);
     connect(this, &MainWindow::requestGripperAction, m_robotController, &RobotController::onGripperAction);
-    connect(this, &MainWindow::startRobotMonitoring, m_robotController, &RobotController::startMonitoring);
+    // connect(this, &MainWindow::startRobotMonitoring, m_robotController, &RobotController::startMonitoring); // ✨ [삭제]
+
+    // ✨ [추가] Init, Servo, Close 시그널 연결
+    connect(this, &MainWindow::requestInitializeRobot, m_robotController, &RobotController::onInitializeRobot);
+    connect(this, &MainWindow::requestServoOn, m_robotController, &RobotController::onServoOn);
+    connect(this, &MainWindow::requestCloseConnection, m_robotController, &RobotController::onCloseConnection);
+
 
     // --- MainWindow -> RobotSequencer (시퀀스 명령) ---
     // (이 시그널들은 this가 아닌 RealSenseWidget에서 발생하지만, 편의상 this를 거침)
     connect(this, &MainWindow::requestRobotPickAndReturn, m_robotSequencer, &RobotSequencer::onRobotPickAndReturn);
     connect(this, &MainWindow::requestLiftRotatePlaceSequence, m_robotSequencer, &RobotSequencer::onLiftRotatePlaceSequence);
+
+    // ✨ [추가] 자동화 시퀀스 시그널/슬롯 연결
+    connect(this, &MainWindow::requestFullAutomation, m_robotSequencer, &RobotSequencer::onStartFullAutomation);
+    connect(m_robotSequencer, &RobotSequencer::automationFinished, this, &MainWindow::onAutomationFinished);
 
 
     // --- RobotController -> MainWindow (상태 업데이트) ---
@@ -135,18 +145,26 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_robotController, &RobotController::robotPoseUpdated, this, &MainWindow::updateRobotPoseLabel);
     connect(m_robotController, &RobotController::robotTransformUpdated, ui->widget, &RealSenseWidget::onRobotTransformUpdated);
 
+    // ✨ [추가] 초기화 실패 시그널 연결
+    connect(m_robotController, &RobotController::initializationFailed, this, &MainWindow::onRobotInitFailed);
+
+
     m_robotControllerThread.start();
 
     // --- UI 위젯 시그널 연결 ---
-    connect(ui->CaptureButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::captureAndProcess);
-    connect(ui->ResetPosButton, &QPushButton::clicked, this, &MainWindow::on_ResetPosButton_clicked);
-    connect(ui->GripperOpenButton, &QPushButton::clicked, this, &MainWindow::on_GripperOpenButton_clicked);
-    connect(ui->GripperCloseButton, &QPushButton::clicked, this, &MainWindow::on_GripperCloseButton_clicked);
-    // (MoveButton, HandlePlotButton, MoveViewButton, MovepointButton, HandleGrapsButton은 on_..._clicked() 슬롯으로 자동 연결됩니다)
+    // (AutoMoveButton 등 .ui에서 이름이 일치하는 슬롯은 자동 연결됨)
 
+    // ✨ [수정] CaptureButton을 수동으로 연결
+    // 람다를 사용해 captureAndProcess(false)를 호출 (isAutoSequence = false)
+    connect(ui->CaptureButton, &QPushButton::clicked, ui->widget, [=](){
+        ui->widget->captureAndProcess(false);
+    });
 
     // --- RealSenseWidget -> MainWindow (기본 명령 전달용) ---
-    connect(ui->widget, &RealSenseWidget::requestRobotMove, this, &MainWindow::requestMoveRobot);
+
+    // ✨ [수정] RealSenseWidget의 requestRobotMove를 RobotController의 *블로킹* 슬롯에 연결
+    connect(ui->widget, &RealSenseWidget::requestRobotMove, m_robotController, &RobotController::moveToPositionAndWait);
+
     connect(ui->widget, &RealSenseWidget::requestGripperAction, this, &MainWindow::requestGripperAction);
 
     // --- ✨ [수정] RealSenseWidget -> RobotSequencer (시퀀스 명령 전달용) ---
@@ -162,19 +180,50 @@ MainWindow::MainWindow(QWidget *parent)
             m_robotSequencer, &RobotSequencer::onApproachThenGrasp); // ✨ [수정] m_robotSequencer로 연결
 
 
+    // --- ✨ [수정] RobotSequencer <-> RealSenseWidget 브릿지 연결 ---
+    // (모든 주석 해제 + 필터 3줄 추가)
+
+    // Sequencer -> Vision (작업 요청)
+
+    // ✨ [수정] 람다(lambda)를 사용하여 captureAndProcess(true)를 호출 (컴파일 오류 수정)
+    connect(m_robotSequencer, &RobotSequencer::requestVisionCapture, ui->widget, [=](){
+        ui->widget->captureAndProcess(true); // 'true'를 전달하여 자동 시퀀스임을 알림
+    });
+
+    connect(m_robotSequencer, &RobotSequencer::requestVisionMoveViewpoint, ui->widget, &RealSenseWidget::onCalculateHandleViewPose);
+    connect(m_robotSequencer, &RobotSequencer::requestVisionHandlePlot, ui->widget, &RealSenseWidget::onShowHandlePlot);
+    connect(m_robotSequencer, &RobotSequencer::requestMoveToViewpoint, ui->widget, &RealSenseWidget::onMoveToCalculatedHandleViewPose);
+    connect(m_robotSequencer, &RobotSequencer::requestGraspHandle, ui->widget, &RealSenseWidget::onMoveToRandomGraspPoseRequested);
+
+    // ✨ [추가] Sequencer -> Vision (필터 요청)
+    connect(m_robotSequencer, &RobotSequencer::requestToggleMask, ui->widget, &RealSenseWidget::onToggleMaskedPoints);
+    connect(m_robotSequencer, &RobotSequencer::requestToggleDenoise, ui->widget, &RealSenseWidget::onDenoisingToggled);
+    connect(m_robotSequencer, &RobotSequencer::requestToggleZFilter, ui->widget, &RealSenseWidget::onZFilterToggled);
+
+    // Vision -> Sequencer (완료 신호)
+    connect(ui->widget, &RealSenseWidget::visionTaskComplete, m_robotSequencer, &RobotSequencer::onVisionTaskComplete);
+
+    qDebug() << "[SETUP] RobotSequencer <-> RealSenseWidget 연결 완료.";
+
+
     ui->widget->setShowPlot(true);
 }
 
 MainWindow::~MainWindow()
 {
+    // ✨ [수정] 스레드 종료 전 Close 요청
+    // (이미 연결이 끊겼거나 연결되지 않았다면 CloseConnection은 아무것도 하지 않음)
+    emit requestCloseConnection();
+    QThread::msleep(100); // DRFL이 닫힐 시간을 잠시 줌
+
     m_robotControllerThread.quit();
     m_robotControllerThread.wait();
-    GlobalDrfl.CloseConnection();
+    // GlobalDrfl.CloseConnection(); // ✨ [삭제] 스레드에서 직접 닫도록 변경
     delete ui;
 }
 
 //
-// --- (showEvent, on_RobotInit_clicked 및 나머지 UI 슬롯, 상태 업데이트 함수들은 변경 없음) ---
+// --- (showEvent 및 나머지 UI 슬롯, 상태 업데이트 함수들은 변경 없음) ---
 //
 
 void MainWindow::showEvent(QShowEvent *event)
@@ -185,6 +234,9 @@ void MainWindow::showEvent(QShowEvent *event)
 }
 
 
+//
+// ✨ [수정] on_RobotInit_clicked: 실제 로직 대신 시그널 emit
+//
 void MainWindow::on_RobotInit_clicked()
 {
     switch (m_robotConnectionState) // ✨ [오류 수정] 이제 m_robotConnectionState가 선언되어 있음
@@ -192,63 +244,36 @@ void MainWindow::on_RobotInit_clicked()
     case RobotConnectionState::Disconnected:
     {
         updateUiForState(RobotConnectionState::Connecting);
-        const char* robot_ip = "192.168.137.100";
-        g_bServoOnAttempted = false;
-        g_bHasControlAuthority = false;
-        g_TpInitailizingComplted = false;
-
-        GlobalDrfl.set_on_tp_initializing_completed(OnTpInitializingCompleted);
-        GlobalDrfl.set_on_disconnected(OnDisConnected);
-        GlobalDrfl.set_on_monitoring_access_control(OnMonitroingAccessControlCB);
-        GlobalDrfl.set_on_monitoring_state(OnMonitoringStateCB);
-
-        if (GlobalDrfl.open_connection(robot_ip)) {
-            s_robotStateLabel->setText("Robot Status: CONNECTING...");
-            SYSTEM_VERSION tSysVerion{};
-            GlobalDrfl.get_system_version(&tSysVerion);
-            GlobalDrfl.setup_monitoring_version(1);
-            GlobalDrfl.set_robot_mode(ROBOT_MODE_AUTONOMOUS);
-            GlobalDrfl.set_robot_system(ROBOT_SYSTEM_REAL);
-            GlobalDrfl.ManageAccessControl(MANAGE_ACCESS_CONTROL_FORCE_REQUEST);
-
-            emit startRobotMonitoring();
-        } else {
-            s_robotStateLabel->setText("Robot Status: FAILED TO CONNECT");
-            updateUiForState(RobotConnectionState::Disconnected);
-        }
+        s_robotStateLabel->setText("Robot Status: CONNECTING...");
+        emit requestInitializeRobot(); // ✨ 스레드로 Init 요청
     }
     break;
     case RobotConnectionState::Connected:
     {
         qDebug() << "[ROBOT] 'Servo ON' button clicked.";
-        if (g_bHasControlAuthority && !g_bServoOnAttempted) {
-            ROBOT_STATE currentState = GlobalDrfl.GetRobotState();
-            if (currentState == STATE_SAFE_OFF || currentState == STATE_STANDBY) {
-                if (GlobalDrfl.SetRobotControl(CONTROL_SERVO_ON)) {
-                    qInfo() << "[ROBOT] Servo ON command sent successfully.";
-                    g_bServoOnAttempted = true;
-                } else {
-                    qWarning() << "[ROBOT] Failed to send Servo ON command.";
-                }
-            } else {
-                qWarning() << "[ROBOT] Cannot turn servo on, robot is not in a valid state. Current state:" << currentState;
-            }
-        } else if (g_bServoOnAttempted) {
-            qDebug() << "[ROBOT] Servo ON command was already sent.";
-        } else {
-            qWarning() << "[ROBOT] Cannot turn servo on, no control authority.";
-        }
+        emit requestServoOn(); // ✨ 스레드로 Servo ON 요청
     }
     break;
 
     case RobotConnectionState::ServoOn:
         qInfo() << "[ROBOT] 'Close' button clicked. Disconnecting from robot.";
-        GlobalDrfl.CloseConnection();
+        emit requestCloseConnection(); // ✨ 스레드로 Close 요청
         break;
 
     case RobotConnectionState::Connecting:
+        // 연결 중에는 아무것도 하지 않음
         break;
     }
+}
+
+//
+// ✨ [추가] Init 실패 시 GUI를 업데이트하는 슬롯
+//
+void MainWindow::onRobotInitFailed(QString error)
+{
+    qWarning() << "[ROBOT] Init failed from thread:" << error;
+    s_robotStateLabel->setText("Robot Status: FAILED TO CONNECT");
+    updateUiForState(RobotConnectionState::Disconnected);
 }
 
 
@@ -260,22 +285,33 @@ MainWindow::RobotConnectionState MainWindow::getConnectionState() const
 void MainWindow::updateUiForState(RobotConnectionState state)
 {
     m_robotConnectionState = state; // ✨ [오류 수정] 이제 m_robotConnectionState가 선언되어 있음
+
+    // ✨ [수정] .ui 파일의 버튼 이름('AutoMoveButton')을 정확히 참조
+    QPushButton* autoButton = ui->AutoMoveButton; // b 소문자 (사용자가 .ui에서 바꿨다고 했지만, 업로드된 파일 기준)
+    //
+    // !!! 만약 .ui 파일을 정말 AutoMoveButton (B 대문자)로 수정했다면,
+    // !!! 아래 4줄의 autoButton 참조를 모두 ui->AutoMoveButton 으로 바꿔야 합니다.
+    //
     switch (state) {
     case RobotConnectionState::Disconnected:
         ui->RobotInit->setText("Init");
         ui->RobotInit->setEnabled(true);
+        if(autoButton) autoButton->setEnabled(false);
         break;
     case RobotConnectionState::Connecting:
         ui->RobotInit->setText("Connecting...");
         ui->RobotInit->setEnabled(false);
+        if(autoButton) autoButton->setEnabled(false);
         break;
     case RobotConnectionState::Connected:
         ui->RobotInit->setText("Servo ON");
         ui->RobotInit->setEnabled(true);
+        if(autoButton) autoButton->setEnabled(false);
         break;
     case RobotConnectionState::ServoOn:
         ui->RobotInit->setText("Close");
         ui->RobotInit->setEnabled(true);
+        if(autoButton) autoButton->setEnabled(true);
         break;
     }
 }
@@ -323,6 +359,13 @@ void MainWindow::updateRobotStateLabel(int state)
         updateUiForState(RobotConnectionState::ServoOn);
     }
 
+    if (eState != STATE_STANDBY && eState != STATE_MOVING && getConnectionState() == RobotConnectionState::ServoOn) {
+        if (eState == STATE_SAFE_OFF || eState == STATE_SAFE_OFF2 || eState == STATE_EMERGENCY_STOP) {
+            updateUiForState(RobotConnectionState::Connected); // 서보가 꺼진 상태로 UI 변경
+        }
+    }
+
+
     if (s_robotStateLabel) {
         QString stateText;
         QString controlStatus = g_bHasControlAuthority ? " [Ctrl O]" : " [Ctrl X]";
@@ -353,4 +396,24 @@ void MainWindow::updateRobotPoseLabel(const float* pose)
             .arg(pose[3], 0, 'f', 1).arg(pose[4], 0, 'f', 1).arg(pose[5], 0, 'f', 1);
         ui->RobotPos->setText(pose_str);
     }
+}
+
+// ✨ [수정] 자동화 버튼 슬롯 (.ui 파일에 맞춰 b 소문자로 변경)
+void MainWindow::on_AutoMoveButton_clicked()
+{
+    qDebug() << "[MAIN] 'AutoMoveButton' clicked. Starting full sequence.";
+
+    // 버튼 비활성화 (시퀀스 중복 실행 방지)
+    ui->AutoMoveButton->setEnabled(false);
+
+    emit requestFullAutomation();
+}
+
+// ✨ [추가] 자동화 완료 슬롯
+void MainWindow::onAutomationFinished()
+{
+    qDebug() << "[MAIN] Full automation sequence finished.";
+
+    // 시퀀스 완료 시 버튼 다시 활성화
+    ui->AutoMoveButton->setEnabled(true);
 }
