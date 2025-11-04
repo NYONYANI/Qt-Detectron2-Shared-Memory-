@@ -87,10 +87,23 @@ void PointCloudWidget::paintGL()
     glRotatef(m_pitch, 1.0f, 0.0f, 0.0f); glRotatef(m_yaw, 0.0f, 1.0f, 0.0f);
 
     // --- 1. 월드 및 3D 데이터 (깊이 테스트 ON) ---
-    drawGrid(2.0f, 20); drawAxes(0.2f);
+    drawGrid(2.0f, 20);
+    drawAxes(0.2f); // 월드 좌표계
+
     glPushMatrix(); // 로봇+포인트클라우드 시작
-    glMultMatrixf(m_baseToTcpTransform.constData());
-    drawAxes(0.1f); drawGripper();
+    glMultMatrixf(m_baseToTcpTransform.constData()); // 1. 베이스 -> EF 이동
+
+    // 2. EF 좌표계 그리기 (10cm, 두께 2.0f - drawAxes 기본값)
+    drawAxes(0.1f);
+    drawGripper();
+
+    // 3. ✨ [추가] 카메라 좌표계 그리기
+    glPushMatrix(); // 현재 (EF) 상태 저장
+    glMultMatrixf(m_tcpToCameraTransform.constData()); // 3a. EF -> 카메라 이동
+    drawAxes(0.05f, 3.0f); // 3b. 카메라 축 그리기 (5cm, 두께 3.0f)
+    glPopMatrix(); // 3c. 다시 EF 좌표계로 복귀
+
+    // 4. 포인트 클라우드를 그리기 위해 EF -> 카메라로 다시 이동
     glMultMatrixf(m_tcpToCameraTransform.constData());
     if (!m_vertexData.empty()) {
         glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_COLOR_ARRAY);
@@ -104,11 +117,11 @@ void PointCloudWidget::paintGL()
     // --- 2. 3D 오버레이 (깊이 테스트 OFF) ---
     glDisable(GL_DEPTH_TEST); // 깊이 테스트 끄기
     drawGraspingSpheres();
-    drawTargetPose();
+    drawTargetPose(); // 보라색 (컵 파지)
     drawTargetPose_Y_Aligned();
-    drawViewPose();
+    drawViewPose(); // 노란색 (뷰포인트)
     drawHandleCenterline(); // 핸들 중심선 그리기
-    drawRandomGraspPose(); // 랜덤 파지 좌표계 그리기
+    drawRandomGraspPose(); // 주황색 (손잡이 파지)
     glEnable(GL_DEPTH_TEST); // 깊이 테스트 다시 켜기
 }
 
@@ -958,6 +971,7 @@ void RealSenseWidget::onMoveToYAlignedPoseRequested()
     emit requestLiftRotatePlaceSequence(liftP_mm, graspO_deg, liftP_mm, rotatedO_deg, placeP_mm, rotatedO_deg);
 }
 
+// ✨ [수정] onCalculateHandleViewPose: 위치 계산 로직 변경
 void RealSenseWidget::onCalculateHandleViewPose()
 {
     qInfo() << "[VIEW] 'Move View' requested. Calculating Look-At Pose...";
@@ -967,20 +981,12 @@ void RealSenseWidget::onCalculateHandleViewPose()
     if (m_calculatedTargetPose.isIdentity()) { qWarning() << "[VIEW] Grasp pose invalid."; m_hasCalculatedViewPose=false; return; }
     if (m_graspingTargets.isEmpty()) { qWarning() << "[VIEW] No grasping targets."; m_hasCalculatedViewPose=false; return; }
 
-    // ✨ [수정 시작]
-    // calculateGraspingPoses()는 m_calculatedTargetPose를 '로봇에서 가장 가까운'
-    // bestTarget 기준으로 이미 설정했습니다.
-    // 뷰포인트 계산도 *동일한* bestTarget의 정보를 사용해야 합니다.
-
     // 2. m_calculatedTargetPose를 만든 'bestTarget'을 다시 찾습니다.
-    // (m_calculatedTargetPos_m은 bestTarget의 위치 + 그리퍼 오프셋입니다)
     QVector3D graspTargetPos_m = m_calculatedTargetPos_m - QVector3D(0, 0, GRIPPER_Z_OFFSET);
-
     GraspingTarget* bestTarget = nullptr;
     float minDistToCalculated = std::numeric_limits<float>::max();
 
     for (GraspingTarget& target : m_graspingTargets) {
-        // m_calculatedTargetPos_m의 기반이 된 'point'를 찾습니다.
         float dist = target.point.distanceToPoint(graspTargetPos_m);
         if (dist < minDistToCalculated) {
             minDistToCalculated = dist;
@@ -990,58 +996,68 @@ void RealSenseWidget::onCalculateHandleViewPose()
 
     if (bestTarget == nullptr || minDistToCalculated > 0.001f) {
         qWarning() << "[VIEW] Failed to find the original bestTarget. Using m_graspingTargets[0] as fallback.";
-        // 만약 bestTarget를 찾는 데 실패하면 (로직상 거의 불가능),
-        // 이전의 버그가 있는 동작(첫 번째 타겟 사용)으로 폴백합니다.
         if(m_graspingTargets.isEmpty()) return; // 방어 코드
         bestTarget = &m_graspingTargets[0];
     } else {
         qInfo() << "[VIEW] Found matching bestTarget for view calculation.";
     }
 
-    // 3. 'bestTarget'의 정보로 뷰포인트 계산
+    // 3. 'bestTarget'의 정보 (베이스 좌표계 기준)
     QPointF bodyCenter2D = bestTarget->circleCenter;
     QPointF handleCentroid2D = bestTarget->handleCentroid;
     QVector3D graspPoint = bestTarget->point;
-    // ✨ [수정 종료]
 
-
-    // --- 4. 동적 X 오프셋 계산 로직 (이하 동일) ---
-    QVector3D graspX_axis = m_calculatedTargetPose.column(0).toVector3D().normalized();
+    // --- 4. 동적 X 오프셋 계산 로직 (EF의 X축 기준) ---
+    QVector3D graspX_axis_ef = m_calculatedTargetPose.column(0).toVector3D().normalized();
     QVector3D handlePos3D(handleCentroid2D.x(), handleCentroid2D.y(), graspPoint.z());
     QVector3D vecGraspToHandle = handlePos3D - graspPoint;
-    float dot = QVector3D::dotProduct(vecGraspToHandle, graspX_axis);
+    float dot = QVector3D::dotProduct(vecGraspToHandle, graspX_axis_ef);
 
-    const float OFF_X_BASE = 0.1f;
-    const float OFF_Y = 0.2f;
-    const float OFF_Z = 0.05f;
+    const float OFF_X_BASE =0.3f; // 카메라의 X축 (좌우) 오프셋
+    const float OFF_Y = -0.05f;      // 카메라의 Y축 (상하) 오프셋
+    const float OFF_Z = -0.05f;    // 카메라의 Z축 (전후) 오프셋 (음수 = 뒤로)
 
     float DYNAMIC_OFF_X;
     if (dot > 0) {
         DYNAMIC_OFF_X = OFF_X_BASE;
-        qInfo() << "[VIEW] Handle is on +X side (dot=" << dot << "). Setting OFF_X to +" << OFF_X_BASE;
+        qInfo() << "[VIEW] Handle is on +X_EF side (dot=" << dot << "). Setting CAM_OFF_X to +" << OFF_X_BASE;
     } else {
         DYNAMIC_OFF_X = -OFF_X_BASE;
-        qInfo() << "[VIEW] Handle is on -X side (dot=" << dot << "). Setting OFF_X to -" << OFF_X_BASE;
+        qInfo() << "[VIEW] Handle is on -X_EF side (dot=" << dot << "). Setting CAM_OFF_X to -" << OFF_X_BASE;
     }
 
-    // --- 5. 카메라 위치(viewPos) 계산 (이하 동일) ---
-    QMatrix4x4 viewMat = m_calculatedTargetPose;
-    viewMat.translate(DYNAMIC_OFF_X, 0.0f, 0.0f);
-    viewMat.translate(0.0f, OFF_Y, 0.0f);
-    viewMat.translate(0.0f, 0.0f, OFF_Z);
-    QVector3D viewPos = viewMat.column(3).toVector3D();
+    // --- 5. (삭제) 카메라의 파지 자세 계산 (QMatrix4x4 cameraGraspPose = ...)
 
-    if (viewPos.z() < 0.0f)
+    // --- 6. ✨ [수정] 목표 *EF* 뷰 위치 계산 (파지 좌표계 기준 오프셋) ---
+    // m_calculatedTargetPose (파지 좌표계)를 기준으로 로컬 오프셋을 적용합니다.
+    // QMatrix4x4::translate()는 로컬 변환(post-multiplication)을 수행합니다.
+    QMatrix4x4 required_EF_Pose_for_View = m_calculatedTargetPose;
+    required_EF_Pose_for_View.translate(DYNAMIC_OFF_X, OFF_Y, OFF_Z);
+
+    qInfo() << "[VIEW] Grasp EF Pos:     " << m_calculatedTargetPose.column(3).toVector3D();
+    qInfo() << "[VIEW] Offsets (X,Y,Z):  " << DYNAMIC_OFF_X << "," << OFF_Y << "," << OFF_Z;
+    qInfo() << "[VIEW] New View EF Pos:  " << required_EF_Pose_for_View.column(3).toVector3D();
+
+
+    // --- 7. ✨ [수정] 목표 *카메라* 뷰 위치 계산 ---
+    // 이 새로운 EF 뷰 포즈에 있을 때, 카메라는 어디에 있는지 계산합니다.
+    // 이 위치(viewPos_cam)는 LookAt의 시작점이 됩니다.
+    QMatrix4x4 cameraViewPose_Matrix = required_EF_Pose_for_View * m_tcpToCameraTransform;
+    QVector3D viewPos_cam = cameraViewPose_Matrix.column(3).toVector3D();
+
+
+    // --- 8. Z 위치 보정 (카메라가 바닥 아래로 가지 않도록) ---
+    // (이전 단계의 '7. Z 위치 보정'이 여기로 이동)
+    if (viewPos_cam.z() < 0.0f)
     {
-        qInfo() << "[VIEW] Original view Z-pos was negative:" << viewPos.z();
-        viewPos.setZ(qAbs(viewPos.z()));
-        qInfo() << "[VIEW] Mirrored view Z-pos to positive:" << viewPos.z();
+        qInfo() << "[VIEW] Original view Z-pos_cam was negative:" << viewPos_cam.z();
+        viewPos_cam.setZ(qAbs(viewPos_cam.z()));
+        qInfo() << "[VIEW] Mirrored view Z-pos_cam to positive:" << viewPos_cam.z();
     }
 
-    QVector3D origX = m_calculatedTargetPose.column(0).toVector3D().normalized();
+    // --- 9. 바라볼 목표 지점(lookTarget) 계산 (베이스 좌표계 기준) ---
+    // (이전 단계의 '8. 바라볼 목표 지점'이 여기로 이동)
     const float LOOK_BELOW=0.1f;
-
-    // --- 6. 바라볼 목표 지점(lookTarget) 계산 (이하 동일) ---
     QVector3D lookTarget;
     QPointF graspPoint2D(graspPoint.x(), graspPoint.y());
     float radius = QLineF(bodyCenter2D, graspPoint2D).length();
@@ -1051,51 +1067,56 @@ void RealSenseWidget::onCalculateHandleViewPose()
         qWarning() << "[VIEW] Radius or handle-body line is too small. Defaulting to graspPoint LookAt.";
         lookTarget = graspPoint - QVector3D(0, 0, LOOK_BELOW);
     } else {
-        // ✨ [로직 확인] 이 로직은 컵 중앙(p1)에서 손잡이(p2) 방향으로
-        // 컵 반지름(radius)만큼 떨어진 교차점을 계산합니다.
         lineBodyToHandle.setLength(radius);
         QPointF intersectionPoint2D = lineBodyToHandle.p2();
-
         float lookAtZ = graspPoint.z();
         lookTarget = QVector3D(intersectionPoint2D.x(), intersectionPoint2D.y(), lookAtZ);
-
-        qInfo() << "[VIEW] Original LookAt (GraspPt):" << graspPoint;
         qInfo() << "[VIEW] New LookAt (Intersection on Handle Side):" << lookTarget;
-
         lookTarget -= QVector3D(0, 0, LOOK_BELOW);
         qInfo() << "[VIEW] Final LookAt (Intersection - Lowered):" << lookTarget;
     }
 
-    // --- 7. 최종 뷰 행렬 계산 (이하 동일) ---
-    QVector3D desiredZ = (lookTarget - viewPos).normalized();
-    QVector3D newY = QVector3D::crossProduct(desiredZ, origX).normalized();
-    QVector3D newX = QVector3D::crossProduct(newY, desiredZ).normalized();
+    // --- 10. 최종 *카메라* 뷰 행렬 계산 (LookAt) ---
+    // (이전 단계의 '9. 최종 *카메라* 뷰 행렬'이 여기로 이동)
+    QVector3D desiredZ_cam = (lookTarget - viewPos_cam).normalized();
+    QVector3D newY_cam = QVector3D::crossProduct(desiredZ_cam, graspX_axis_ef).normalized();
+    QVector3D newX_cam = QVector3D::crossProduct(newY_cam, desiredZ_cam).normalized();
 
-    QMatrix4x4 lookAtMat;
-    lookAtMat.setColumn(0, QVector4D(newX,0)); lookAtMat.setColumn(1, QVector4D(newY,0));
-    lookAtMat.setColumn(2, QVector4D(desiredZ,0)); lookAtMat.setColumn(3, QVector4D(viewPos,1));
-    const float REL_RZ=90.0f; lookAtMat.rotate(REL_RZ, 0, 0, 1);
+    QMatrix4x4 lookAtMat_cam;
+    lookAtMat_cam.setColumn(0, QVector4D(newX_cam,0));
+    lookAtMat_cam.setColumn(1, QVector4D(newY_cam,0));
+    lookAtMat_cam.setColumn(2, QVector4D(desiredZ_cam,0));
+    lookAtMat_cam.setColumn(3, QVector4D(viewPos_cam,1)); // <--- 계산된 viewPos_cam (위치) 적용
 
+    // --- 11. 카메라를 이 위치에 두기 위한 *EF* 자세 계산 ---
+    // (이전 단계의 '10. 카메라를 ... *EF* 자세 계산'이 여기로 이동)
+    QMatrix4x4 required_EF_Pose = lookAtMat_cam * m_tcpToCameraTransform.inverted();
+
+    // --- 12. 계산된 EF 자세를 저장하고 시각화 ---
+    // (이전 단계의 '11. 계산된 EF 자세를 저장'이 여기로 이동)
     m_pointCloudWidget->updateTargetPoses(m_calculatedTargetPose, m_pointCloudWidget->m_showTargetPose,
-                                          QMatrix4x4(), false, lookAtMat, true);
+                                          QMatrix4x4(), false,
+                                          required_EF_Pose, true); // m_viewPoseTransform에 EF 자세 저장
 
-    QVector3D viewOriZYX = extractEulerAngles(lookAtMat);
-    QVector3D viewPos_m = lookAtMat.column(3).toVector3D();
-    m_calculatedViewPos_mm = viewPos_m * 1000.0f;
-    m_calculatedViewMatrix = lookAtMat;
+    QVector3D viewPos_ef = required_EF_Pose.column(3).toVector3D();
+    m_calculatedViewPos_mm = viewPos_ef * 1000.0f; // mm 단위 EF 위치
+    m_calculatedViewMatrix = required_EF_Pose;     // EF 자세
     m_hasCalculatedViewPose = true;
 
-    qInfo() << "[VIEW] 1. Calc Look-At (m/ZYX deg): Pos:" << viewPos_m << "Rot:" << viewOriZYX;
-    qInfo() << "[VIEW] 2. Curr Robot (m/ZYX deg): Pos:" << m_baseToTcpTransform.column(3).toVector3D() << "Rot:" << extractEulerAngles(m_baseToTcpTransform);
+    qInfo() << "[VIEW] 1. Calc *Camera* Look-At (m): Pos:" << viewPos_cam;
+    qInfo() << "[VIEW] 2. Calc *EF* Pose (m): Pos:" << viewPos_ef;
+    qInfo() << "[VIEW] 3. Curr Robot (m): Pos:" << m_baseToTcpTransform.column(3).toVector3D();
     qInfo() << "[VIEW] Pose ready for movement (Press MovepointButton).";
     emit visionTaskComplete();
 }
+
 
 void RealSenseWidget::onMoveToCalculatedHandleViewPose()
 {
     qInfo() << "[VIEW] 'MovepointButton' pressed.";
     if (!m_hasCalculatedViewPose) { qWarning() << "[VIEW] Move failed: No view pose calculated."; return; }
 
+    // m_calculatedViewMatrix는 이제 카메라가 아닌 *EF*의 목표 자세임
     QMatrix3x3 rotMat = m_calculatedViewMatrix.toGenericMatrix<3,3>();
     QVector3D viewOriZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
     float cmdA = viewOriZYZ.x() + 180.0f; float cmdB = -viewOriZYZ.y(); float cmdC = viewOriZYZ.z() + 180.0f;
@@ -1104,7 +1125,8 @@ void RealSenseWidget::onMoveToCalculatedHandleViewPose()
     while(cmdC>180.0f) cmdC-=360.0f; while(cmdC<=-180.0f) cmdC+=360.0f;
     QVector3D robotCmdOri(cmdA, cmdB, cmdC);
 
-    qInfo() << "[VIEW] Moving to calculated pose:";
+    // m_calculatedViewPos_mm는 이제 EF의 목표 위치(mm)임
+    qInfo() << "[VIEW] Moving to calculated *EF* pose:";
     qInfo() << "  - Pos (mm):" << m_calculatedViewPos_mm;
     qInfo() << "  - Calc Rot (ZYZ deg):" << viewOriZYZ;
     qInfo() << "  - Cmd Rot (A, B, C deg):" << robotCmdOri;
@@ -1208,15 +1230,20 @@ void RealSenseWidget::captureAndProcess(bool isAutoSequence)
 
     sendImageToPython(m_latestFrame);
     m_isProcessing = true;
+    m_processingTimer.start(); // <-- ✨ [추가] 타임아웃 타이머 시작
     m_resultTimer->start(100);
 }
+
 void RealSenseWidget::checkProcessingResult()
 {
     if (!m_isProcessing) { m_resultTimer->stop(); return; }
     QJsonArray results = receiveResultsFromPython();
+
     if (!results.isEmpty()) {
         qDebug() << "[INFO] Received" << results.size() << "results.";
-        m_detectionResults = results; m_isProcessing = false; m_resultTimer->stop();
+        m_detectionResults = results;
+        m_isProcessing = false; // <-- 정상적으로 플래그 리셋
+        m_resultTimer->stop();  // <-- 정상적으로 타이머 중지
 
         // ✨ [수정] 자동 시퀀스의 일부로 캡처된 경우
         if (m_isAutoSequenceCapture) {
@@ -1230,6 +1257,19 @@ void RealSenseWidget::checkProcessingResult()
 
         // 플래그 초기화
         m_isAutoSequenceCapture = false;
+    } else {
+        // ✨ [추가] 타임아웃 체크 로직
+        // 결과가 비어있다면 (Python이 아직 응답 안함)
+        // 타임아웃을 확인합니다. (예: 5000ms = 5초)
+        if (m_processingTimer.elapsed() > 5000) {
+            qWarning() << "[WARN] Python detection timed out after 5 seconds.";
+            qWarning() << "[WARN] Forcibly resetting processing flag. Python server may need restart.";
+
+            m_isProcessing = false; // <-- ✨ [추가] 강제로 플래그 리셋
+            m_resultTimer->stop();  // <-- ✨ [추가] 결과 확인 타이머 중지
+            m_isAutoSequenceCapture = false; // <-- ✨ [추가] 시퀀스 플래그도 리셋
+        }
+        // 타임아웃이 아니라면, 타이머는 계속 실행되며 다음 100ms 후에 다시 체크합니다.
     }
 }
 void RealSenseWidget::onDenoisingToggled()

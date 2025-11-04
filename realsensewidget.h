@@ -32,7 +32,7 @@
 #include <Eigen/SVD>
 #include <QMatrix3x3>
 #include "DRFLEx.h" // ✨ [추가] IK Check를 위해 포함
-
+#include <QElapsedTimer> // QElapsedTimer 사용을 위해 필요
 
 struct GraspingTarget
 {
@@ -258,7 +258,7 @@ private:
     QMatrix4x4 m_calculatedTargetPose; QVector3D m_calculatedTargetPos_m; QVector3D m_calculatedTargetOri_deg;
     QMatrix4x4 m_calculatedTargetPose_Y_Aligned; QVector3D m_calculatedTargetOri_deg_Y_Aligned;
     QMatrix4x4 m_calculatedViewMatrix; QVector3D m_calculatedViewPos_mm; bool m_hasCalculatedViewPose;
-
+    QElapsedTimer m_processingTimer; // ✨ [추가] 처리 시간 타임아웃용
     std::vector<int> m_clusterIds; // DBSCAN용
 
     const float APPROACH_HEIGHT_M = 0.15f;
