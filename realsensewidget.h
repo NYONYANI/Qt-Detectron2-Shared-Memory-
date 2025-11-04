@@ -144,7 +144,8 @@ public slots:
     void onMoveRobotToPreGraspPose();
     void onPickAndReturnRequested();
     void onToggleMaskedPoints();
-    void onShowHandlePlot();
+
+    void onShowHandlePlot(bool showWindow = true);
     void onCalculateHandleViewPose();
     void onMoveToCalculatedHandleViewPose();
     void runFullAutomatedSequence();
@@ -267,6 +268,7 @@ private:
     const int RESULT_SIZE = 100 * 1024, CONTROL_SIZE = 16;
     enum ControlOffset { OFFSET_NEW_FRAME = 0, OFFSET_RESULT_READY = 1, OFFSET_SHUTDOWN = 2 };
     bool m_isAutoSequenceCapture;
+    bool m_newResultAwaitingFrameUpdate;
     QImage cvMatToQImage(const cv::Mat &mat);
     bool initSharedMemory();
     void sendImageToPython(const cv::Mat &mat);

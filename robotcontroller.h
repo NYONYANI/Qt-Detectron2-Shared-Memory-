@@ -26,7 +26,7 @@ signals:
     void robotPoseUpdated(const float* poseMatrix);
     void robotTransformUpdated(const QMatrix4x4 &transform);
     void initializationFailed(QString error); // ✨ [추가] 초기화 실패 시그널
-
+    void moveFinished(); // ✨ [추가] 블로킹 이동 완료 시그널
 public slots:
     // --- 기본 기능 ---
     void startMonitoring();

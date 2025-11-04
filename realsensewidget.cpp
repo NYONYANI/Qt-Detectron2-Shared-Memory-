@@ -340,7 +340,8 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     : QWidget(parent), m_align(RS2_STREAM_COLOR), m_isProcessing(false),
     m_showPlotWindow(false), m_depth_to_disparity(true), m_disparity_to_depth(false),
     m_hasCalculatedViewPose(false), m_hasPCAData(false),
-    m_showRandomGraspPose(false)
+    m_showRandomGraspPose(false),
+    m_newResultAwaitingFrameUpdate(false)
 {
     initSharedMemory();
     m_config.enable_stream(RS2_STREAM_DEPTH, IMAGE_WIDTH, IMAGE_HEIGHT, RS2_FORMAT_Z16, 30);
@@ -471,10 +472,10 @@ bool RealSenseWidget::calculatePCA(const QVector<QVector3D>& points,
     return true;
 }
 
-// ✨ [수정] onShowHandlePlot: 다중 손잡이 분석 및 IK 체크 로직 추가
-void RealSenseWidget::onShowHandlePlot()
+
+void RealSenseWidget::onShowHandlePlot(bool showWindow)
 {
-    qDebug() << "[PLOT] Handle Plot requested.";
+    qDebug() << "[PLOT] Handle Plot requested. (Show Window:" << showWindow << ")"; // ✨ [추가]
     // 1. 상태 초기화
     m_handleCenterline3D.clear();
     m_handleSegmentIds.clear();
@@ -660,10 +661,15 @@ void RealSenseWidget::onShowHandlePlot()
         m_showRandomGraspPose = false;
         m_handlePlotWidget->updateData({}); // 플롯 클리어
     } else {
-        // 성공한 경우, m_handlePlotWidget이 마지막으로 시도한 (성공한) 손잡이의
-        // 2D 데이터를 이미 표시하고 있으므로 m_handlePlotWidget->show()만 호출
-        m_handlePlotWidget->show();
-        m_handlePlotWidget->activateWindow();
+        // ✨ [수정]
+        // 성공한 경우, showWindow 플래그가 true일 때만 플롯 창을 띄웁니다.
+        if (showWindow) {
+            qDebug() << "[PLOT] Showing HandlePlotWidget window.";
+            m_handlePlotWidget->show();
+            m_handlePlotWidget->activateWindow();
+        } else {
+            qDebug() << "[PLOT] Skipping HandlePlotWidget window (Auto-sequence).";
+        }
     }
 
     // 6. 3D 뷰 업데이트 (성공했으면 자세가 보이고, 실패했으면 아무것도 안 보임)
@@ -671,7 +677,6 @@ void RealSenseWidget::onShowHandlePlot()
     emit requestRandomGraspPoseUpdate(m_randomGraspPose, m_showRandomGraspPose);
     emit visionTaskComplete();
 }
-
 
 // ✨ [수정] calculateRandomGraspPoseOnSegment: 시그니처 변경, 멤버 변수 대신 out 매개변수 사용
 bool RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId,
@@ -1166,6 +1171,11 @@ void RealSenseWidget::updateFrame()
         if(m_isProcessing) { QPainter p(&m_currentImage); p.setPen(Qt::yellow); p.drawText(20, 30, "Processing..."); }
         m_colorLabel->setPixmap(QPixmap::fromImage(m_currentImage).scaled(m_colorLabel->size(), Qt::KeepAspectRatio));
         m_pointCloudWidget->update();
+        if (m_newResultAwaitingFrameUpdate) {
+            m_newResultAwaitingFrameUpdate = false; // 플래그 리셋
+            qDebug() << "[INFO] Emitting visionTaskComplete() for auto-sequence (AFTER frame update).";
+            emit visionTaskComplete(); // 시퀀서의 m_visionWaitLoop->quit() 호출
+        }
 
     } catch (const rs2::error& e) { qWarning() << "RS error:" << e.what(); }
     catch (...) { qWarning() << "Unknown error in updateFrame"; }
@@ -1176,23 +1186,24 @@ void RealSenseWidget::startCameraStream()
 QImage RealSenseWidget::cvMatToQImage(const cv::Mat &mat)
 { if(mat.empty()) return QImage(); return QImage(mat.data, mat.cols, mat.rows, mat.step, QImage::Format_BGR888).rgbSwapped(); }
 
-void RealSenseWidget::captureAndProcess(bool isAutoSequence) // ✨ [수정] 파라미터 추가
+void RealSenseWidget::captureAndProcess(bool isAutoSequence)
 {
     if (m_isProcessing || m_latestFrame.empty()) {
         qDebug() << "[WARN] Capture failed. (Processing:" << m_isProcessing << "FrameEmpty:" << m_latestFrame.empty() << ")";
 
-        // ✨ [추가] 만약 수동 클릭이 자동 시퀀스 중에 거부된 경우,
-        // 사용자에게는 작업이 완료된 것처럼 알려서 큐가 멈추지 않게 함
+        // ✨ [수정] 자동 시퀀스 중복 요청이 거부된 경우 (isAutoSequence && m_isProcessing)
+        // 여기서 visionTaskComplete()를 emit하면 시퀀스가 즉시 '성공'한 것으로
+        // 오해하고 (잘못된 데이터로) 다음 단계를 진행하므로,
+        // 시그널을 절대 보내지 않고 경고만 출력 후 리턴해야 합니다.
         if (isAutoSequence && m_isProcessing) {
-            qWarning() << "[SEQ] Auto-sequence capture request ignored (already processing). Telling sequencer to continue.";
-            emit visionTaskComplete();
+            qWarning() << "[SEQ] Auto-sequence capture request IGNORED (already processing). Sequencer will wait.";
+            // emit visionTaskComplete(); // ✨ [삭제]
         }
         return;
     }
 
     qDebug() << "[INFO] Sending frame to Python. (AutoSequence:" << isAutoSequence << ")";
 
-    // ✨ [추가] 플래그 저장
     m_isAutoSequenceCapture = isAutoSequence;
 
     sendImageToPython(m_latestFrame);
@@ -1207,10 +1218,12 @@ void RealSenseWidget::checkProcessingResult()
         qDebug() << "[INFO] Received" << results.size() << "results.";
         m_detectionResults = results; m_isProcessing = false; m_resultTimer->stop();
 
-        // ✨ [수정] 자동 시퀀스의 일부로 캡처된 경우에만 시퀀서에 완료 신호를 보냄
+        // ✨ [수정] 자동 시퀀스의 일부로 캡처된 경우
         if (m_isAutoSequenceCapture) {
-            qDebug() << "[INFO] Emitting visionTaskComplete() for auto-sequence.";
-            emit visionTaskComplete();
+            // ✨ [수정] 즉시 시그널을 보내지 않고, updateFrame에서 처리하도록 플래그만 설정
+            qDebug() << "[INFO] Results received. Flagging for frame update before signaling complete.";
+            m_newResultAwaitingFrameUpdate = true;
+            // emit visionTaskComplete(); // ✨ [이동] 이 라인을 updateFrame() 끝으로 이동
         } else {
             qDebug() << "[INFO] Manual capture complete. (Not emitting signal)";
         }

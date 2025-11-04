@@ -115,8 +115,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_robotSequencer = new RobotSequencer(); // ✨ [추가] Sequencer 생성
     m_robotSequencer->setRobotController(m_robotController); // ✨ [추가] Controller 주입
     m_robotSequencer->moveToThread(&m_robotControllerThread); // ✨ [추가] 동일 스레드로 이동
-    connect(&m_robotControllerThread, &QThread::finished, m_robotSequencer, &QObject::deleteLater);
-
+    connect(m_robotController, &RobotController::moveFinished,
+            m_robotSequencer, &RobotSequencer::onMoveTaskComplete, Qt::QueuedConnection);
 
     // --- MainWindow -> RobotController (기본 명령) ---
     // connect(this, &MainWindow::requestMoveRobot, m_robotController, &RobotController::onMoveRobot); // ✨ [삭제] 아래 RealSenseWidget 연결에서 대체
@@ -191,7 +191,9 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(m_robotSequencer, &RobotSequencer::requestVisionMoveViewpoint, ui->widget, &RealSenseWidget::onCalculateHandleViewPose);
-    connect(m_robotSequencer, &RobotSequencer::requestVisionHandlePlot, ui->widget, &RealSenseWidget::onShowHandlePlot);
+    connect(m_robotSequencer, &RobotSequencer::requestVisionHandlePlot, ui->widget, [=](){
+        ui->widget->onShowHandlePlot(false); // 자동 시퀀스 중에는 창을 띄우지 않음 (false)
+    });
     connect(m_robotSequencer, &RobotSequencer::requestMoveToViewpoint, ui->widget, &RealSenseWidget::onMoveToCalculatedHandleViewPose);
     connect(m_robotSequencer, &RobotSequencer::requestGraspHandle, ui->widget, &RealSenseWidget::onMoveToRandomGraspPoseRequested);
 
@@ -329,7 +331,7 @@ void MainWindow::on_MoveButton_clicked()
 void MainWindow::on_HandlePlotButton_clicked()
 {
     qDebug() << "[MAIN] 'Handle Plot' button clicked. Requesting handle PCA plot.";
-    ui->widget->onShowHandlePlot();
+    ui->widget->onShowHandlePlot(true);
 }
 
 void MainWindow::on_MoveViewButton_clicked()

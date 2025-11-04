@@ -50,6 +50,7 @@ public slots:
     // ✨ [추가] 자동화 시퀀스 슬롯
     void onStartFullAutomation();
     void onVisionTaskComplete(); // RealSenseWidget으로부터 완료 신호를 받음
+    void onMoveTaskComplete(); // RobotController로부터 이동 완료 신호를 받음
 
 
 signals:
@@ -77,6 +78,7 @@ private:
     // ✨ [추가] 자동화 시퀀스용 멤버
     AutomationState m_autoState;
     QEventLoop* m_visionWaitLoop;
+    QEventLoop* m_moveWaitLoop; // ✨ [추가]
 };
 
 #endif // ROBOTSEQUENCER_H

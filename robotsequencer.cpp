@@ -2,7 +2,7 @@
 #include <QDebug>
 #include <QThread>
 #include "DRFLEx.h" // extern 전역 변수 사용을 위해 포함
-
+#include <QApplication>
 // 전역 변수 접근 (RobotController와 동일한 스레드)
 extern CDRFLEx GlobalDrfl;
 extern bool g_bHasControlAuthority;
@@ -12,6 +12,7 @@ RobotSequencer::RobotSequencer(QObject *parent)
     , m_robotController(nullptr)
     , m_autoState(Idle) // ✨ [추가]
     , m_visionWaitLoop(nullptr) // ✨ [추가]
+    , m_moveWaitLoop(nullptr)
 {
 }
 
@@ -46,6 +47,8 @@ void RobotSequencer::onStartFullAutomation()
     delete m_visionWaitLoop; m_visionWaitLoop = nullptr;
     if (m_autoState == Idle) { qWarning() << "[SEQ] 시퀀스 중단 (Capture 1)"; return; }
     qInfo() << "[SEQ] 1/9: Capture 완료.";
+    qInfo() << "[SEQ] 1/9: 캡처 적용을 위해 이벤트 루프 처리 강제...";
+    QApplication::processEvents();
     QThread::msleep(500); // 안정화 대기
 
     // --- 2. 필터 적용 (키 1, 2, 3) ---
@@ -70,9 +73,27 @@ void RobotSequencer::onStartFullAutomation()
     // --- 4. Move Viewpoint (이동) ---
     m_autoState = Step4_MoveView;
     qInfo() << "[SEQ] 4/9: Move Viewpoint 이동 요청 (로봇 이동 대기...)";
-    emit requestMoveToViewpoint();
+
+    // ✨ [수정]
+    // emit requestMoveToViewpoint()는 즉시 리턴하고 이동을 큐에 넣습니다.
+    // 5단계의 캡처가 실행되기 *전에* 이동이 완료되어야 하므로,
+    // m_moveWaitLoop를 사용하여 RobotController의 'moveFinished' 시그널을 기다립니다.
+
+    m_moveWaitLoop = new QEventLoop();
+    emit requestMoveToViewpoint(); // 1. 메인 스레드에 이동 계산 및 로봇 스레드로의 이동 명령 큐잉을 요청
+
+    // 2. 로봇 스레드(현재 스레드)의 이벤트 루프를 실행함.
+    //    이 루프는 메인 스레드로부터 큐에 쌓인 'moveToPositionAndWait'을 실행함.
+    //    'moveToPositionAndWait'이 완료되면 'moveFinished' 시그널을 보내고,
+    //    'onMoveTaskComplete' 슬롯이 'm_moveWaitLoop->quit()'을 호출함.
+    m_moveWaitLoop->exec();
+
+    delete m_moveWaitLoop; m_moveWaitLoop = nullptr;
+    if (m_autoState == Idle) { qWarning() << "[SEQ] 시퀀스 중단 (Move View)"; return; }
     qInfo() << "[SEQ] 4/9: Viewpoint 이동 완료.";
-    QThread::msleep(1000); // 이동 후 안정화 대기
+    // msleep(1000)은 이제 moveToPositionAndWait 내부에 있으므로 제거 가능 (유지해도 무방)
+    QThread::msleep(500); // 이동 후 안정화 대기
+
 
     // --- 5. Capture (두 번째) ---
     m_autoState = Step5_Capture;
@@ -83,15 +104,10 @@ void RobotSequencer::onStartFullAutomation()
     delete m_visionWaitLoop; m_visionWaitLoop = nullptr;
     if (m_autoState == Idle) { qWarning() << "[SEQ] 시퀀스 중단 (Capture 2)"; return; }
     qInfo() << "[SEQ] 5/9: 두 번째 Capture 완료.";
-    QThread::msleep(500);
 
-    // --- 6. ✨ [삭제] 두 번째 필터 적용 단계 제거 ---
-    // m_autoState = Step4_5_Filter; // <-- 삭제
-    // qInfo() << "[SEQ] 6/8: 필터 적용 (Toggle Mask, Denoise, Z-Filter)"; // <-- 삭제
-    // emit requestToggleMask(); // <-- 삭제
-    // emit requestToggleDenoise(); // <-- 삭제
-    // emit requestToggleZFilter(); // <-- 삭제
-    // QThread::msleep(100); // <-- 삭제
+    qInfo() << "[SEQ] 5/9: 캡처 적용을 위해 이벤트 루프 처리 강제...";
+    QApplication::processEvents();
+    QThread::msleep(500);
 
     // --- 7. View Handle (계산) ---
     m_autoState = Step6_CalcHandle;
@@ -130,9 +146,6 @@ void RobotSequencer::onStartFullAutomation()
     emit automationFinished(); // MainWindow UI 활성화를 위해 시그널 전송
 }
 
-//
-// ✨ [추가] 비전 작업 완료 시 호출될 슬롯
-//
 void RobotSequencer::onVisionTaskComplete()
 {
     // ✨ [수정] 시퀀스가 중단되었을 때(예: 사용자가 다른 버튼을 누름) 루프가 없으면 quit()을 호출하지 않도록 함
@@ -145,7 +158,17 @@ void RobotSequencer::onVisionTaskComplete()
         qWarning() << "[SEQ] Vision complete signal received, but no wait loop is running!";
     }
 }
-
+void RobotSequencer::onMoveTaskComplete()
+{
+    qDebug() << "[SEQ] 로봇 이동 완료 신호 수신 (State:" << m_autoState << ")";
+    if (m_moveWaitLoop && m_moveWaitLoop->isRunning()) {
+        m_moveWaitLoop->quit();
+    } else if (m_autoState == Idle) {
+        qWarning() << "[SEQ] Move complete signal received, but auto-sequence is already Idle.";
+    } else {
+        qWarning() << "[SEQ] Move complete signal received, but no wait loop is running!";
+    }
+}
 
 //
 // --- 이하 코드는 robotcontroller.cpp에서 그대로 옮겨온 시퀀스 함수들 ---

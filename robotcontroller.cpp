@@ -374,6 +374,7 @@ bool RobotController::moveToPositionAndWait(const QVector3D& pos_mm, const QVect
         if (elapsed_ms > timeout_ms) {
             qWarning() << "[ROBOT_THREAD] Timeout: Move did not complete in 10s.";
             GlobalDrfl.MoveStop(STOP_TYPE_SLOW);
+            emit moveFinished();
             return false;
         }
         QThread::msleep(100);
@@ -381,6 +382,7 @@ bool RobotController::moveToPositionAndWait(const QVector3D& pos_mm, const QVect
     }
 
     qDebug() << "[ROBOT_THREAD] Move Complete (State is STANDBY).";
+    emit moveFinished();
     return true;
 }
 
