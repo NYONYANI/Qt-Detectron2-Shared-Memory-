@@ -193,6 +193,19 @@
      <string>Auto Move</string>
     </property>
    </widget>
+   <widget class="QPushButton" name="ICPButton">
+    <property name="geometry">
+     <rect>
+      <x>940</x>
+      <y>640</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>ICP</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
