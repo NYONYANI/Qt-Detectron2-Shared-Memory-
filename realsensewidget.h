@@ -94,7 +94,8 @@ private:
     void drawViewPose();
     void drawHandleCenterline();
     void drawRandomGraspPose();
-
+    void drawRawCentroid();
+    void drawRawGraspPoint();
     std::vector<float> m_vertexData;
     rs2::points m_points;
     rs2::video_frame m_colorFrame;
@@ -119,8 +120,10 @@ private:
     // ✨ [추가] Raw Visualization Mode 멤버
     QVector<float> m_rawBaseFramePoints;
     bool m_isRawVizMode = false;
-
-
+    QVector3D m_rawCentroid; // ✨ [추가] 계산된 무게중심을 저장할 변수
+    bool m_showRawCentroid = false; // ✨ [추가] 무게중심을 그릴지 여부 플래그
+    QVector3D m_rawGraspPoint; // ✨ [추가] 가장 붉은 점 (파지점)**
+    bool m_showRawGraspPoint = false;
     friend class RealSenseWidget;
 
     QMatrix4x4 m_baseToTcpTransform;

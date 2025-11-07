@@ -76,29 +76,156 @@ void PointCloudWidget::drawGrid(float size, int divisions)
     glEnd();
 }
 
-// ✨ [수정] PointCloudWidget::setRawBaseFramePoints 구현
+// ✨ [수정] PointCloudWidget::setRawBaseFramePoints 구현 (근접도*높이 + 정규화)
 void PointCloudWidget::setRawBaseFramePoints(const QVector<QVector3D>& points)
 {
     makeCurrent(); // OpenGL 컨텍스트 활성화
     m_rawBaseFramePoints.clear();
-    m_rawBaseFramePoints.reserve(points.size() * 6); // 3 pos + 3 color
     m_isRawVizMode = !points.isEmpty();
+    m_showRawCentroid = false; // 리셋
+    m_showRawGraspPoint = false; // ✨ [추가] 리셋
 
-    // 모든 포인트를 노란색으로 설정 (Yellow)
+    if (points.isEmpty()) {
+        doneCurrent();
+        update();
+        return;
+    }
+
+    m_rawBaseFramePoints.reserve(points.size() * 6); // 3 pos + 3 color
+
+    // --- 1. 통계 계산 (Pass 1) ---
+
+    // 1a. 돌출도(거리) 계산을 위한 중심점(Centroid) 계산
+    QVector3D sum(0.0f, 0.0f, 0.0f);
     for (const auto& p : points) {
+        sum += p;
+    }
+    m_rawCentroid = sum / points.size(); // 멤버 변수에 저장
+    m_showRawCentroid = true; // 그리기 플래그 설정
+
+
+    // 1b. 거리(돌출도) 및 높이(Z)의 최소/최대값 계산
+    float minDist = FLT_MAX;
+    float maxDist = -FLT_MAX;
+    float minZ = FLT_MAX;
+    float maxZ = -FLT_MAX;
+
+    QVector<float> distances(points.size());
+
+    for (int i = 0; i < points.size(); ++i) {
+        // 거리 계산
+        float dist = (points[i] - m_rawCentroid).length();
+        distances[i] = dist;
+        if (dist < minDist) minDist = dist;
+        if (dist > maxDist) maxDist = dist;
+
+        // 높이 계산
+        float z = points[i].z();
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+    }
+
+    float distRange = maxDist - minDist;
+    if (distRange < 1e-6f) distRange = 1.0f; // 0으로 나누기 방지
+    float zRange = maxZ - minZ;
+    if (zRange < 1e-6f) zRange = 1.0f; // 0으로 나누기 방지
+
+    // --- 2. "곱한 강도" 계산 및 최소/최대값 찾기 (Pass 2) ---
+    QVector<float> raw_intensities(points.size());
+    float min_raw_intensity = FLT_MAX;
+    float max_raw_intensity = -FLT_MAX;
+    int bestPointIndex = -1; // ✨ [추가] 최고 강도 포인트의 인덱스
+
+    for (int i = 0; i < points.size(); ++i) {
+        // 요소 1: 근접도 (0.0=멈, 1.0=가까움)
+        float norm_dist = (distances[i] - minDist) / distRange;
+        float intensity_prox = 1.0f - norm_dist; // (요청사항: 가까울수록 붉은색=1.0)
+
+        // 요소 2: 높이 (0.0=낮음, 1.0=높음)
+        float norm_height = (points[i].z() - minZ) / zRange;
+        // (요청사항: 높을수록 붉은색=1.0)
+
+        // 조합: 두 강도를 "곱함"
+        float raw_intensity = intensity_prox * norm_height;
+
+        raw_intensities[i] = raw_intensity;
+        if (raw_intensity < min_raw_intensity) min_raw_intensity = raw_intensity;
+        if (raw_intensity > max_raw_intensity) {
+            max_raw_intensity = raw_intensity;
+            bestPointIndex = i; // ✨ [추가] 최고점 인덱스 저장
+        }
+    }
+
+    // ✨ [추가] 최고점(파지점) 저장
+    if (bestPointIndex != -1) {
+        m_rawGraspPoint = points[bestPointIndex];
+        m_showRawGraspPoint = true;
+    }
+
+    float raw_intensity_range = max_raw_intensity - min_raw_intensity;
+    if (raw_intensity_range < 1e-6f) raw_intensity_range = 1.0f; // 0으로 나누기 방지
+
+    // --- 3. 색상 맵 헬퍼 함수 (Lambda) ---
+    auto getStandardColor = [](float norm_val) -> QVector3D {
+        float r = 0.0f, g = 0.0f, b = 0.0f;
+        // 0.0(Blue) -> 0.5(Green) -> 1.0(Red)
+        if (norm_val < 0.5f) {
+            float t = norm_val * 2.0f; // 0.0 -> 1.0
+            r = 0.0f; g = t; b = 1.0f - t;
+        } else {
+            float t = (norm_val - 0.5f) * 2.0f; // 0.0 -> 1.0
+            r = t; g = 1.0f - t; b = 0.0f;
+        }
+        return QVector3D(std::max(0.0f, std::min(1.0f, r)),
+                         std::max(0.0f, std::min(1.0f, g)),
+                         std::max(0.0f, std::min(1.0f, b)));
+    };
+
+    // --- 4. 정규화 및 최종 색상 적용 (Pass 3) ---
+    for (int i = 0; i < points.size(); ++i) {
+        const auto& p = points[i];
+
+        // 위치 (X, Y, Z)
         m_rawBaseFramePoints.push_back(p.x());
         m_rawBaseFramePoints.push_back(p.y());
         m_rawBaseFramePoints.push_back(p.z());
-        // Color: Yellow (R=1.0, G=1.0, B=0.0)
-        m_rawBaseFramePoints.push_back(1.0f);
-        m_rawBaseFramePoints.push_back(1.0f);
-        m_rawBaseFramePoints.push_back(0.0f);
+
+        // 4a. "곱한 강도"를 0~1 사이로 정규화
+        float final_intensity = (raw_intensities[i] - min_raw_intensity) / raw_intensity_range;
+
+        // 4b. 최종 강도를 (Blue -> Green -> Red) 맵에 매핑
+        QVector3D final_color = getStandardColor(final_intensity);
+
+        // 버퍼에 최종 색상 추가
+        m_rawBaseFramePoints.push_back(final_color.x());
+        m_rawBaseFramePoints.push_back(final_color.y());
+        m_rawBaseFramePoints.push_back(final_color.z());
     }
+
     doneCurrent();
     update();
 }
+// ✨ [추가] Raw Viz 모드의 무게중심을 그리는 함수
+void PointCloudWidget::drawRawCentroid()
+{
+    if (!m_isRawVizMode || !m_showRawCentroid) return;
 
+    // glu함수들은 이미 drawGraspingSpheres에서 사용하고 있으므로 link 문제는 없습니다.
+    GLUquadric* quadric = gluNewQuadric();
+    if(quadric) {
+        gluQuadricNormals(quadric, GLU_SMOOTH);
 
+        // ✨ [수정] 흰색(1,1,1) -> 검은색(0,0,0)으로 변경
+        glColor3f(0.0f, 0.0f, 0.0f);
+        glPushMatrix();
+        glTranslatef(m_rawCentroid.x(), m_rawCentroid.y(), m_rawCentroid.z());
+        // ✨ [수정] 크기를 5mm -> 8mm (0.008)로 키움
+        gluSphere(quadric, 0.002, 16, 16);
+        glPopMatrix();
+
+        gluDeleteQuadric(quadric);
+    }
+}
 void PointCloudWidget::paintGL()
 {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -114,7 +241,6 @@ void PointCloudWidget::paintGL()
     drawGrid(2.0f, 20);
     drawAxes(0.2f); // 월드 좌표계
 
-    // ✨ [수정] Raw Visualization Mode 분기
     if (m_isRawVizMode) {
         // Raw Visualization Mode: 월드 좌표계 기준으로 포인트를 그림
         glPointSize(3.0f); // 포인트를 좀 더 크게
@@ -126,6 +252,11 @@ void PointCloudWidget::paintGL()
             glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_VERTEX_ARRAY);
         }
         glPointSize(1.5f); // 원래 크기로 복원
+
+        // 무게중심 구체를 깊이 테스트가 켜진(ON) 이곳에서 그립니다.
+        drawRawCentroid();
+        drawRawGraspPoint(); // ✨ [추가] 파지점 구체 그리기
+
     } else {
         glPushMatrix(); // 로봇+포인트클라우드 시작
         glMultMatrixf(m_baseToTcpTransform.constData()); // 1. 베이스 -> EF 이동
@@ -162,10 +293,11 @@ void PointCloudWidget::paintGL()
         drawViewPose(); // 노란색 (뷰포인트)
         drawHandleCenterline(); // 핸들 중심선 그리기
         drawRandomGraspPose(); // 주황색 (손잡이 파지)
+    } else {
+        // (drawRawCentroid() 호출 제거됨)
     }
     glEnable(GL_DEPTH_TEST); // 깊이 테스트 다시 켜기
 }
-
 void PointCloudWidget::initializeGL()
 {
     initializeOpenGLFunctions(); // OpenGL 함수 초기화 (QOpenGLFunctions 상속 필요)
@@ -1660,4 +1792,23 @@ void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 
     // 5. 시그널 발생 (이제 IK 체크가 완료된 상태)
     emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg);
+}
+// ✨ [추가] Raw Viz 모드의 파지점(최고 강도)을 그리는 함수
+void PointCloudWidget::drawRawGraspPoint()
+{
+    if (!m_isRawVizMode || !m_showRawGraspPoint) return;
+
+    GLUquadric* quadric = gluNewQuadric();
+    if(quadric) {
+        gluQuadricNormals(quadric, GLU_SMOOTH);
+
+        // 자홍색(Magenta/Pink)으로 8mm 크기의 구체를 그립니다. (눈에 잘 띄게)
+        glColor3f(1.0f, 0.0f, 1.0f);
+        glPushMatrix();
+        glTranslatef(m_rawGraspPoint.x(), m_rawGraspPoint.y(), m_rawGraspPoint.z());
+        gluSphere(quadric, 0.008, 16, 16); // 8mm radius
+        glPopMatrix();
+
+        gluDeleteQuadric(quadric);
+    }
 }
