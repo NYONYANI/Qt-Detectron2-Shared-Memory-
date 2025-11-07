@@ -33,6 +33,9 @@
 #include <QMatrix3x3>
 #include "DRFLEx.h" // ✨ [추가] IK Check를 위해 포함
 #include <QElapsedTimer> // QElapsedTimer 사용을 위해 필요
+#include <QDialog> // ✨ [추가] QDialog 포함
+#include <QVBoxLayout> // ✨ [추가] QDialog 레이아웃을 위해 포함
+
 
 struct GraspingTarget
 {
@@ -60,6 +63,7 @@ public:
 public slots:
     void updateHandleCenterline(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
     void updateRandomGraspPose(const QMatrix4x4& pose, bool show);
+    void setRawBaseFramePoints(const QVector<QVector3D>& points); // ✨ [추가] ICP 포인트 설정 슬롯
 
 
 signals:
@@ -112,6 +116,10 @@ private:
     QMatrix4x4 m_randomGraspPose;
     bool m_showRandomGraspPose = false;
 
+    // ✨ [추가] Raw Visualization Mode 멤버
+    QVector<float> m_rawBaseFramePoints;
+    bool m_isRawVizMode = false;
+
 
     friend class RealSenseWidget;
 
@@ -150,6 +158,8 @@ public slots:
     void onMoveToCalculatedHandleViewPose();
     void runFullAutomatedSequence();
     void onMoveToRandomGraspPoseRequested();
+
+    void onShowICPVisualization(); // ✨ [추가] ICP 버튼 클릭 시 호출
 
 
 signals:
@@ -253,6 +263,11 @@ private:
     QVector<int> m_handleSegmentIds;
 
     QMatrix4x4 m_randomGraspPose; bool m_showRandomGraspPose;
+
+    // ✨ [추가] ICP 시각화 멤버
+    QVector<QVector3D> m_selectedHandlePoints3D;
+    QDialog* m_icpVizDialog = nullptr;
+    PointCloudWidget* m_icpPointCloudWidget = nullptr;
 
 
     QMatrix4x4 m_calculatedTargetPose; QVector3D m_calculatedTargetPos_m; QVector3D m_calculatedTargetOri_deg;

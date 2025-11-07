@@ -124,7 +124,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(this, &MainWindow::requestGripperAction, m_robotController, &RobotController::onGripperAction);
     // connect(this, &MainWindow::startRobotMonitoring, m_robotController, &RobotController::startMonitoring); // ✨ [삭제]
 
-    // ✨ [추가] Init, Servo, Close 시그널 연결
+    // ✨ [추가] Init, Servo, Close 요청 시그널 연결
     connect(this, &MainWindow::requestInitializeRobot, m_robotController, &RobotController::onInitializeRobot);
     connect(this, &MainWindow::requestServoOn, m_robotController, &RobotController::onServoOn);
     connect(this, &MainWindow::requestCloseConnection, m_robotController, &RobotController::onCloseConnection);
@@ -178,6 +178,9 @@ MainWindow::MainWindow(QWidget *parent)
             m_robotSequencer, &RobotSequencer::onFullPickAndPlaceSequence); // ✨ [수정] m_robotSequencer로 연결
     connect(ui->widget, &RealSenseWidget::requestApproachThenGrasp,
             m_robotSequencer, &RobotSequencer::onApproachThenGrasp); // ✨ [수정] m_robotSequencer로 연결
+
+    // ✨ [이 파일 수정] ICPButton 연결
+    connect(ui->ICPButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onShowICPVisualization);
 
 
     // --- ✨ [수정] RobotSequencer <-> RealSenseWidget 브릿지 연결 ---
@@ -400,7 +403,7 @@ void MainWindow::updateRobotPoseLabel(const float* pose)
     }
 }
 
-// ✨ [수정] 자동화 버튼 슬롯 (.ui 파일에 맞춰 b 소문자로 변경)
+\
 void MainWindow::on_AutoMoveButton_clicked()
 {
     qDebug() << "[MAIN] 'AutoMoveButton' clicked. Starting full sequence.";
@@ -410,8 +413,7 @@ void MainWindow::on_AutoMoveButton_clicked()
 
     emit requestFullAutomation();
 }
-
-// ✨ [추가] 자동화 완료 슬롯
+\
 void MainWindow::onAutomationFinished()
 {
     qDebug() << "[MAIN] Full automation sequence finished.";
