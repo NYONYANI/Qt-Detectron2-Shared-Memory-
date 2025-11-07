@@ -971,7 +971,6 @@ void RealSenseWidget::onMoveToYAlignedPoseRequested()
     emit requestLiftRotatePlaceSequence(liftP_mm, graspO_deg, liftP_mm, rotatedO_deg, placeP_mm, rotatedO_deg);
 }
 
-// ✨ [수정] onCalculateHandleViewPose: 위치 계산 로직 변경
 void RealSenseWidget::onCalculateHandleViewPose()
 {
     qInfo() << "[VIEW] 'Move View' requested. Calculating Look-At Pose...";
@@ -1013,9 +1012,16 @@ void RealSenseWidget::onCalculateHandleViewPose()
     QVector3D vecGraspToHandle = handlePos3D - graspPoint;
     float dot = QVector3D::dotProduct(vecGraspToHandle, graspX_axis_ef);
 
-    const float OFF_X_BASE =0.3f; // 카메라의 X축 (좌우) 오프셋
-    const float OFF_Y = -0.05f;      // 카메라의 Y축 (상하) 오프셋
-    const float OFF_Z = -0.05f;    // 카메라의 Z축 (전후) 오프셋 (음수 = 뒤로)
+    // ✨ [수정] 위치 오프셋 정의
+    const float OFF_X_BASE = 0.3f;   // 카메라의 X축 (좌우) 오프셋 (m)
+    const float OFF_Y = -0.05f;      // 카메라의 Y축 (상하) 오프셋 (m)
+    const float OFF_Z = -0.05f;      // 카메라의 Z축 (전후) 오프셋 (m, 음수 = 뒤로)
+
+    // --- [수정] 로봇 EF 좌표계 기준 회전 오프셋 (단위: 도(degree)) ---
+    const float OFF_ROT_X = 0.0f;    // EF X축 기준 회전 오프셋 (Roll)
+    const float OFF_ROT_Y = -10.0f;  // EF Y축 기준 회전 오프셋 (Pitch: -는 카메라를 아래로 기울임)
+    const float OFF_ROT_Z = 90.0f;   // ✨ [수정] EF Z축 기준 회전 오프셋 (Yaw)
+    // -----------------------------------------------------------
 
     float DYNAMIC_OFF_X;
     if (dot > 0) {
@@ -1028,18 +1034,22 @@ void RealSenseWidget::onCalculateHandleViewPose()
 
     // --- 5. (삭제) 카메라의 파지 자세 계산 (QMatrix4x4 cameraGraspPose = ...)
 
-    // --- 6. ✨ [수정] 목표 *EF* 뷰 위치 계산 (파지 좌표계 기준 오프셋) ---
-    // m_calculatedTargetPose (파지 좌표계)를 기준으로 로컬 오프셋을 적용합니다.
-    // QMatrix4x4::translate()는 로컬 변환(post-multiplication)을 수행합니다.
+    // --- 6. ✨ [수정] 목표 *EF* 뷰 위치 계산 (파지 좌표계 기준 위치 오프셋만 적용) ---
+    // m_calculatedTargetPose (파지 좌표계)를 기준으로 로컬 위치 오프셋을 적용합니다.
     QMatrix4x4 required_EF_Pose_for_View = m_calculatedTargetPose;
-    required_EF_Pose_for_View.translate(DYNAMIC_OFF_X, OFF_Y, OFF_Z);
+
+    // 이전 단계에서 여기에 있던 회전 오프셋은 제거됨
+
+    // 위치 오프셋 적용
+    required_EF_Pose_for_View.translate(DYNAMIC_OFF_X, OFF_Y, OFF_Z); // QMatrix4x4::translate는 로컬 변환(post-multiplication)을 수행
 
     qInfo() << "[VIEW] Grasp EF Pos:     " << m_calculatedTargetPose.column(3).toVector3D();
     qInfo() << "[VIEW] Offsets (X,Y,Z):  " << DYNAMIC_OFF_X << "," << OFF_Y << "," << OFF_Z;
+    qInfo() << "[VIEW] Offsets (RotXYZ): " << OFF_ROT_X << "," << OFF_ROT_Y << "," << OFF_ROT_Z;
     qInfo() << "[VIEW] New View EF Pos:  " << required_EF_Pose_for_View.column(3).toVector3D();
 
 
-    // --- 7. ✨ [수정] 목표 *카메라* 뷰 위치 계산 ---
+    // --- 7. 목표 *카메라* 뷰 위치 계산 ---
     // 이 새로운 EF 뷰 포즈에 있을 때, 카메라는 어디에 있는지 계산합니다.
     // 이 위치(viewPos_cam)는 LookAt의 시작점이 됩니다.
     QMatrix4x4 cameraViewPose_Matrix = required_EF_Pose_for_View * m_tcpToCameraTransform;
@@ -1047,7 +1057,6 @@ void RealSenseWidget::onCalculateHandleViewPose()
 
 
     // --- 8. Z 위치 보정 (카메라가 바닥 아래로 가지 않도록) ---
-    // (이전 단계의 '7. Z 위치 보정'이 여기로 이동)
     if (viewPos_cam.z() < 0.0f)
     {
         qInfo() << "[VIEW] Original view Z-pos_cam was negative:" << viewPos_cam.z();
@@ -1056,7 +1065,6 @@ void RealSenseWidget::onCalculateHandleViewPose()
     }
 
     // --- 9. 바라볼 목표 지점(lookTarget) 계산 (베이스 좌표계 기준) ---
-    // (이전 단계의 '8. 바라볼 목표 지점'이 여기로 이동)
     const float LOOK_BELOW=0.1f;
     QVector3D lookTarget;
     QPointF graspPoint2D(graspPoint.x(), graspPoint.y());
@@ -1077,7 +1085,6 @@ void RealSenseWidget::onCalculateHandleViewPose()
     }
 
     // --- 10. 최종 *카메라* 뷰 행렬 계산 (LookAt) ---
-    // (이전 단계의 '9. 최종 *카메라* 뷰 행렬'이 여기로 이동)
     QVector3D desiredZ_cam = (lookTarget - viewPos_cam).normalized();
     QVector3D newY_cam = QVector3D::crossProduct(desiredZ_cam, graspX_axis_ef).normalized();
     QVector3D newX_cam = QVector3D::crossProduct(newY_cam, desiredZ_cam).normalized();
@@ -1088,12 +1095,15 @@ void RealSenseWidget::onCalculateHandleViewPose()
     lookAtMat_cam.setColumn(2, QVector4D(desiredZ_cam,0));
     lookAtMat_cam.setColumn(3, QVector4D(viewPos_cam,1)); // <--- 계산된 viewPos_cam (위치) 적용
 
-    // --- 11. 카메라를 이 위치에 두기 위한 *EF* 자세 계산 ---
-    // (이전 단계의 '10. 카메라를 ... *EF* 자세 계산'이 여기로 이동)
+    // --- 11. 카메라를 이 위치에 두기 위한 *EF* 자세 계산 (LookAt 적용된 EF 자세) ---
     QMatrix4x4 required_EF_Pose = lookAtMat_cam * m_tcpToCameraTransform.inverted();
 
+    // 11a. ✨ [추가] 최종 LookAt 계산 후 EF 자세에 회전 오프셋 적용
+    required_EF_Pose.rotate(OFF_ROT_X, 1.0f, 0.0f, 0.0f); // Roll
+    required_EF_Pose.rotate(OFF_ROT_Y, 0.0f, 1.0f, 0.0f); // Pitch
+    required_EF_Pose.rotate(OFF_ROT_Z, 0.0f, 0.0f, 1.0f); // Yaw
+
     // --- 12. 계산된 EF 자세를 저장하고 시각화 ---
-    // (이전 단계의 '11. 계산된 EF 자세를 저장'이 여기로 이동)
     m_pointCloudWidget->updateTargetPoses(m_calculatedTargetPose, m_pointCloudWidget->m_showTargetPose,
                                           QMatrix4x4(), false,
                                           required_EF_Pose, true); // m_viewPoseTransform에 EF 자세 저장
