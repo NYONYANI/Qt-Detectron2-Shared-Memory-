@@ -351,10 +351,9 @@ void MainWindow::on_MovepointButton_clicked()
 
 void MainWindow::on_HandleGrapsButton_clicked()
 {
-    qDebug() << "[MAIN] 'Grasp Handle' button clicked. Requesting move to random grasp pose.";
-    ui->widget->onMoveToRandomGraspPoseRequested();
+    qDebug() << "[MAIN] 'Grasp Handle' button clicked. Requesting move to *ICP* grasp pose.";
+    ui->widget->onMoveToIcpGraspPoseRequested();
 }
-
 
 void MainWindow::updateRobotStateLabel(int state)
 {
