@@ -22,6 +22,7 @@
 #include <utility> // std::swap
 #include <QRandomGenerator> // 랜덤 선택용
 #include <algorithm> // ✨ [추가] std::sort 사용
+#include <QVBoxLayout> // ✨ [추가] QDialog 레이아웃을 위해 포함
 
 // ✨ [추가] IK Check를 위해 DRFL 전역 변수 선언
 #include "DRFLEx.h"
@@ -75,6 +76,158 @@ void PointCloudWidget::drawGrid(float size, int divisions)
     glEnd();
 }
 
+QVector3D PointCloudWidget::setRawBaseFramePoints(const QVector<QVector3D>& points)
+{
+    makeCurrent(); // OpenGL 컨텍스트 활성화
+    m_rawBaseFramePoints.clear();
+    m_isRawVizMode = !points.isEmpty();
+    m_showRawCentroid = false;
+    m_showRawGraspPoint = false;
+    m_showRawGraspPose = false;
+    m_rawGraspPoint = QVector3D();
+
+    if (points.isEmpty()) {
+        doneCurrent();
+        update();
+        return QVector3D();
+    }
+
+    m_rawBaseFramePoints.reserve(points.size() * 6); // 3 pos + 3 color
+
+    // --- 1. 통계 계산 (Pass 1) ---
+
+    // 1a. 돌출도(거리) 계산을 위한 중심점(Centroid) 계산
+    QVector3D sum(0.0f, 0.0f, 0.0f);
+    for (const auto& p : points) {
+        sum += p;
+    }
+    m_rawCentroid = sum / points.size(); // 멤버 변수에 저장
+    m_showRawCentroid = true; // 그리기 플래그 설정
+
+
+    // 1b. 거리(돌출도) 및 높이(Z)의 최소/최대값 계산
+    float minDist = FLT_MAX;
+    float maxDist = -FLT_MAX;
+    float minZ = FLT_MAX;
+    float maxZ = -FLT_MAX;
+
+    QVector<float> distances(points.size());
+
+    for (int i = 0; i < points.size(); ++i) {
+        // 거리 계산
+        float dist = (points[i] - m_rawCentroid).length();
+        distances[i] = dist;
+        if (dist < minDist) minDist = dist;
+        if (dist > maxDist) maxDist = dist;
+
+        // 높이 계산
+        float z = points[i].z();
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+    }
+
+    float distRange = maxDist - minDist;
+    if (distRange < 1e-6f) distRange = 1.0f; // 0으로 나누기 방지
+    float zRange = maxZ - minZ;
+    if (zRange < 1e-6f) zRange = 1.0f; // 0으로 나누기 방지
+
+    // --- 2. "곱한 강도" 계산 및 최소/최대값 찾기 (Pass 2) ---
+    QVector<float> raw_intensities(points.size());
+    float min_raw_intensity = FLT_MAX;
+    float max_raw_intensity = -FLT_MAX;
+    int bestPointIndex = -1;
+
+    for (int i = 0; i < points.size(); ++i) {
+        // 요소 1: 근접도 (0.0=멈, 1.0=가까움)
+        float norm_dist = (distances[i] - minDist) / distRange;
+        float intensity_prox = 1.0f - norm_dist;
+
+        // 요소 2: 높이 (0.0=낮음, 1.0=높음)
+        float norm_height = (points[i].z() - minZ) / zRange;
+
+        // 조합: 두 강도를 "곱함"
+        float raw_intensity = intensity_prox * norm_height;
+
+        raw_intensities[i] = raw_intensity;
+        if (raw_intensity < min_raw_intensity) min_raw_intensity = raw_intensity;
+        if (raw_intensity > max_raw_intensity) {
+            max_raw_intensity = raw_intensity;
+            bestPointIndex = i;
+        }
+    }
+
+    // 최고점(파지점) 저장
+    if (bestPointIndex != -1) {
+        m_rawGraspPoint = points[bestPointIndex];
+        m_showRawGraspPoint = true;
+    }
+
+    float raw_intensity_range = max_raw_intensity - min_raw_intensity;
+    if (raw_intensity_range < 1e-6f) raw_intensity_range = 1.0f; // 0으로 나누기 방지
+
+    // --- 3. 색상 맵 헬퍼 함수 (Lambda) ---
+    auto getStandardColor = [](float norm_val) -> QVector3D {
+        float r = 0.0f, g = 0.0f, b = 0.0f;
+        // 0.0(Blue) -> 0.5(Green) -> 1.0(Red)
+        if (norm_val < 0.5f) {
+            float t = norm_val * 2.0f; // 0.0 -> 1.0
+            r = 0.0f; g = t; b = 1.0f - t;
+        } else {
+            float t = (norm_val - 0.5f) * 2.0f; // 0.0 -> 1.0
+            r = t; g = 1.0f - t; b = 0.0f;
+        }
+        return QVector3D(std::max(0.0f, std::min(1.0f, r)),
+                         std::max(0.0f, std::min(1.0f, g)),
+                         std::max(0.0f, std::min(1.0f, b)));
+    };
+
+    // --- 4. 정규화 및 최종 색상 적용 (Pass 3) ---
+    for (int i = 0; i < points.size(); ++i) {
+        const auto& p = points[i];
+
+        // 위치 (X, Y, Z)
+        m_rawBaseFramePoints.push_back(p.x());
+        m_rawBaseFramePoints.push_back(p.y());
+        m_rawBaseFramePoints.push_back(p.z());
+
+        // 4a. "곱한 강도"를 0~1 사이로 정규화
+        float final_intensity = (raw_intensities[i] - min_raw_intensity) / raw_intensity_range;
+
+        // 4b. 최종 강도를 (Blue -> Green -> Red) 맵에 매핑
+        QVector3D final_color = getStandardColor(final_intensity);
+
+        // 버퍼에 최종 색상 추가
+        m_rawBaseFramePoints.push_back(final_color.x());
+        m_rawBaseFramePoints.push_back(final_color.y());
+        m_rawBaseFramePoints.push_back(final_color.z());
+    }
+
+    doneCurrent();
+    update();
+
+    return m_rawGraspPoint;
+}
+
+
+void PointCloudWidget::drawRawCentroid()
+{
+    if (!m_isRawVizMode || !m_showRawCentroid) return;
+
+    GLUquadric* quadric = gluNewQuadric();
+    if(quadric) {
+        gluQuadricNormals(quadric, GLU_SMOOTH);
+
+        glColor3f(0.0f, 0.0f, 0.0f); // 검은색
+        glPushMatrix();
+        glTranslatef(m_rawCentroid.x(), m_rawCentroid.y(), m_rawCentroid.z());
+        gluSphere(quadric, 0.008, 16, 16); // 8mm
+        glPopMatrix();
+
+        gluDeleteQuadric(quadric);
+    }
+}
+// (realsensewidget.cpp 파일의 약 180행 근처)
+
 void PointCloudWidget::paintGL()
 {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -87,31 +240,80 @@ void PointCloudWidget::paintGL()
     glRotatef(m_pitch, 1.0f, 0.0f, 0.0f); glRotatef(m_yaw, 0.0f, 1.0f, 0.0f);
 
     // --- 1. 월드 및 3D 데이터 (깊이 테스트 ON) ---
-    drawGrid(2.0f, 20); drawAxes(0.2f);
-    glPushMatrix(); // 로봇+포인트클라우드 시작
-    glMultMatrixf(m_baseToTcpTransform.constData());
-    drawAxes(0.1f); drawGripper();
-    glMultMatrixf(m_tcpToCameraTransform.constData());
-    if (!m_vertexData.empty()) {
-        glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_COLOR_ARRAY);
-        glVertexPointer(3, GL_FLOAT, 6*sizeof(float), m_vertexData.data());
-        glColorPointer(3, GL_FLOAT, 6*sizeof(float), (char*)m_vertexData.data() + 3*sizeof(float));
-        glDrawArrays(GL_POINTS, 0, m_vertexData.size() / 6);
-        glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_VERTEX_ARRAY);
+    drawGrid(2.0f, 20);
+    drawAxes(0.2f); // 월드 좌표계
+
+    if (!m_isRawVizMode) {
+        drawPole();
     }
-    glPopMatrix(); // 로봇+포인트클라우드 끝
+
+    if (m_isRawVizMode) {
+        // Raw Visualization Mode: 월드 좌표계 기준으로 포인트를 그림
+        glPointSize(3.0f); // 포인트를 좀 더 크게
+        if (!m_rawBaseFramePoints.empty()) {
+            glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_COLOR_ARRAY);
+            glVertexPointer(3, GL_FLOAT, 6*sizeof(float), m_rawBaseFramePoints.data());
+            glColorPointer(3, GL_FLOAT, 6*sizeof(float), (char*)m_rawBaseFramePoints.data() + 3*sizeof(float));
+            glDrawArrays(GL_POINTS, 0, m_rawBaseFramePoints.size() / 6);
+            glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_VERTEX_ARRAY);
+        }
+        glPointSize(1.5f); // 원래 크기로 복원
+
+        drawRawCentroid();
+        drawRawGraspPoint();
+        drawRawGraspPoseAxis();
+
+        drawPCAAxes(); // ✨ [이 줄을 추가]
+
+    } else {
+        glPushMatrix(); // 로봇+포인트클라우드 시작
+        glMultMatrixf(m_baseToTcpTransform.constData()); // 1. 베이스 -> EF 이동
+
+        // 2. EF 좌표계 그리기 (10cm, 두께 2.0f - drawAxes 기본값)
+        drawAxes(0.1f);
+        drawGripper();
+
+        // 3. 카메라 좌표계 그리기
+        glPushMatrix(); // 현재 (EF) 상태 저장
+        glMultMatrixf(m_tcpToCameraTransform.constData()); // 3a. EF -> 카메라 이동
+        drawAxes(0.05f, 3.0f); // 3b. 카메라 축 그리기 (5cm, 두께 3.0f)
+        glPopMatrix(); // 3c. 다시 EF 좌표계로 복귀
+
+        // 4. 포인트 클라우드를 그리기 위해 EF -> 카메라로 다시 이동
+        glMultMatrixf(m_tcpToCameraTransform.constData());
+        if (!m_vertexData.empty()) {
+            glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_COLOR_ARRAY);
+            glVertexPointer(3, GL_FLOAT, 6*sizeof(float), m_vertexData.data());
+            glColorPointer(3, GL_FLOAT, 6*sizeof(float), (char*)m_vertexData.data() + 3*sizeof(float));
+            glDrawArrays(GL_POINTS, 0, m_vertexData.size() / 6);
+            glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_VERTEX_ARRAY);
+        }
+        glPopMatrix(); // 로봇+포인트클라우드 끝
+    }
+
 
     // --- 2. 3D 오버레이 (깊이 테스트 OFF) ---
     glDisable(GL_DEPTH_TEST); // 깊이 테스트 끄기
-    drawGraspingSpheres();
-    drawTargetPose();
-    drawTargetPose_Y_Aligned();
-    drawViewPose();
-    drawHandleCenterline(); // 핸들 중심선 그리기
-    drawRandomGraspPose(); // 랜덤 파지 좌표계 그리기
+    if (!m_isRawVizMode) { // Raw Viz 모드에서는 오버레이를 그리지 않음
+        drawGraspingSpheres();
+        drawTargetPose(); // 보라색 (컵 파지)
+        drawTargetPose_Y_Aligned();
+        drawViewPose(); // 노란색 (뷰포인트)
+        drawHandleCenterline(); // 핸들 중심선 그리기
+        drawRandomGraspPose(); // 주황색 (손잡이 파지)
+        drawDebugLookAtPoint();
+        drawDebugLine();
+    } else {
+        // (비어 있음)
+    }
     glEnable(GL_DEPTH_TEST); // 깊이 테스트 다시 켜기
 }
-
+void PointCloudWidget::setRawGraspPose(const QMatrix4x4& pose, bool show)
+{
+    m_rawGraspPose = pose;
+    m_showRawGraspPose = show;
+    update(); // 뷰 업데이트
+}
 void PointCloudWidget::initializeGL()
 {
     initializeOpenGLFunctions(); // OpenGL 함수 초기화 (QOpenGLFunctions 상속 필요)
@@ -237,7 +439,7 @@ void PointCloudWidget::drawGraspingSpheres()
 }
 void PointCloudWidget::drawGripper()
 {
-    const float z_off=0.146f, hw=0.040f, jaw_l=0.05f; glLineWidth(3.0f); glColor3f(0.0f,0.0f,0.0f);
+    const float z_off=0.140f, hw=0.040f, jaw_l=0.05f; glLineWidth(3.0f); glColor3f(0.0f,0.0f,0.0f);
     glBegin(GL_LINES);
     glVertex3f(-jaw_l/2, hw, z_off); glVertex3f(jaw_l/2, hw, z_off);
     glVertex3f(-jaw_l/2, -hw, z_off); glVertex3f(jaw_l/2, -hw, z_off);
@@ -257,9 +459,32 @@ void PointCloudWidget::drawTargetPose_Y_Aligned()
 }
 void PointCloudWidget::drawViewPose()
 {
-    if (!m_showViewPose) return; glPushMatrix(); glMultMatrixf(m_viewPoseTransform.constData());
-    glPushAttrib(GL_CURRENT_BIT); glColor3f(1.0f, 1.0f, 0.0f); drawAxes(0.1f, 4.0f); glPopAttrib();
-    glPopMatrix();
+    if (!m_showViewPose) return;
+
+    glPushMatrix();
+    // 1. 뷰 좌표계(노란색 EF)로 이동
+    glMultMatrixf(m_viewPoseTransform.constData());
+
+    // 2. 뷰 좌표계(노란색 EF) 그리기
+    glPushAttrib(GL_CURRENT_BIT);
+    glColor3f(1.0f, 1.0f, 0.0f); // Yellow
+    drawAxes(0.1f, 4.0f); // 10cm, 4.0f width
+    glPopAttrib();
+
+    // 3. ✨ [사용자 요청] 이 EF 좌표계에 부착된 "카메라" 좌표계 그리기
+    glPushMatrix(); // 현재 (노란색 EF) 상태 저장
+
+    // 4. 로컬 TCP -> 카메라 변환 적용
+    // (m_tcpToCameraTransform은 생성자에서 초기화됨)
+    glMultMatrixf(m_tcpToCameraTransform.constData());
+
+    // 5. 카메라 좌표계(작게) 그리기
+    // (5cm, 2.0f width, 기본 R,G,B 색상)
+    drawAxes(0.05f, 2.0f);
+
+    glPopMatrix(); // 다시 노란색 EF 좌표계로 복귀
+
+    glPopMatrix(); // 맨 처음 월드 좌표계로 복귀
 }
 void PointCloudWidget::updateTargetPoses(const QMatrix4x4 &pose, bool show,
                                          const QMatrix4x4 &pose_y_aligned, bool show_y_aligned,
@@ -372,7 +597,10 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
             m_pointCloudWidget, &PointCloudWidget::updateHandleCenterline);
     connect(this, &RealSenseWidget::requestRandomGraspPoseUpdate,
             m_pointCloudWidget, &PointCloudWidget::updateRandomGraspPose);
-
+    connect(this, &RealSenseWidget::requestDebugLookAtPointUpdate,
+            m_pointCloudWidget, &PointCloudWidget::updateDebugLookAtPoint);
+    connect(this, &RealSenseWidget::requestDebugLineUpdate,
+            m_pointCloudWidget, &PointCloudWidget::updateDebugLine);
     m_pointCloudWidget->setFocus();
 }
 
@@ -382,6 +610,11 @@ RealSenseWidget::~RealSenseWidget()
     if (data_control) { static_cast<char*>(data_control)[OFFSET_SHUTDOWN] = 1; }
     qDeleteAll(m_plotWidgets); m_plotWidgets.clear();
     delete m_handlePlotWidget;
+    // ICP 시각화 다이얼로그가 열려있다면 닫고 삭제
+    if (m_icpVizDialog) {
+        m_icpVizDialog->close();
+        // Qt::WA_DeleteOnClose 속성을 사용했으므로 delete m_icpVizDialog는 필요 없음
+    }
     try { m_pipeline.stop(); } catch (...) {}
 }
 
@@ -482,6 +715,7 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
     m_randomGraspPose.setToIdentity();
     m_showRandomGraspPose = false;
     m_hasPCAData = false;
+    m_selectedHandlePoints3D.clear(); // ✨ [추가] 선택된 핸들 포인트 초기화
 
     if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
         qDebug() << "[PLOT] No detection results or point cloud available.";
@@ -638,7 +872,7 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
             m_pcaPC2 = handle.pcaPC2;
             m_pcaNormal = handle.pcaNormal;
             m_hasPCAData = true;
-            // m_handleCenterline3D 및 m_handleSegmentIds는 이미 위에서 계산됨
+            m_selectedHandlePoints3D = handle.handlePoints3D; // ✨ [추가] 선택된 핸들 포인트 저장
 
             foundReachablePose = true;
             break; // 루프 종료
@@ -660,6 +894,7 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
         m_randomGraspPose.setToIdentity();
         m_showRandomGraspPose = false;
         m_handlePlotWidget->updateData({}); // 플롯 클리어
+        m_selectedHandlePoints3D.clear(); // ✨ [추가] 실패 시 포인트 클리어
     } else {
         // ✨ [수정]
         // 성공한 경우, showWindow 플래그가 true일 때만 플롯 창을 띄웁니다.
@@ -957,7 +1192,6 @@ void RealSenseWidget::onMoveToYAlignedPoseRequested()
     qDebug() << "[SEQUENCE] Lift:" << liftP_mm << "| Rotate:" << rotatedO_deg << "| Place:" << placeP_mm;
     emit requestLiftRotatePlaceSequence(liftP_mm, graspO_deg, liftP_mm, rotatedO_deg, placeP_mm, rotatedO_deg);
 }
-
 void RealSenseWidget::onCalculateHandleViewPose()
 {
     qInfo() << "[VIEW] 'Move View' requested. Calculating Look-At Pose...";
@@ -967,20 +1201,12 @@ void RealSenseWidget::onCalculateHandleViewPose()
     if (m_calculatedTargetPose.isIdentity()) { qWarning() << "[VIEW] Grasp pose invalid."; m_hasCalculatedViewPose=false; return; }
     if (m_graspingTargets.isEmpty()) { qWarning() << "[VIEW] No grasping targets."; m_hasCalculatedViewPose=false; return; }
 
-    // ✨ [수정 시작]
-    // calculateGraspingPoses()는 m_calculatedTargetPose를 '로봇에서 가장 가까운'
-    // bestTarget 기준으로 이미 설정했습니다.
-    // 뷰포인트 계산도 *동일한* bestTarget의 정보를 사용해야 합니다.
-
     // 2. m_calculatedTargetPose를 만든 'bestTarget'을 다시 찾습니다.
-    // (m_calculatedTargetPos_m은 bestTarget의 위치 + 그리퍼 오프셋입니다)
     QVector3D graspTargetPos_m = m_calculatedTargetPos_m - QVector3D(0, 0, GRIPPER_Z_OFFSET);
-
     GraspingTarget* bestTarget = nullptr;
     float minDistToCalculated = std::numeric_limits<float>::max();
 
     for (GraspingTarget& target : m_graspingTargets) {
-        // m_calculatedTargetPos_m의 기반이 된 'point'를 찾습니다.
         float dist = target.point.distanceToPoint(graspTargetPos_m);
         if (dist < minDistToCalculated) {
             minDistToCalculated = dist;
@@ -990,58 +1216,68 @@ void RealSenseWidget::onCalculateHandleViewPose()
 
     if (bestTarget == nullptr || minDistToCalculated > 0.001f) {
         qWarning() << "[VIEW] Failed to find the original bestTarget. Using m_graspingTargets[0] as fallback.";
-        // 만약 bestTarget를 찾는 데 실패하면 (로직상 거의 불가능),
-        // 이전의 버그가 있는 동작(첫 번째 타겟 사용)으로 폴백합니다.
         if(m_graspingTargets.isEmpty()) return; // 방어 코드
         bestTarget = &m_graspingTargets[0];
     } else {
         qInfo() << "[VIEW] Found matching bestTarget for view calculation.";
     }
 
-    // 3. 'bestTarget'의 정보로 뷰포인트 계산
+    // 3. 'bestTarget'의 정보 (베이스 좌표계 기준)
     QPointF bodyCenter2D = bestTarget->circleCenter;
     QPointF handleCentroid2D = bestTarget->handleCentroid;
     QVector3D graspPoint = bestTarget->point;
-    // ✨ [수정 종료]
 
-
-    // --- 4. 동적 X 오프셋 계산 로직 (이하 동일) ---
-    QVector3D graspX_axis = m_calculatedTargetPose.column(0).toVector3D().normalized();
+    // --- 4. 동적 X 오프셋 계산 로직 (EF의 X축 기준) ---
+    QVector3D graspX_axis_ef = m_calculatedTargetPose.column(0).toVector3D().normalized();
     QVector3D handlePos3D(handleCentroid2D.x(), handleCentroid2D.y(), graspPoint.z());
     QVector3D vecGraspToHandle = handlePos3D - graspPoint;
-    float dot = QVector3D::dotProduct(vecGraspToHandle, graspX_axis);
+    float dot = QVector3D::dotProduct(vecGraspToHandle, graspX_axis_ef);
 
-    const float OFF_X_BASE = 0.1f;
-    const float OFF_Y = 0.2f;
-    const float OFF_Z = 0.05f;
+    const float OFF_X_BASE =0.2f; // 카메라의 X축 (좌우) 오프셋
+    const float OFF_Y = -0.05f;      // 카메라의 Y축 (상하) 오프셋
+    const float OFF_Z = -0.05f;    // 카메라의 Z축 (전후) 오프셋 (음수 = 뒤로)
 
     float DYNAMIC_OFF_X;
     if (dot > 0) {
         DYNAMIC_OFF_X = OFF_X_BASE;
-        qInfo() << "[VIEW] Handle is on +X side (dot=" << dot << "). Setting OFF_X to +" << OFF_X_BASE;
+        qInfo() << "[VIEW] Handle is on +X_EF side (dot=" << dot << "). Setting CAM_OFF_X to +" << OFF_X_BASE;
     } else {
         DYNAMIC_OFF_X = -OFF_X_BASE;
-        qInfo() << "[VIEW] Handle is on -X side (dot=" << dot << "). Setting OFF_X to -" << OFF_X_BASE;
+        qInfo() << "[VIEW] Handle is on -X_EF side (dot=" << dot << "). Setting CAM_OFF_X to -" << OFF_X_BASE;
     }
 
-    // --- 5. 카메라 위치(viewPos) 계산 (이하 동일) ---
-    QMatrix4x4 viewMat = m_calculatedTargetPose;
-    viewMat.translate(DYNAMIC_OFF_X, 0.0f, 0.0f);
-    viewMat.translate(0.0f, OFF_Y, 0.0f);
-    viewMat.translate(0.0f, 0.0f, OFF_Z);
-    QVector3D viewPos = viewMat.column(3).toVector3D();
+    // --- 5. (삭제) 카메라의 파지 자세 계산 (QMatrix4x4 cameraGraspPose = ...)
 
-    if (viewPos.z() < 0.0f)
+    // --- 6. ✨ [수정] 목표 *EF* 뷰 위치 계산 (파지 좌표계 기준 오프셋) ---
+    // m_calculatedTargetPose (파지 좌표계)를 기준으로 로컬 오프셋을 적용합니다.
+    // QMatrix4x4::translate()는 로컬 변환(post-multiplication)을 수행합니다.
+    QMatrix4x4 required_EF_Pose_for_View = m_calculatedTargetPose;
+    required_EF_Pose_for_View.translate(DYNAMIC_OFF_X, OFF_Y, OFF_Z);
+
+    qInfo() << "[VIEW] Grasp EF Pos:     " << m_calculatedTargetPose.column(3).toVector3D();
+    qInfo() << "[VIEW] Offsets (X,Y,Z):  " << DYNAMIC_OFF_X << "," << OFF_Y << "," << OFF_Z;
+    qInfo() << "[VIEW] New View EF Pos:  " << required_EF_Pose_for_View.column(3).toVector3D();
+
+
+    // --- 7. ✨ [수정] 목표 *카메라* 뷰 위치 계산 ---
+    // 이 새로운 EF 뷰 포즈에 있을 때, 카메라는 어디에 있는지 계산합니다.
+    // 이 위치(viewPos_cam)는 LookAt의 시작점이 됩니다.
+    QMatrix4x4 cameraViewPose_Matrix = required_EF_Pose_for_View * m_tcpToCameraTransform;
+    QVector3D viewPos_cam = cameraViewPose_Matrix.column(3).toVector3D();
+
+
+    // --- 8. Z 위치 보정 (카메라가 바닥 아래로 가지 않도록) ---
+    // (이전 단계의 '7. Z 위치 보정'이 여기로 이동)
+    if (viewPos_cam.z() < 0.0f)
     {
-        qInfo() << "[VIEW] Original view Z-pos was negative:" << viewPos.z();
-        viewPos.setZ(qAbs(viewPos.z()));
-        qInfo() << "[VIEW] Mirrored view Z-pos to positive:" << viewPos.z();
+        qInfo() << "[VIEW] Original view Z-pos_cam was negative:" << viewPos_cam.z();
+        viewPos_cam.setZ(qAbs(viewPos_cam.z()));
+        qInfo() << "[VIEW] Mirrored view Z-pos_cam to positive:" << viewPos_cam.z();
     }
 
-    QVector3D origX = m_calculatedTargetPose.column(0).toVector3D().normalized();
+    // --- 9. 바라볼 목표 지점(lookTarget) 계산 (베이스 좌표계 기준) ---
+    // (이전 단계의 '8. 바라볼 목표 지점'이 여기로 이동)
     const float LOOK_BELOW=0.1f;
-
-    // --- 6. 바라볼 목표 지점(lookTarget) 계산 (이하 동일) ---
     QVector3D lookTarget;
     QPointF graspPoint2D(graspPoint.x(), graspPoint.y());
     float radius = QLineF(bodyCenter2D, graspPoint2D).length();
@@ -1051,66 +1287,124 @@ void RealSenseWidget::onCalculateHandleViewPose()
         qWarning() << "[VIEW] Radius or handle-body line is too small. Defaulting to graspPoint LookAt.";
         lookTarget = graspPoint - QVector3D(0, 0, LOOK_BELOW);
     } else {
-        // ✨ [로직 확인] 이 로직은 컵 중앙(p1)에서 손잡이(p2) 방향으로
-        // 컵 반지름(radius)만큼 떨어진 교차점을 계산합니다.
         lineBodyToHandle.setLength(radius);
         QPointF intersectionPoint2D = lineBodyToHandle.p2();
-
         float lookAtZ = graspPoint.z();
         lookTarget = QVector3D(intersectionPoint2D.x(), intersectionPoint2D.y(), lookAtZ);
-
-        qInfo() << "[VIEW] Original LookAt (GraspPt):" << graspPoint;
         qInfo() << "[VIEW] New LookAt (Intersection on Handle Side):" << lookTarget;
-
         lookTarget -= QVector3D(0, 0, LOOK_BELOW);
         qInfo() << "[VIEW] Final LookAt (Intersection - Lowered):" << lookTarget;
     }
 
-    // --- 7. 최종 뷰 행렬 계산 (이하 동일) ---
-    QVector3D desiredZ = (lookTarget - viewPos).normalized();
-    QVector3D newY = QVector3D::crossProduct(desiredZ, origX).normalized();
-    QVector3D newX = QVector3D::crossProduct(newY, desiredZ).normalized();
+    // --- 10. 최종 *카메라* 뷰 행렬 계산 (LookAt) ---
+    // (이전 단계의 '9. 최종 *카메라* 뷰 행렬'이 여기로 이동)
+    QVector3D desiredZ_cam = (lookTarget - viewPos_cam).normalized();
 
-    QMatrix4x4 lookAtMat;
-    lookAtMat.setColumn(0, QVector4D(newX,0)); lookAtMat.setColumn(1, QVector4D(newY,0));
-    lookAtMat.setColumn(2, QVector4D(desiredZ,0)); lookAtMat.setColumn(3, QVector4D(viewPos,1));
-    const float REL_RZ=90.0f; lookAtMat.rotate(REL_RZ, 0, 0, 1);
+    // 'Up' 벡터를 graspX_axis_ef 대신 월드 Z축으로 고정합니다.
+    QVector3D worldUp(0.0f, 0.0f, 1.0f);
+    // Z축과 Up 벡터가 거의 평행한 경우 (카메라가 수직으로 위나 아래를 볼 때)
+    if (qAbs(QVector3D::dotProduct(desiredZ_cam, worldUp)) > 0.99f) {
+        // 'Up' 벡터를 월드 X축으로 대신 사용합니다.
+        worldUp = QVector3D(1.0f, 0.0f, 0.0f);
+        qInfo() << "[VIEW] LookAt gimbal lock: Using World-X as 'Up'.";
+    }
 
+    // newX = Up x Z (OpenGL/Qt는 오른손 좌표계이므로 X = Y x Z 가 아닌 X = Up x Z 로 계산)
+    QVector3D newX_cam = QVector3D::crossProduct(worldUp, desiredZ_cam).normalized();
+    // newY = Z x X
+    QVector3D newY_cam = QVector3D::crossProduct(desiredZ_cam, newX_cam).normalized();
+
+    // ✨ [수정] X축(빨간색) 방향을 "아래쪽" (요청하신 반대 방향)으로 뒤집기 위해
+    // X축과 Y축을 모두 반전시킵니다.
+    newX_cam = -newX_cam;
+    newY_cam = -newY_cam;
+
+
+    QMatrix4x4 lookAtMat_cam;
+    lookAtMat_cam.setColumn(0, QVector4D(newX_cam,0));
+    lookAtMat_cam.setColumn(1, QVector4D(newY_cam,0));
+    lookAtMat_cam.setColumn(2, QVector4D(desiredZ_cam,0));
+    lookAtMat_cam.setColumn(3, QVector4D(viewPos_cam,1)); // <--- 계산된 viewPos_cam (위치) 적용
+
+    // --- 11. 카메라를 이 위치에 두기 위한 *EF* 자세 계산 ---
+    // (이전 단계의 '10. 카메라를 ... *EF* 자세 계산'이 여기로 이동)
+    QMatrix4x4 required_EF_Pose = lookAtMat_cam * m_tcpToCameraTransform.inverted();
+
+    // --- 12. 계산된 EF 자세를 저장하고 시각화 ---
+    // (이전 단계의 '11. 계산된 EF 자세를 저장'이 여기로 이동)
     m_pointCloudWidget->updateTargetPoses(m_calculatedTargetPose, m_pointCloudWidget->m_showTargetPose,
-                                          QMatrix4x4(), false, lookAtMat, true);
+                                          QMatrix4x4(), false,
+                                          required_EF_Pose, true); // m_viewPoseTransform에 EF 자세 저장
 
-    QVector3D viewOriZYX = extractEulerAngles(lookAtMat);
-    QVector3D viewPos_m = lookAtMat.column(3).toVector3D();
-    m_calculatedViewPos_mm = viewPos_m * 1000.0f;
-    m_calculatedViewMatrix = lookAtMat;
+    QVector3D viewPos_ef = required_EF_Pose.column(3).toVector3D();
+    m_calculatedViewPos_mm = viewPos_ef * 1000.0f; // mm 단위 EF 위치
+    m_calculatedViewMatrix = required_EF_Pose;     // EF 자세
     m_hasCalculatedViewPose = true;
 
-    qInfo() << "[VIEW] 1. Calc Look-At (m/ZYX deg): Pos:" << viewPos_m << "Rot:" << viewOriZYX;
-    qInfo() << "[VIEW] 2. Curr Robot (m/ZYX deg): Pos:" << m_baseToTcpTransform.column(3).toVector3D() << "Rot:" << extractEulerAngles(m_baseToTcpTransform);
+    qInfo() << "[VIEW] 1. Calc *Camera* Look-At (m): Pos:" << viewPos_cam;
+    qInfo() << "[VIEW] 2. Calc *EF* Pose (m): Pos:" << viewPos_ef;
+    qInfo() << "[VIEW] 3. Curr Robot (m): Pos:" << m_baseToTcpTransform.column(3).toVector3D();
     qInfo() << "[VIEW] Pose ready for movement (Press MovepointButton).";
     emit visionTaskComplete();
 }
-
 void RealSenseWidget::onMoveToCalculatedHandleViewPose()
 {
     qInfo() << "[VIEW] 'MovepointButton' pressed.";
-    if (!m_hasCalculatedViewPose) { qWarning() << "[VIEW] Move failed: No view pose calculated."; return; }
+    if (!m_hasCalculatedViewPose) {
+        qWarning() << "[VIEW] Move failed: No view pose calculated. (Press 'Calc View Point' first)";
+        return;
+    }
 
-    QMatrix3x3 rotMat = m_calculatedViewMatrix.toGenericMatrix<3,3>();
-    QVector3D viewOriZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
-    float cmdA = viewOriZYZ.x() + 180.0f; float cmdB = -viewOriZYZ.y(); float cmdC = viewOriZYZ.z() + 180.0f;
-    while(cmdA>180.0f) cmdA-=360.0f; while(cmdA<=-180.0f) cmdA+=360.0f;
-    while(cmdB>180.0f) cmdB-=360.0f; while(cmdB<=-180.0f) cmdB+=360.0f;
-    while(cmdC>180.0f) cmdC-=360.0f; while(cmdC<=-180.0f) cmdC+=360.0f;
-    QVector3D robotCmdOri(cmdA, cmdB, cmdC);
+    // --- 1. Get Final Target Pose (already calculated) ---
+    // m_calculatedViewMatrix는 목표 EF 자세입니다.
+    QMatrix3x3 finalRotMat = m_calculatedViewMatrix.toGenericMatrix<3,3>();
+    QVector3D finalOriZYZ = rotationMatrixToEulerAngles(finalRotMat, "ZYZ");
+    float f_cmdA = finalOriZYZ.x() + 180.0f; float f_cmdB = -finalOriZYZ.y(); float f_cmdC = finalOriZYZ.z() + 180.0f;
+    while(f_cmdA>180.0f) f_cmdA-=360.0f; while(f_cmdA<=-180.0f) f_cmdA+=360.0f;
+    while(f_cmdB>180.0f) f_cmdB-=360.0f; while(f_cmdB<=-180.0f) f_cmdB+=360.0f;
+    while(f_cmdC>180.0f) f_cmdC-=360.0f; while(f_cmdC<=-180.0f) f_cmdC+=360.0f;
 
-    qInfo() << "[VIEW] Moving to calculated pose:";
-    qInfo() << "  - Pos (mm):" << m_calculatedViewPos_mm;
-    qInfo() << "  - Calc Rot (ZYZ deg):" << viewOriZYZ;
-    qInfo() << "  - Cmd Rot (A, B, C deg):" << robotCmdOri;
-    emit requestRobotMove(m_calculatedViewPos_mm, robotCmdOri);
+    QVector3D finalCmdOri_deg(f_cmdA, f_cmdB, f_cmdC);
+    // m_calculatedViewPos_mm는 목표 EF 위치(mm)입니다.
+    QVector3D finalPos_mm = m_calculatedViewPos_mm;
+
+
+    // --- 2. Get Current Pose (from last update) ---
+    // m_baseToTcpTransform은 onRobotTransformUpdated에 의해 계속 업데이트됩니다.
+    QVector3D currentPos_m = m_baseToTcpTransform.column(3).toVector3D();
+    QVector3D currentPos_mm = currentPos_m * 1000.0f;
+
+    QMatrix3x3 currentRotMat = m_baseToTcpTransform.toGenericMatrix<3,3>();
+    QVector3D currentOriZYZ = rotationMatrixToEulerAngles(currentRotMat, "ZYZ");
+    float c_cmdA = currentOriZYZ.x() + 180.0f; float c_cmdB = -currentOriZYZ.y(); float c_cmdC = currentOriZYZ.z() + 180.0f;
+    while(c_cmdA>180.0f) c_cmdA-=360.0f; while(c_cmdA<=-180.0f) c_cmdA+=360.0f;
+    while(c_cmdB>180.0f) c_cmdB-=360.0f; while(c_cmdB<=-180.0f) c_cmdB+=360.0f;
+    while(c_cmdC>180.0f) c_cmdC-=360.0f; while(c_cmdC<=-180.0f) c_cmdC+=360.0f;
+
+    QVector3D currentCmdOri_deg(c_cmdA, c_cmdB, c_cmdC);
+
+
+    // --- 3. Calculate Intermediate Pose (Base X+20cm) ---
+    // 현재 위치에서 베이스 X축으로 20cm(200mm) 앞으로 이동
+    QVector3D intermediatePos_mm = currentPos_mm + QVector3D(200.0f, 0.0f, 0.0f);
+    // 방향은 현재 방향을 그대로 유지
+    QVector3D intermediateCmdOri_deg = currentCmdOri_deg;
+
+
+    // --- 4. Emit Move Commands (Queued) ---
+    // requestRobotMove는 RobotController의 moveToPositionAndWait(블로킹)에 연결됩니다.
+    // 따라서 로봇 스레드는 1번 명령이 완료될 때까지 대기한 후, 2번 명령을 실행합니다.
+
+    qInfo() << "[VIEW] Queuing 2-step move:";
+
+    qInfo() << "  - 1. (Intermediate) Pos (mm):" << intermediatePos_mm;
+    qInfo() << "  - 1. (Intermediate) Ori (deg):" << intermediateCmdOri_deg;
+    emit requestRobotMove(intermediatePos_mm, intermediateCmdOri_deg);
+
+    qInfo() << "  - 2. (Final) Pos (mm):" << finalPos_mm;
+    qInfo() << "  - 2. (Final) Ori (deg):" << finalCmdOri_deg;
+    emit requestRobotMove(finalPos_mm, finalCmdOri_deg);
 }
-
 
 QVector3D RealSenseWidget::extractEulerAngles(const QMatrix4x4& matrix)
 {
@@ -1208,15 +1502,20 @@ void RealSenseWidget::captureAndProcess(bool isAutoSequence)
 
     sendImageToPython(m_latestFrame);
     m_isProcessing = true;
+    m_processingTimer.start(); // <-- ✨ [추가] 타임아웃 타이머 시작
     m_resultTimer->start(100);
 }
+
 void RealSenseWidget::checkProcessingResult()
 {
     if (!m_isProcessing) { m_resultTimer->stop(); return; }
     QJsonArray results = receiveResultsFromPython();
+
     if (!results.isEmpty()) {
         qDebug() << "[INFO] Received" << results.size() << "results.";
-        m_detectionResults = results; m_isProcessing = false; m_resultTimer->stop();
+        m_detectionResults = results;
+        m_isProcessing = false; // <-- 정상적으로 플래그 리셋
+        m_resultTimer->stop();  // <-- 정상적으로 타이머 중지
 
         // ✨ [수정] 자동 시퀀스의 일부로 캡처된 경우
         if (m_isAutoSequenceCapture) {
@@ -1230,6 +1529,19 @@ void RealSenseWidget::checkProcessingResult()
 
         // 플래그 초기화
         m_isAutoSequenceCapture = false;
+    } else {
+        // ✨ [추가] 타임아웃 체크 로직
+        // 결과가 비어있다면 (Python이 아직 응답 안함)
+        // 타임아웃을 확인합니다. (예: 5000ms = 5초)
+        if (m_processingTimer.elapsed() > 5000) {
+            qWarning() << "[WARN] Python detection timed out after 5 seconds.";
+            qWarning() << "[WARN] Forcibly resetting processing flag. Python server may need restart.";
+
+            m_isProcessing = false; // <-- ✨ [추가] 강제로 플래그 리셋
+            m_resultTimer->stop();  // <-- ✨ [추가] 결과 확인 타이머 중지
+            m_isAutoSequenceCapture = false; // <-- ✨ [추가] 시퀀스 플래그도 리셋
+        }
+        // 타임아웃이 아니라면, 타이머는 계속 실행되며 다음 100ms 후에 다시 체크합니다.
     }
 }
 void RealSenseWidget::onDenoisingToggled()
@@ -1332,7 +1644,174 @@ QJsonArray RealSenseWidget::receiveResultsFromPython() {
     return results;
 }
 
-// ✨ [수정] onMoveToRandomGraspPoseRequested: 이동 시그널 전송 전에 IK 체크 로직 추가
+void RealSenseWidget::onShowICPVisualization()
+{
+    qInfo() << "[ICP] 'ICPButton' clicked. Finding closest handle from *current* capture...";
+
+    if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
+        qWarning() << "[ICP] No detection results or point cloud available. Press 'Capture' first.";
+        return;
+    }
+
+    const rs2::points& currentPoints = m_pointCloudWidget->m_points;
+    const rs2::vertex* vertices = currentPoints.get_vertices();
+    const int width = IMAGE_WIDTH; const int height = IMAGE_HEIGHT;
+    QMatrix4x4 camToBaseTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
+
+    QList<HandleAnalysisResult> allHandleResults;
+    int cupIdxCounter = 0;
+
+    for (const QJsonValue &cupValue : m_detectionResults) {
+        cupIdxCounter++;
+        QJsonObject cupResult = cupValue.toObject(); QString part = "handle";
+        if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
+
+        HandleAnalysisResult currentResult;
+        currentResult.cupIndex = cupIdxCounter;
+        QVector<QVector3D> currentHandlePoints3D;
+
+        QJsonObject partData = cupResult[part].toObject();
+        QJsonArray rle = partData["mask_rle"].toArray(); QJsonArray shape = partData["mask_shape"].toArray(); QJsonArray offset = partData["offset"].toArray();
+        int H = shape[0].toInt(); int W = shape[1].toInt(); int ox = offset[0].toInt(); int oy = offset[1].toInt();
+        QVector<uchar> mask_buffer(W * H, 0); int idx = 0; uchar val = 0;
+        for(const QJsonValue& run_val : rle) { int len = run_val.toInt(); if(idx + len > W * H) len = W * H - idx; if(len > 0) memset(mask_buffer.data() + idx, val, len); idx += len; val = (val == 0 ? 255 : 0); if(idx >= W * H) break; }
+
+        Eigen::Vector3f mean = Eigen::Vector3f::Zero();
+        int pointCount = 0;
+
+        for(int y = 0; y < H; ++y) {
+            for(int x = 0; x < W; ++x) {
+                if(mask_buffer[y * W + x] == 255) {
+                    int u = ox + x; int v = oy + y;
+                    if (u < 0 || u >= width || v < 0 || v >= height) continue;
+                    int p_idx = m_uv_to_point_idx[v * width + u];
+                    if (p_idx != -1) {
+                        const rs2::vertex& p = vertices[p_idx];
+                        if (p.z > 0) {
+                            QVector3D p_cam(p.x, p.y, p.z);
+                            QVector3D p_base = camToBaseTransform * p_cam;
+                            if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) continue;
+
+                            currentHandlePoints3D.append(p_base);
+                            mean += Eigen::Vector3f(p_base.x(), p_base.y(), p_base.z());
+                            pointCount++;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (pointCount > 0) {
+            mean /= pointCount;
+            currentResult.handlePoints3D = currentHandlePoints3D;
+            currentResult.distanceToRobot = mean.norm();
+            currentResult.isValid = true;
+            allHandleResults.append(currentResult);
+        }
+    }
+
+    if (allHandleResults.isEmpty()) {
+        qWarning() << "[ICP] No valid 'handle' 3D points found in the current capture.";
+        return;
+    }
+
+    std::sort(allHandleResults.begin(), allHandleResults.end(), [](const HandleAnalysisResult& a, const HandleAnalysisResult& b) {
+        return a.distanceToRobot < b.distanceToRobot;
+    });
+
+    QVector<QVector3D> focusedHandlePoints = allHandleResults[0].handlePoints3D;
+    qInfo() << "[ICP] Found " << allHandleResults.size() << " handles. Focusing on closest one (Cup "
+            << allHandleResults[0].cupIndex << ", " << focusedHandlePoints.size() << " points).";
+
+
+    if (m_icpVizDialog == nullptr) {
+        m_icpVizDialog = new QDialog(this);
+        m_icpVizDialog->setWindowTitle("Focused Handle Point Cloud (Base Frame)");
+        m_icpVizDialog->setAttribute(Qt::WA_DeleteOnClose);
+        m_icpVizDialog->resize(640, 480);
+        m_icpPointCloudWidget = new PointCloudWidget(m_icpVizDialog);
+        m_icpPointCloudWidget->setTransforms(QMatrix4x4(), QMatrix4x4());
+        QVBoxLayout* layout = new QVBoxLayout(m_icpVizDialog);
+        layout->addWidget(m_icpPointCloudWidget);
+        m_icpVizDialog->setLayout(layout);
+
+        connect(m_icpVizDialog, &QDialog::finished, [this](){
+            m_icpVizDialog = nullptr;
+            m_icpPointCloudWidget = nullptr;
+            qDebug() << "[ICP] Visualization dialog closed.";
+        });
+
+        connect(this, &RealSenseWidget::requestRawGraspPoseUpdate,
+                m_icpPointCloudWidget, &PointCloudWidget::setRawGraspPose);
+    }
+
+    // --- 3. PCA 실행 및 파지 좌표계 계산 ---
+
+    Eigen::Vector3f mean_eigen, pc1, pc2, normal_eigen;
+    QVector<QPointF> projectedPoints;
+    bool pca_ok = calculatePCA(focusedHandlePoints, projectedPoints, mean_eigen, pc1, pc2, normal_eigen);
+
+    QVector3D graspPoint = m_icpPointCloudWidget->setRawBaseFramePoints(focusedHandlePoints);
+    QVector3D centroid(mean_eigen.x(), mean_eigen.y(), mean_eigen.z()); // PCA 평균(무게중심)
+
+    if (!graspPoint.isNull() && pca_ok)
+    {
+        // 1. Z축 계산 (파지점 -> 무게중심) [높은 우선순위]
+        QVector3D Z_axis = (centroid - graspPoint).normalized();
+
+        // 2. Y축 "힌트" (PCA의 '짧은 방향' Normal) [낮은 우선순위]
+        QVector3D Y_axis_hint = QVector3D(normal_eigen.x(), normal_eigen.y(), normal_eigen.z()).normalized();
+
+        // 짐벌락 체크: Y_hint가 Z축과 너무 가까우면 (거의 평행하면)
+        if (qAbs(QVector3D::dotProduct(Y_axis_hint, Z_axis)) > 0.95f) {
+            qWarning() << "[ICP] Gimbal lock: PCA Normal is parallel to Grasp Axis. Using World Up as fallback 'Hint'.";
+            // Y_hint를 월드 Z축(Up)으로 대신 사용
+            Y_axis_hint = QVector3D(0.0f, 0.0f, 1.0f);
+        }
+
+        // 3. X축 계산 (Y_hint와 Z축 모두에 수직인 벡터)
+        QVector3D X_axis = QVector3D::crossProduct(Y_axis_hint, Z_axis).normalized();
+
+        // 4. Y축 계산 (Z축과 X축 모두에 수직인 벡터)
+        QVector3D Y_axis = QVector3D::crossProduct(Z_axis, X_axis).normalized();
+
+        // 5. 실제 EF 위치 계산 (파지점에서 Z축 방향으로 뒤로 물러남)
+        QVector3D ef_position = graspPoint - Z_axis * GRIPPER_Z_OFFSET;
+
+        // 6. 최종 4x4 행렬 생성 (위치 = ef_position)
+        QMatrix4x4 graspPose;
+        graspPose.setColumn(0, QVector4D(X_axis, 0.0f));
+        graspPose.setColumn(1, QVector4D(Y_axis, 0.0f));
+        graspPose.setColumn(2, QVector4D(Z_axis, 0.0f));
+        graspPose.setColumn(3, QVector4D(ef_position, 1.0f));
+
+        emit requestRawGraspPoseUpdate(graspPose, true);
+
+        m_icpGraspPose = graspPose; // ✨ [수정] 멤버 변수에 계산된 좌표계 저장
+        m_showIcpGraspPose = true; // ✨ [수정] 플래그 설정
+
+        qInfo() << "[ICP] Grasp pose calculated and sent to visualizer.";
+        qInfo() << "[ICP] Grasp Point (Magenta): " << graspPoint;
+        qInfo() << "[ICP] EF Position (Axis Origin): " << ef_position;
+
+    } else {
+        emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
+
+        m_icpGraspPose.setToIdentity(); // ✨ [수정] 실패 시 좌표계 리셋
+        m_showIcpGraspPose = false; // ✨ [수정] 플래그 리셋
+
+        if(!pca_ok) qWarning() << "[ICP] PCA calculation failed.";
+        if(graspPoint.isNull()) qWarning() << "[ICP] Grasp point calculation failed (no points?).";
+    }
+
+
+    // --- 4. 다이얼로그 표시 ---
+    m_icpVizDialog->show();
+    m_icpVizDialog->raise();
+    m_icpVizDialog->activateWindow();
+
+    qInfo() << "[ICP] Displayed" << focusedHandlePoints.size() << " points in new window.";
+}
 
 void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 {
@@ -1398,4 +1877,494 @@ void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 
     // 5. 시그널 발생 (이제 IK 체크가 완료된 상태)
     emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg);
+}
+void PointCloudWidget::drawRawGraspPoint()
+{
+    if (!m_isRawVizMode || !m_showRawGraspPoint) return;
+
+    GLUquadric* quadric = gluNewQuadric();
+    if(quadric) {
+        gluQuadricNormals(quadric, GLU_SMOOTH);
+
+        glColor3f(1.0f, 0.0f, 1.0f); // 자홍색(Magenta/Pink)
+        glPushMatrix();
+        glTranslatef(m_rawGraspPoint.x(), m_rawGraspPoint.y(), m_rawGraspPoint.z());
+        gluSphere(quadric, 0.008, 16, 16); // 8mm radius
+        glPopMatrix();
+
+        gluDeleteQuadric(quadric);
+    }
+}
+void PointCloudWidget::drawRawGraspPoseAxis()
+{
+    if (!m_isRawVizMode || !m_showRawGraspPose) return;
+
+    glPushMatrix();
+
+    // m_rawGraspPose는 이제 (회전 + EF의 실제 위치)를 모두 포함합니다.
+    // glTranslate를 따로 호출할 필요 없이, 행렬 전체를 적용합니다.
+    glMultMatrixf(m_rawGraspPose.constData());
+
+    // EF 위치에서 5cm 크기로 좌표축을 그립니다.
+    drawAxes(0.05f, 3.0f);
+
+    glPopMatrix();
+}
+void RealSenseWidget::onMoveToIcpGraspPoseRequested()
+{
+    qInfo() << "[GRASP ICP] 'Grasp Handle' (ICP Pose) move requested.";
+
+    if (!m_showIcpGraspPose || m_icpGraspPose.isIdentity()) {
+        qWarning() << "[GRASP ICP] Move failed: No ICP grasp pose calculated. Press 'ICP' button first.";
+        return;
+    }
+
+    // 1. 최종 파지 위치(m) 및 방향(deg) 계산
+    QVector3D graspPos_m = m_icpGraspPose.column(3).toVector3D();
+    QMatrix3x3 rotMat = m_icpGraspPose.toGenericMatrix<3,3>();
+
+    QVector3D graspOriZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
+    float cmdA = graspOriZYZ.x() + 180.0f;
+    float cmdB = -graspOriZYZ.y();
+    float cmdC = graspOriZYZ.z() + 180.0f;
+    while(cmdA > 180.0f) cmdA -= 360.0f; while(cmdA <= -180.0f) cmdA += 360.0f;
+    while(cmdB > 180.0f) cmdB -= 360.0f; while(cmdB <= -180.0f) cmdB += 360.0f;
+    while(cmdC > 180.0f) cmdC -= 360.0f; while(cmdC <= -180.0f) cmdC += 360.0f;
+    QVector3D robotCmdOri_deg(cmdA, cmdB, cmdC);
+
+    // 2. 접근(Approach) 위치 계산 (5cm "뒤로" - Z축 기준)
+    QVector3D ef_z_axis = m_icpGraspPose.column(2).toVector3D().normalized();
+    float approach_distance_m = 0.05f; // 5cm
+
+    QVector3D approachPos_m = graspPos_m - (ef_z_axis * approach_distance_m);
+
+
+    // 3. mm 단위로 변환
+    QVector3D robotGraspPos_mm = graspPos_m * 1000.0f;
+    QVector3D robotApproachPos_mm = approachPos_m * 1000.0f;
+
+
+    // --- 4. 이동 요청 전 IK 체크 수행 ---
+    qDebug() << "[GRASP ICP] Checking reachability before emitting move request...";
+
+    // (A) 최종 파지 자세 체크
+    if (!checkPoseReachable(robotGraspPos_mm, robotCmdOri_deg)) {
+        qWarning() << "[GRASP ICP] ❌ Final grasp pose is UNREACHABLE. Move Canceled.";
+        qWarning() << "  - Pos(mm):" << robotGraspPos_mm << "Ori(deg):" << robotCmdOri_deg;
+        return;
+    }
+
+    // (B) 접근 자세 체크
+    if (!checkPoseReachable(robotApproachPos_mm, robotCmdOri_deg)) {
+        qWarning() << "[GRASP ICP] ❌ Approach pose is UNREACHABLE. Move Canceled.";
+        qWarning() << "  - Pos(mm):" << robotApproachPos_mm << "Ori(deg):" << robotCmdOri_deg;
+        return;
+    }
+
+    qInfo() << "[GRASP ICP] ✅ Both poses are reachable. Emitting move request.";
+    // --- [추가] 종료 ---
+
+
+    qInfo() << "[GRASP ICP] Requesting Approach-Then-Grasp Sequence:";
+    qInfo() << "  - 1. Approach Pos (mm):" << robotApproachPos_mm;
+    qInfo() << "  - 2. Final Pos (mm):"    << robotGraspPos_mm;
+    qInfo() << "  - Cmd Rot (A, B, C deg):" << robotCmdOri_deg;
+
+    // 5. 시그널 발생 (이제 IK 체크가 완료된 상태)
+    emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg);
+}
+void PointCloudWidget::drawPole()
+{
+    GLUquadric* quadric = gluNewQuadric();
+    if(quadric) {
+        gluQuadricNormals(quadric, GLU_SMOOTH);
+
+        // --- 봉 매개변수 (cm -> m 변환) ---
+        const float pole_x = 0.48f;
+        const float pole_z = 0.34f;
+        const float pole_len = 0.15f;
+        const float pole_y_center = -0.275f;
+        const float pole_y_start = pole_y_center - (pole_len / 2.0f); // Y = -0.35
+        // const float pole_y_end = pole_y_center + (pole_len / 2.0f); // (사용 안 됨)
+        const float pole_radius = 0.003f; // 1cm (메인 봉)
+
+        // --- 1. 메인 수평 봉 (Y축 평행) ---
+        glColor3f(0.3f, 0.3f, 0.3f); // 어두운 회색
+        glPushMatrix();
+        glTranslatef(pole_x, pole_y_start, pole_z);
+
+        // ✨ [수정] 90.0f -> -90.0f 로 변경하여 봉 방향을 반대로 (-Y 방향)
+        glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
+
+        gluCylinder(quadric, pole_radius, pole_radius, pole_len, 16, 16);
+        glPopMatrix();
+
+        // --- 2. 지지대 매개변수 ---
+        glColor3f(0.2f, 0.2f, 0.2f); // 더 어두운 회색
+
+        // --- 3. 사각형 판 지지대 (시작 지점) ---
+        const float plate_width = 0.30f; // 가로 30cm
+        const float plate_height = 0.50f; // 높이 50cm
+        const float plate_half_width = plate_width / 2.0f; // 0.15
+
+        // Z=0 (바닥)에서 시작해서 plate_height (50cm) 만큼 위로
+        const float new_bottom_z = 0.0f;
+        const float new_top_z = new_bottom_z + plate_height; // 0.50
+
+        // 판의 4개 꼭짓점 계산
+        // (X-Z 평면에 위치하며, Y좌표는 pole_y_start로 고정)
+        QVector3D p1(pole_x - plate_half_width, pole_y_start, new_top_z); // Top-Left (Z=0.50)
+        QVector3D p2(pole_x + plate_half_width, pole_y_start, new_top_z); // Top-Right (Z=0.50)
+        QVector3D p3(pole_x + plate_half_width, pole_y_start, new_bottom_z); // Bottom-Right (Z=0.0)
+        QVector3D p4(pole_x - plate_half_width, pole_y_start, new_bottom_z); // Bottom-Left (Z=0.0)
+
+        // 사각형 판 그리기
+        glBegin(GL_QUADS);
+        // 앞면
+        glVertex3f(p1.x(), p1.y(), p1.z());
+        glVertex3f(p2.x(), p2.y(), p2.z());
+        glVertex3f(p3.x(), p3.y(), p3.z());
+        glVertex3f(p4.x(), p4.y(), p4.z());
+        // 뒷면 (양쪽에서 보이도록)
+        glVertex3f(p4.x(), p4.y(), p4.z());
+        glVertex3f(p3.x(), p3.y(), p3.z());
+        glVertex3f(p2.x(), p2.y(), p2.z());
+        glVertex3f(p1.x(), p1.y(), p1.z());
+        glEnd();
+
+        gluDeleteQuadric(quadric);
+    }
+}
+// [realsensewidget.cpp 파일 맨 끝에 이 함수를 통째로 추가]
+
+// (realsensewidget.cpp 파일의 onShowHorizontalGraspVisualization 함수)
+
+void RealSenseWidget::onShowHorizontalGraspVisualization()
+{
+    qInfo() << "[ICP-H] 'HorizonGripButton' clicked. Finding closest handle (Side Grip, Y=PC2)...";
+
+    if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
+        qWarning() << "[ICP-H] No detection results or point cloud available. Press 'Capture' first.";
+        return;
+    }
+
+    const rs2::points& currentPoints = m_pointCloudWidget->m_points;
+    const rs2::vertex* vertices = currentPoints.get_vertices();
+    const int width = IMAGE_WIDTH; const int height = IMAGE_HEIGHT;
+    QMatrix4x4 camToBaseTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
+
+    QList<HandleAnalysisResult> allHandleResults;
+    int cupIdxCounter = 0;
+
+    // ... (1. 포인트 클라우드 추출 및 정렬 로직 - 변경 없음) ...
+    for (const QJsonValue &cupValue : m_detectionResults) {
+        cupIdxCounter++;
+        QJsonObject cupResult = cupValue.toObject(); QString part = "handle";
+        if (!cupResult.contains(part) || !cupResult[part].isObject()) continue;
+
+        HandleAnalysisResult currentResult;
+        currentResult.cupIndex = cupIdxCounter;
+        QVector<QVector3D> currentHandlePoints3D;
+
+        QJsonObject partData = cupResult[part].toObject();
+        QJsonArray rle = partData["mask_rle"].toArray(); QJsonArray shape = partData["mask_shape"].toArray(); QJsonArray offset = partData["offset"].toArray();
+        int H = shape[0].toInt(); int W = shape[1].toInt(); int ox = offset[0].toInt(); int oy = offset[1].toInt();
+        QVector<uchar> mask_buffer(W * H, 0); int idx = 0; uchar val = 0;
+        for(const QJsonValue& run_val : rle) { int len = run_val.toInt(); if(idx + len > W * H) len = W * H - idx; if(len > 0) memset(mask_buffer.data() + idx, val, len); idx += len; val = (val == 0 ? 255 : 0); if(idx >= W * H) break; }
+
+        Eigen::Vector3f mean = Eigen::Vector3f::Zero();
+        int pointCount = 0;
+
+        for(int y = 0; y < H; ++y) {
+            for(int x = 0; x < W; ++x) {
+                if(mask_buffer[y * W + x] == 255) {
+                    int u = ox + x; int v = oy + y;
+                    if (u < 0 || u >= width || v < 0 || v >= height) continue;
+                    int p_idx = m_uv_to_point_idx[v * width + u];
+                    if (p_idx != -1) {
+                        const rs2::vertex& p = vertices[p_idx];
+                        if (p.z > 0) {
+                            QVector3D p_cam(p.x, p.y, p.z);
+                            QVector3D p_base = camToBaseTransform * p_cam;
+                            if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) continue;
+
+                            currentHandlePoints3D.append(p_base);
+                            mean += Eigen::Vector3f(p_base.x(), p_base.y(), p_base.z());
+                            pointCount++;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (pointCount > 0) {
+            mean /= pointCount;
+            currentResult.handlePoints3D = currentHandlePoints3D;
+            currentResult.distanceToRobot = mean.norm();
+            currentResult.isValid = true;
+            allHandleResults.append(currentResult);
+        }
+    }
+
+    if (allHandleResults.isEmpty()) {
+        qWarning() << "[ICP-H] No valid 'handle' 3D points found in the current capture.";
+        return;
+    }
+
+    std::sort(allHandleResults.begin(), allHandleResults.end(), [](const HandleAnalysisResult& a, const HandleAnalysisResult& b) {
+        return a.distanceToRobot < b.distanceToRobot;
+    });
+
+    QVector<QVector3D> focusedHandlePoints = allHandleResults[0].handlePoints3D;
+    qInfo() << "[ICP-H] Found " << allHandleResults.size() << " handles. Focusing on closest one (Cup "
+            << allHandleResults[0].cupIndex << ", " << focusedHandlePoints.size() << " points).";
+
+
+    // ... (2. 다이얼로그 생성 로직 - 변경 없음) ...
+    if (m_icpVizDialog == nullptr) {
+        m_icpVizDialog = new QDialog(this);
+        m_icpVizDialog->setWindowTitle("Focused Handle Point Cloud (Base Frame)");
+        m_icpVizDialog->setAttribute(Qt::WA_DeleteOnClose);
+        m_icpVizDialog->resize(640, 480);
+        m_icpPointCloudWidget = new PointCloudWidget(m_icpVizDialog);
+        m_icpPointCloudWidget->setTransforms(QMatrix4x4(), QMatrix4x4());
+        QVBoxLayout* layout = new QVBoxLayout(m_icpVizDialog);
+        layout->addWidget(m_icpPointCloudWidget);
+        m_icpVizDialog->setLayout(layout);
+
+        connect(m_icpVizDialog, &QDialog::finished, [this](){
+            m_icpVizDialog = nullptr;
+            m_icpPointCloudWidget = nullptr;
+            qDebug() << "[ICP-H] Visualization dialog closed.";
+        });
+
+        connect(this, &RealSenseWidget::requestRawGraspPoseUpdate,
+                m_icpPointCloudWidget, &PointCloudWidget::setRawGraspPose);
+        connect(this, &RealSenseWidget::requestPCAAxesUpdate,
+                m_icpPointCloudWidget, &PointCloudWidget::setPCAAxes);
+    }
+
+    // --- 3. PCA 실행 및 파지 좌표계 계산 ---
+
+    Eigen::Vector3f mean_eigen, pc1_eigen, pc2_eigen, normal_eigen;
+    QVector<QPointF> projectedPoints;
+    bool pca_ok = calculatePCA(focusedHandlePoints, projectedPoints, mean_eigen, pc1_eigen, pc2_eigen, normal_eigen);
+
+    QVector3D graspPoint = m_icpPointCloudWidget->setRawBaseFramePoints(focusedHandlePoints);
+    QVector3D centroid(mean_eigen.x(), mean_eigen.y(), mean_eigen.z());
+
+    if (!graspPoint.isNull() && pca_ok)
+    {
+        // --- [*** 로직 변경 ***] ---
+        // 1. Z축 = PCA Normal (표면 법선, 접근 방향)
+        QVector3D Z_axis = QVector3D(normal_eigen.x(), normal_eigen.y(), normal_eigen.z()).normalized();
+
+        // 2. Y축 = PCA PC2 (손잡이의 *짧은* 축, 그리퍼 좌우 방향)
+        QVector3D Y_axis = QVector3D(pc2_eigen.x(), pc2_eigen.y(), pc2_eigen.z()).normalized();
+
+        // 3. Z축 방향 보정: Z축이 (파지점->무게중심)을 향하도록 합니다.
+        if (QVector3D::dotProduct(Z_axis, centroid - graspPoint) < 0.0f) {
+            qInfo() << "[ICP-H] Flipping Z-axis (Normal) to point towards centroid.";
+            Z_axis = -Z_axis;
+        }
+
+        // 4. X축 계산: (X = Y x Z)
+        QVector3D X_axis = QVector3D::crossProduct(Y_axis, Z_axis).normalized();
+        // --- [*** 로직 변경 끝 ***] ---
+
+        // 5. 실제 EF 위치 계산 (파지점에서 Z축 방향으로 뒤로 물러남)
+        QVector3D ef_position = graspPoint - Z_axis * GRIPPER_Z_OFFSET;
+
+        // 6. 최종 4x4 행렬 생성 (위치 = ef_position)
+        QMatrix4x4 graspPose;
+        graspPose.setColumn(0, QVector4D(X_axis, 0.0f));
+        graspPose.setColumn(1, QVector4D(Y_axis, 0.0f));
+        graspPose.setColumn(2, QVector4D(Z_axis, 0.0f));
+        graspPose.setColumn(3, QVector4D(ef_position, 1.0f));
+
+        emit requestRawGraspPoseUpdate(graspPose, true);
+
+        emit requestPCAAxesUpdate(centroid,
+                                  QVector3D(pc1_eigen.x(), pc1_eigen.y(), pc1_eigen.z()),
+                                  QVector3D(pc2_eigen.x(), pc2_eigen.y(), pc2_eigen.z()),
+                                  QVector3D(normal_eigen.x(), normal_eigen.y(), normal_eigen.z()),
+                                  true);
+
+        m_icpGraspPose = graspPose;
+        m_showIcpGraspPose = true;
+
+        qInfo() << "[ICP-H] Side-Grasp (Y=PC2) pose calculated and sent to visualizer.";
+        qInfo() << "[ICP-H] Grasp Point (Magenta): " << graspPoint;
+        qInfo() << "[ICP-H] EF Position (Axis Origin): " << ef_position;
+
+    } else {
+        emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
+        emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false);
+        m_icpGraspPose.setToIdentity();
+        m_showIcpGraspPose = false;
+
+        if(!pca_ok) qWarning() << "[ICP-H] PCA calculation failed.";
+        if(graspPoint.isNull()) qWarning() << "[ICP-H] Grasp point calculation failed (no points?).";
+    }
+
+    // --- 4. 다이얼로그 표시 ---
+    m_icpVizDialog->show();
+    m_icpVizDialog->raise();
+    m_icpVizDialog->activateWindow();
+
+    qInfo() << "[ICP-H] Displayed" << focusedHandlePoints.size() << " points in new window.";
+}
+void RealSenseWidget::onHangCupSequenceRequested()
+{
+    qInfo() << "[HANG] 'Hang Cup' sequence requested.";
+
+    // 1. ICP 버튼으로 계산된 파지 자세가 있는지 확인
+    if (!m_showIcpGraspPose || m_icpGraspPose.isIdentity()) {
+        qWarning() << "[HANG] Move failed: No ICP grasp pose calculated. Press 'ICP' button first.";
+        return;
+    }
+
+    // 2. 봉(Pole) 위치 정의 (drawPole 함수와 동일한 값, 단위: m)
+    const float POLE_X = 0.48f;
+    const float POLE_Z = 0.34f;
+    const float POLE_Y_START = -0.35f; // (0.48, -0.35, 0.34)에서 시작
+    const float POLE_LEN = 0.15f;
+
+    // 봉의 중앙 지점 (컵 손잡이의 목표 지점)
+    // (-Y 방향으로 15cm 뻗어나가므로, 중앙은 Y_START에서 -7.5cm)
+    const float POLE_Y_MID = POLE_Y_START - (POLE_LEN / 2.0f); // -0.425f
+
+    // 3. 컵 손잡이가 위치할 최종 목표 지점 (m)
+    QVector3D cup_hang_pos_m(POLE_X, POLE_Y_MID, POLE_Z);
+
+    // 4. 파지 자세에서 Z축(파지 방향)과 방향(A,B,C) 가져오기
+    QVector3D ef_z_axis = m_icpGraspPose.column(2).toVector3D().normalized();
+    QMatrix3x3 rotMat = m_icpGraspPose.toGenericMatrix<3,3>();
+
+    QVector3D graspOriZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
+    float cmdA = graspOriZYZ.x() + 180.0f; float cmdB = -graspOriZYZ.y(); float cmdC = graspOriZYZ.z() + 180.0f;
+    while(cmdA > 180.0f) cmdA -= 360.0f; while(cmdA <= -180.0f) cmdA += 360.0f;
+    while(cmdB > 180.0f) cmdB -= 360.0f; while(cmdB <= -180.0f) cmdB += 360.0f;
+    while(cmdC > 180.0f) cmdC -= 360.0f; while(cmdC <= -180.0f) cmdC += 360.0f;
+    QVector3D robotCmdOri_deg(cmdA, cmdB, cmdC); // (이 방향은 파지/배치 시 동일)
+
+    // 5. 로봇 EF(End Effector)의 최종 "배치(Place)" 위치 계산
+    // (컵 목표 지점 - 그리퍼 Z 오프셋)
+    QVector3D place_pos_m = cup_hang_pos_m - (ef_z_axis * GRIPPER_Z_OFFSET);
+
+    // 6. "접근(Approach)" 및 "후퇴(Retreat)" 위치 계산
+    // (배치 위치보다 글로벌 Z축으로 10cm 위)
+    QVector3D approach_pos_m = place_pos_m + QVector3D(0.0f, 0.0f, 0.10f);
+
+    // 7. mm 단위로 변환
+    QVector3D place_pos_mm = place_pos_m * 1000.0f;
+    QVector3D approach_pos_mm = approach_pos_m * 1000.0f;
+    QVector3D retreat_pos_mm = approach_pos_mm;
+
+    // 8. IK 체크
+    qDebug() << "[HANG] Checking reachability for Hang sequence...";
+    if (!checkPoseReachable(place_pos_mm, robotCmdOri_deg)) {
+        qWarning() << "[HANG] ❌ Place pose is UNREACHABLE. Move Canceled.";
+        return;
+    }
+    if (!checkPoseReachable(approach_pos_mm, robotCmdOri_deg)) {
+        qWarning() << "[HANG] ❌ Approach/Retreat pose is UNREACHABLE. Move Canceled.";
+        return;
+    }
+    qInfo() << "[HANG] ✅ All poses are reachable. Emitting sequence request.";
+
+    // 9. 시퀀서에 작업 요청
+    emit requestHangCupSequence(approach_pos_mm, place_pos_mm, retreat_pos_mm, robotCmdOri_deg);
+}
+// ✨ [새로운 슬롯 구현 추가]
+void PointCloudWidget::setPCAAxes(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal, bool show)
+{
+    m_pcaMeanViz = mean;
+    m_pcaPC1Viz = pc1;
+    m_pcaPC2Viz = pc2;
+    m_pcaNormalViz = normal;
+    m_showPCAAxes = show;
+    update(); // 화면 갱신 요청
+}
+// ✨ [새로운 함수 구현 추가]
+void PointCloudWidget::drawPCAAxes()
+{
+    if (!m_showPCAAxes) return;
+
+    float axis_length = 0.05f; // 5cm
+    float line_width = 3.0f;
+
+    glPushMatrix();
+    glTranslatef(m_pcaMeanViz.x(), m_pcaMeanViz.y(), m_pcaMeanViz.z()); // PCA 중심점으로 이동
+
+    glLineWidth(line_width);
+    glBegin(GL_LINES);
+
+    // PC1 (가장 긴 축) - 빨간색
+    glColor3f(1.0f, 0.0f, 0.0f); // Red
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glVertex3f(m_pcaPC1Viz.x() * axis_length, m_pcaPC1Viz.y() * axis_length, m_pcaPC1Viz.z() * axis_length);
+
+    // PC2 (두 번째로 긴 축) - 녹색
+    glColor3f(0.0f, 1.0f, 0.0f); // Green
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glVertex3f(m_pcaPC2Viz.x() * axis_length, m_pcaPC2Viz.y() * axis_length, m_pcaPC2Viz.z() * axis_length);
+
+    // Normal (표면 법선) - 파란색
+    glColor3f(0.0f, 0.0f, 1.0f); // Blue
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glVertex3f(m_pcaNormalViz.x() * axis_length, m_pcaNormalViz.y() * axis_length, m_pcaNormalViz.z() * axis_length);
+
+    glEnd();
+    glPopMatrix();
+    glLineWidth(1.0f); // 기본값으로 복원
+}
+void PointCloudWidget::updateDebugLookAtPoint(const QVector3D& point, bool show)
+{
+    m_debugLookAtPoint = point;
+    m_showDebugLookAtPoint = show;
+    update();
+}
+void PointCloudWidget::drawDebugLookAtPoint()
+{
+    if (!m_showDebugLookAtPoint) return;
+
+    GLUquadric* quadric = gluNewQuadric();
+    if(quadric) {
+        gluQuadricNormals(quadric, GLU_SMOOTH);
+
+        // Cyan (청록색) 구체
+        glColor3f(0.0f, 1.0f, 1.0f);
+        glPushMatrix();
+        glTranslatef(m_debugLookAtPoint.x(), m_debugLookAtPoint.y(), m_debugLookAtPoint.z());
+        // 1.5cm 크기로 크게 그림
+        gluSphere(quadric, 0.015, 16, 16);
+        glPopMatrix();
+
+        gluDeleteQuadric(quadric);
+    }
+}
+void PointCloudWidget::updateDebugLine(const QVector3D& p1, const QVector3D& p2, bool show)
+{
+    m_debugLineP1 = p1;
+    m_debugLineP2 = p2;
+    m_showDebugLine = show;
+    update();
+}
+void PointCloudWidget::drawDebugLine()
+{
+    if (!m_showDebugLine) return;
+
+    // 자홍색(Magenta) 굵은 선
+    glLineWidth(3.0f);
+    glColor3f(1.0f, 0.0f, 1.0f);
+
+    glBegin(GL_LINES);
+    // P1 (카메라 위치)
+    glVertex3f(m_debugLineP1.x(), m_debugLineP1.y(), m_debugLineP1.z());
+    // P2 (교점 위치)
+    glVertex3f(m_debugLineP2.x(), m_debugLineP2.y(), m_debugLineP2.z());
+    glEnd();
+
+    glLineWidth(1.0f); // 라인 두께 복원
 }

@@ -31,7 +31,10 @@
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 #include <QMatrix3x3>
-#include "DRFLEx.h" // ✨ [추가] IK Check를 위해 포함
+#include "DRFLEx.h"
+#include <QElapsedTimer>
+#include <QDialog>
+#include <QVBoxLayout>
 
 
 struct GraspingTarget
@@ -61,7 +64,12 @@ public slots:
     void updateHandleCenterline(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
     void updateRandomGraspPose(const QMatrix4x4& pose, bool show);
 
+    QVector3D setRawBaseFramePoints(const QVector<QVector3D>& points);
 
+    void setRawGraspPose(const QMatrix4x4& pose, bool show);
+    void setPCAAxes(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal, bool show);
+    void updateDebugLookAtPoint(const QVector3D& point, bool show);
+    void updateDebugLine(const QVector3D& p1, const QVector3D& p2, bool show);
 signals:
     void denoisingToggled();
     void zFilterToggled();
@@ -91,6 +99,13 @@ private:
     void drawHandleCenterline();
     void drawRandomGraspPose();
 
+    void drawRawCentroid();
+    void drawRawGraspPoint();
+    void drawRawGraspPoseAxis();
+    void drawPole();
+    void drawPCAAxes();
+    void drawDebugLookAtPoint();
+    void drawDebugLine();
     std::vector<float> m_vertexData;
     rs2::points m_points;
     rs2::video_frame m_colorFrame;
@@ -112,7 +127,25 @@ private:
     QMatrix4x4 m_randomGraspPose;
     bool m_showRandomGraspPose = false;
 
+    QVector<float> m_rawBaseFramePoints;
+    bool m_isRawVizMode = false;
+    QVector3D m_rawCentroid;
+    bool m_showRawCentroid = false;
+    QVector3D m_rawGraspPoint;
+    bool m_showRawGraspPoint = false;
+    QMatrix4x4 m_rawGraspPose;
+    bool m_showRawGraspPose = false;
 
+    QVector3D m_pcaMeanViz;
+    QVector3D m_pcaPC1Viz;
+    QVector3D m_pcaPC2Viz;
+    QVector3D m_pcaNormalViz;
+    QVector3D m_debugLookAtPoint;
+    bool m_showPCAAxes = false;
+    bool m_showDebugLookAtPoint;
+    QVector3D m_debugLineP1;
+    QVector3D m_debugLineP2;
+    bool m_showDebugLine;
     friend class RealSenseWidget;
 
     QMatrix4x4 m_baseToTcpTransform;
@@ -150,6 +183,10 @@ public slots:
     void onMoveToCalculatedHandleViewPose();
     void runFullAutomatedSequence();
     void onMoveToRandomGraspPoseRequested();
+    void onMoveToIcpGraspPoseRequested();
+    void onShowICPVisualization();
+    void onShowHorizontalGraspVisualization();
+    void onHangCupSequenceRequested();
 
 
 signals:
@@ -169,16 +206,21 @@ signals:
     void requestHandleCenterlineUpdate(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
     void requestRandomGraspPoseUpdate(const QMatrix4x4& pose, bool show);
 
-    // ✨ [추가] 1. (5cm 뒤) 접근 -> 2. (목표) 파지 2단계 이동 요청 시그널
     void requestApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg);
     void visionTaskComplete();
 
+    void requestRawGraspPoseUpdate(const QMatrix4x4& pose, bool show);
+    // ✨ [오류 수정] QVector33D -> QVector3D
+    void requestHangCupSequence(const QVector3D& approach_pos_mm, const QVector3D& place_pos_mm, const QVector3D& retreat_pos_mm, const QVector3D& orientation_deg);
+    void requestPCAAxesUpdate(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal, bool show);
+
+    void requestDebugLookAtPointUpdate(const QVector3D& point, bool show);
+    void requestDebugLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
 private slots:
     void updateFrame();
     void checkProcessingResult();
 
 private:
-    // ✨ [추가] onShowHandlePlot에서 사용할 손잡이 분석 결과 구조체
     struct HandleAnalysisResult {
         int cupIndex = -1;
         QVector<QVector3D> handlePoints3D;
@@ -189,6 +231,7 @@ private:
         Eigen::Vector3f pcaNormal;
         bool isValid = false;
         float distanceToRobot = std::numeric_limits<float>::max();
+        QPointF cupBodyCenter2D; // ✨ [추가] 컵 몸통의 2D 중심 (X, Y)
     };
 
 
@@ -204,7 +247,6 @@ private:
     void findFloorPlaneRANSAC();
     void runDbscanClustering();
 
-    // ✨ [수정] 파지 자세 계산 함수 시그니처 변경: 계산 결과를 out 매개변수로 반환
     bool calculateRandomGraspPoseOnSegment(int targetSegmentId,
                                            const Eigen::Vector3f& mean,
                                            const Eigen::Vector3f& pc1,
@@ -214,7 +256,6 @@ private:
                                            QVector3D& outPos_m,
                                            QVector3D& outOri_deg);
 
-    // ✨ [추가] IK 체크 헬퍼 함수
     bool checkPoseReachable(const QVector3D& pos_mm, const QVector3D& ori_deg);
 
 
@@ -245,7 +286,6 @@ private:
     QJsonArray m_detectionResults; bool m_isProcessing; bool m_showPlotWindow;
     QVector<GraspingTarget> m_graspingTargets;
 
-    // PCA 정보
     Eigen::Vector3f m_pcaMean; Eigen::Vector3f m_pcaPC1; Eigen::Vector3f m_pcaPC2;
     Eigen::Vector3f m_pcaNormal;
     bool m_hasPCAData;
@@ -253,13 +293,18 @@ private:
     QVector<int> m_handleSegmentIds;
 
     QMatrix4x4 m_randomGraspPose; bool m_showRandomGraspPose;
+    QMatrix4x4 m_icpGraspPose;
+    bool m_showIcpGraspPose = false;
+    QVector<QVector3D> m_selectedHandlePoints3D;
+    QDialog* m_icpVizDialog = nullptr;
+    PointCloudWidget* m_icpPointCloudWidget = nullptr;
 
 
     QMatrix4x4 m_calculatedTargetPose; QVector3D m_calculatedTargetPos_m; QVector3D m_calculatedTargetOri_deg;
     QMatrix4x4 m_calculatedTargetPose_Y_Aligned; QVector3D m_calculatedTargetOri_deg_Y_Aligned;
     QMatrix4x4 m_calculatedViewMatrix; QVector3D m_calculatedViewPos_mm; bool m_hasCalculatedViewPose;
-
-    std::vector<int> m_clusterIds; // DBSCAN용
+    QElapsedTimer m_processingTimer;
+    std::vector<int> m_clusterIds;
 
     const float APPROACH_HEIGHT_M = 0.15f;
     const float GRIPPER_Z_OFFSET = 0.146f;
