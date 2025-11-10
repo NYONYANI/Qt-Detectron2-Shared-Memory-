@@ -203,7 +203,20 @@
      </rect>
     </property>
     <property name="text">
-     <string>ICP</string>
+     <string>Vertical Grip</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="HorizonGripButton">
+    <property name="geometry">
+     <rect>
+      <x>1070</x>
+      <y>640</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Horizon Grip</string>
     </property>
    </widget>
   </widget>
