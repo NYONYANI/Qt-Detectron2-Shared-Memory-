@@ -15,6 +15,7 @@ SOURCES += \
     handleplotwidget.cpp \
     main.cpp \
     mainwindow.cpp \
+    pointcloudwidget.cpp \
     realsensewidget.cpp \
     robotcontroller.cpp \
     robotmonitor.cpp \
@@ -25,6 +26,7 @@ HEADERS += \
     circlefitter.h \
     handleplotwidget.h \
     mainwindow.h \
+    pointcloudwidget.h \
     realsensewidget.h \
     robotcontroller.h \
     robotmonitor.h \
