@@ -40,6 +40,7 @@ public slots:
     void setPCAAxes(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal, bool show);
     void updateDebugLookAtPoint(const QVector3D& point, bool show);
     void updateDebugLine(const QVector3D& p1, const QVector3D& p2, bool show);
+    void updateDebugNormal(const QVector3D& p1, const QVector3D& p2, bool show); // (이전 단계에서 추가됨)
 
 signals:
     void denoisingToggled();
@@ -77,6 +78,7 @@ private:
     void drawPCAAxes();
     void drawDebugLookAtPoint();
     void drawDebugLine();
+    void drawDebugNormal(); // ✨ [오류 수정] 이 줄이 빠져있었습니다.
     std::vector<float> m_vertexData;
     rs2::points m_points;
     rs2::video_frame m_colorFrame;
@@ -117,8 +119,10 @@ private:
     QVector3D m_debugLineP1;
     QVector3D m_debugLineP2;
     bool m_showDebugLine;
+    QVector3D m_debugNormalP1;
+    QVector3D m_debugNormalP2;
+    bool m_showDebugNormal;
 
-    // ✨ friend class 선언
     friend class RealSenseWidget;
 
     QMatrix4x4 m_baseToTcpTransform;

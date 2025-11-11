@@ -80,6 +80,9 @@ public slots:
     void onShowHorizontalGraspVisualization();
     void onHangCupSequenceRequested();
 
+    // ✨ [수정] 여기에 두 함수 선언을 다시 추가합니다.
+    void updateFrame();
+    void checkProcessingResult();
 
 signals:
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
@@ -108,9 +111,8 @@ signals:
 
     void requestDebugLookAtPointUpdate(const QVector3D& point, bool show);
     void requestDebugLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
-private slots:
-    void updateFrame();
-    void checkProcessingResult();
+    void requestDebugNormalUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
+    // (여기에는 updateFrame, checkProcessingResult가 없어야 합니다)
 
 private:
     struct HandleAnalysisResult {

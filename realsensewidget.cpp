@@ -1143,6 +1143,7 @@ void RealSenseWidget::onShowICPVisualization()
     QList<HandleAnalysisResult> allHandleResults;
     int cupIdxCounter = 0;
 
+    // --- 1. 포인트 클라우드 추출 및 정렬 ---
     for (const QJsonValue &cupValue : m_detectionResults) {
         cupIdxCounter++;
         QJsonObject cupResult = cupValue.toObject(); QString part = "handle";
@@ -1205,7 +1206,7 @@ void RealSenseWidget::onShowICPVisualization()
     qInfo() << "[ICP] Found " << allHandleResults.size() << " handles. Focusing on closest one (Cup "
             << allHandleResults[0].cupIndex << ", " << focusedHandlePoints.size() << " points).";
 
-
+    // --- 2. 다이얼로그 생성 및 시그널 연결 ---
     if (m_icpVizDialog == nullptr) {
         m_icpVizDialog = new QDialog(this);
         m_icpVizDialog->setWindowTitle("Focused Handle Point Cloud (Base Frame)");
@@ -1225,6 +1226,10 @@ void RealSenseWidget::onShowICPVisualization()
 
         connect(this, &RealSenseWidget::requestRawGraspPoseUpdate,
                 m_icpPointCloudWidget, &PointCloudWidget::setRawGraspPose);
+        connect(this, &RealSenseWidget::requestPCAAxesUpdate,        // (이미 있음)
+                m_icpPointCloudWidget, &PointCloudWidget::setPCAAxes); // (이미 있음)
+        connect(this, &RealSenseWidget::requestDebugNormalUpdate,    // (이미 있음)
+                m_icpPointCloudWidget, &PointCloudWidget::updateDebugNormal);
     }
 
     // --- 3. PCA 실행 및 파지 좌표계 계산 ---
@@ -1269,18 +1274,49 @@ void RealSenseWidget::onShowICPVisualization()
 
         emit requestRawGraspPoseUpdate(graspPose, true);
 
-        m_icpGraspPose = graspPose; // ✨ [수정] 멤버 변수에 계산된 좌표계 저장
-        m_showIcpGraspPose = true; // ✨ [수정] 플래그 설정
+        m_icpGraspPose = graspPose;
+        m_showIcpGraspPose = true;
 
         qInfo() << "[ICP] Grasp pose calculated and sent to visualizer.";
         qInfo() << "[ICP] Grasp Point (Magenta): " << graspPoint;
         qInfo() << "[ICP] EF Position (Axis Origin): " << ef_position;
 
+        // --- ✨ [수정] 빠진 시각화 emit 코드 추가 ---
+        QVector3D pca_normal(normal_eigen.x(), normal_eigen.y(), normal_eigen.z());
+
+        // 법선 벡터가 파지점에서 무게중심을 향하는 방향(inward_ref)과
+        // 같은 방향(내적 > 0)을 가리키면, 뒤집어서 "바깥쪽"을 향하도록 함
+        QVector3D inward_ref = (centroid - graspPoint).normalized();
+        if (QVector3D::dotProduct(pca_normal, inward_ref) > 0) {
+            pca_normal = -pca_normal;
+        }
+
+        // vvv 사용자 요청: 0.15f (15cm)로 길이 수정 vvv
+        float normal_viz_length = 0.15f;
+        QVector3D line_start = graspPoint; // 자홍색 구체에서 시작
+        QVector3D line_end = graspPoint + (pca_normal * normal_viz_length);
+
+        // 메인 뷰와 팝업 뷰 양쪽에 시그널 전송
+        emit requestDebugNormalUpdate(line_start, line_end, true);
+
+        // PCA 축 시각화 (Centroid에서 시작)
+        emit requestPCAAxesUpdate(centroid,
+                                  QVector3D(pc1.x(), pc1.y(), pc1.z()),
+                                  QVector3D(pc2.x(), pc2.y(), pc2.z()),
+                                  QVector3D(normal_eigen.x(), normal_eigen.y(), normal_eigen.z()),
+                                  true);
+        // --- [수정 완료] ---
+
     } else {
         emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
 
-        m_icpGraspPose.setToIdentity(); // ✨ [수정] 실패 시 좌표계 리셋
-        m_showIcpGraspPose = false; // ✨ [수정] 플래그 리셋
+        // --- ✨ [수정] 빠진 시각화 emit 코드 추가 (끄기) ---
+        emit requestDebugNormalUpdate(QVector3D(), QVector3D(), false);
+        emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false);
+        // --- [수정 완료] ---
+
+        m_icpGraspPose.setToIdentity();
+        m_showIcpGraspPose = false;
 
         if(!pca_ok) qWarning() << "[ICP] PCA calculation failed.";
         if(graspPoint.isNull()) qWarning() << "[ICP] Grasp point calculation failed (no points?).";
@@ -1294,7 +1330,6 @@ void RealSenseWidget::onShowICPVisualization()
 
     qInfo() << "[ICP] Displayed" << focusedHandlePoints.size() << " points in new window.";
 }
-
 void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 {
     qInfo() << "[GRASP] 'Grasp Handle' move requested (with 5cm approach).";
@@ -1529,6 +1564,11 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
                 m_icpPointCloudWidget, &PointCloudWidget::setRawGraspPose);
         connect(this, &RealSenseWidget::requestPCAAxesUpdate,
                 m_icpPointCloudWidget, &PointCloudWidget::setPCAAxes);
+        connect(this, &RealSenseWidget::requestDebugLineUpdate,
+                m_pointCloudWidget, &PointCloudWidget::updateDebugLine);
+        connect(this, &RealSenseWidget::requestDebugNormalUpdate, // ✨ [이 줄 추가]
+                m_pointCloudWidget, &PointCloudWidget::updateDebugNormal); // ✨ [이 줄 추가]
+        m_pointCloudWidget->setFocus();
     }
 
     // --- 3. PCA 실행 및 파지 좌표계 계산 ---
@@ -1587,6 +1627,7 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
     } else {
         emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
         emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false);
+        emit requestDebugNormalUpdate(QVector3D(), QVector3D(), false);
         m_icpGraspPose.setToIdentity();
         m_showIcpGraspPose = false;
 

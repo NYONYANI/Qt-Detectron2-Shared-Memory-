@@ -25,6 +25,10 @@ PointCloudWidget::PointCloudWidget(QWidget *parent)
     const float r[] = { 0.0f, 1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
     QMatrix4x4 rot(r); QMatrix4x4 trans; trans.translate(-0.080, 0.0325, 0.0308);
     m_tcpToCameraTransform = trans * rot;
+    m_showPCAAxes = false;        // (이미 있음)
+    m_showDebugLookAtPoint = false; // (이미 있음)
+    m_showDebugLine = false;      // (이미 있음)
+    m_showDebugNormal = false;
 }
 PointCloudWidget::~PointCloudWidget() {}
 
@@ -290,8 +294,10 @@ void PointCloudWidget::paintGL()
         drawRandomGraspPose(); // 주황색 (손잡이 파지)
         drawDebugLookAtPoint();
         drawDebugLine();
+        drawDebugNormal();
     } else {
-        // (비어 있음)
+        drawPCAAxes();
+        drawDebugNormal(); // ✨ [이 줄 추가]
     }
     glEnable(GL_DEPTH_TEST); // 깊이 테스트 다시 켜기
 }
@@ -763,6 +769,31 @@ void PointCloudWidget::drawDebugLine()
     glVertex3f(m_debugLineP1.x(), m_debugLineP1.y(), m_debugLineP1.z());
     // P2 (교점 위치)
     glVertex3f(m_debugLineP2.x(), m_debugLineP2.y(), m_debugLineP2.z());
+    glEnd();
+
+    glLineWidth(1.0f); // 라인 두께 복원
+}
+void PointCloudWidget::updateDebugNormal(const QVector3D& p1, const QVector3D& p2, bool show)
+{
+    m_debugNormalP1 = p1;
+    m_debugNormalP2 = p2;
+    m_showDebugNormal = show;
+    update();
+}
+
+void PointCloudWidget::drawDebugNormal()
+{
+    if (!m_showDebugNormal) return;
+
+    // Cyan (청록색) 굵은 선
+    glLineWidth(3.0f);
+    glColor3f(0.0f, 1.0f, 1.0f); // Cyan color
+
+    glBegin(GL_LINES);
+    // P1 (시작점 = 자홍색 파지점)
+    glVertex3f(m_debugNormalP1.x(), m_debugNormalP1.y(), m_debugNormalP1.z());
+    // P2 (끝점)
+    glVertex3f(m_debugNormalP2.x(), m_debugNormalP2.y(), m_debugNormalP2.z());
     glEnd();
 
     glLineWidth(1.0f); // 라인 두께 복원
