@@ -201,7 +201,7 @@ private:
     std::vector<int> m_clusterIds;
 
     const float APPROACH_HEIGHT_M = 0.15f;
-    const float GRIPPER_Z_OFFSET = 0.146f;
+    const float GRIPPER_Z_OFFSET = 0.143f;
     const int IMAGE_WIDTH = 640, IMAGE_HEIGHT = 480, IMAGE_CHANNELS = 3;
     const int IMAGE_SIZE = IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS;
     const int RESULT_SIZE = 100 * 1024, CONTROL_SIZE = 16;

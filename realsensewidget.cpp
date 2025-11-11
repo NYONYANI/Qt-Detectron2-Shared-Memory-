@@ -1125,11 +1125,11 @@ QJsonArray RealSenseWidget::receiveResultsFromPython() {
     sem_wait(sem_control); static_cast<char*>(data_control)[OFFSET_RESULT_READY] = 0; sem_post(sem_control);
     return results;
 }
-
 void RealSenseWidget::onShowICPVisualization()
 {
     qInfo() << "[ICP] 'ICPButton' clicked. Finding closest handle from *current* capture...";
 
+    // --- 1. 포인트 클라우드 추출 및 정렬 ---
     if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
         qWarning() << "[ICP] No detection results or point cloud available. Press 'Capture' first.";
         return;
@@ -1143,7 +1143,6 @@ void RealSenseWidget::onShowICPVisualization()
     QList<HandleAnalysisResult> allHandleResults;
     int cupIdxCounter = 0;
 
-    // --- 1. 포인트 클라우드 추출 및 정렬 ---
     for (const QJsonValue &cupValue : m_detectionResults) {
         cupIdxCounter++;
         QJsonObject cupResult = cupValue.toObject(); QString part = "handle";
@@ -1206,7 +1205,66 @@ void RealSenseWidget::onShowICPVisualization()
     qInfo() << "[ICP] Found " << allHandleResults.size() << " handles. Focusing on closest one (Cup "
             << allHandleResults[0].cupIndex << ", " << focusedHandlePoints.size() << " points).";
 
-    // --- 2. 다이얼로그 생성 및 시그널 연결 ---
+
+    // --- ✨ [사용자 요청] 노이즈 필터링 (DBSCAN) 시작 ---
+    qInfo() << "[ICP] Applying noise filter to" << focusedHandlePoints.size() << "handle points...";
+    std::vector<Point3D> dbscanPoints;
+    dbscanPoints.reserve(focusedHandlePoints.size());
+    for(int i=0; i<focusedHandlePoints.size(); ++i) {
+        dbscanPoints.push_back({
+            focusedHandlePoints[i].x(),
+            focusedHandlePoints[i].y(),
+            focusedHandlePoints[i].z(),
+            0, // clusterId (0 = unclassified)
+            i  // originalIndex
+        });
+    }
+
+    const float dbscan_eps = 0.02f; // 2cm 반경
+    const int dbscan_minPts = 10;   // 최소 10개
+    DBSCAN dbscan(dbscan_eps, dbscan_minPts, dbscanPoints);
+    dbscan.run();
+
+    // 가장 큰 클러스터 찾기
+    std::map<int, int> clusterCounts;
+    for(const auto& p : dbscanPoints) {
+        if(p.clusterId > 0) { // 0=unclassified, -1=noise
+            clusterCounts[p.clusterId]++;
+        }
+    }
+
+    int largestClusterId = -1;
+    int maxClusterSize = 0;
+    for(const auto& pair : clusterCounts) {
+        if(pair.second > maxClusterSize) {
+            maxClusterSize = pair.second;
+            largestClusterId = pair.first;
+        }
+    }
+
+    QVector<QVector3D> filteredHandlePoints;
+    if(largestClusterId != -1) {
+        filteredHandlePoints.reserve(maxClusterSize);
+        for(const auto& p : dbscanPoints) {
+            if(p.clusterId == largestClusterId) {
+                // 원본 QVector에서 인덱스를 찾아 포인트 추가
+                filteredHandlePoints.append(focusedHandlePoints[p.originalIndex]);
+            }
+        }
+        qInfo() << "[ICP] Filtered to largest cluster (" << largestClusterId << ") with" << filteredHandlePoints.size() << "points.";
+    } else {
+        qWarning() << "[ICP] DBSCAN found no clusters. Using original points as fallback.";
+        filteredHandlePoints = focusedHandlePoints; // 필터링 실패 시 원본 사용
+    }
+
+    if (filteredHandlePoints.isEmpty()) {
+        qWarning() << "[ICP] Filtering resulted in zero points. Aborting.";
+        return;
+    }
+    // --- ✨ 노이즈 필터링 종료 ---
+
+
+    // --- 2. 다이얼로그 생성 ---
     if (m_icpVizDialog == nullptr) {
         m_icpVizDialog = new QDialog(this);
         m_icpVizDialog->setWindowTitle("Focused Handle Point Cloud (Base Frame)");
@@ -1226,99 +1284,143 @@ void RealSenseWidget::onShowICPVisualization()
 
         connect(this, &RealSenseWidget::requestRawGraspPoseUpdate,
                 m_icpPointCloudWidget, &PointCloudWidget::setRawGraspPose);
-        connect(this, &RealSenseWidget::requestPCAAxesUpdate,        // (이미 있음)
-                m_icpPointCloudWidget, &PointCloudWidget::setPCAAxes); // (이미 있음)
-        connect(this, &RealSenseWidget::requestDebugNormalUpdate,    // (이미 있음)
+        connect(this, &RealSenseWidget::requestPCAAxesUpdate,
+                m_icpPointCloudWidget, &PointCloudWidget::setPCAAxes);
+        connect(this, &RealSenseWidget::requestDebugNormalUpdate,
                 m_icpPointCloudWidget, &PointCloudWidget::updateDebugNormal);
     }
 
     // --- 3. PCA 실행 및 파지 좌표계 계산 ---
 
-    Eigen::Vector3f mean_eigen, pc1, pc2, normal_eigen;
+    // 3a. (글로벌) PCA 실행 -> '무게중심(centroid)'과 '글로벌 축' 확보
+    Eigen::Vector3f global_mean_eigen, global_pc1_eigen, global_pc2_eigen, global_normal_eigen;
     QVector<QPointF> projectedPoints;
-    bool pca_ok = calculatePCA(focusedHandlePoints, projectedPoints, mean_eigen, pc1, pc2, normal_eigen);
+    // ✨ [수정] 필터링된 포인트를 사용
+    bool global_pca_ok = calculatePCA(filteredHandlePoints, projectedPoints,
+                                      global_mean_eigen, global_pc1_eigen, global_pc2_eigen, global_normal_eigen);
 
-    QVector3D graspPoint = m_icpPointCloudWidget->setRawBaseFramePoints(focusedHandlePoints);
-    QVector3D centroid(mean_eigen.x(), mean_eigen.y(), mean_eigen.z()); // PCA 평균(무게중심)
+    // 3b. 파지 포인트(graspPoint) 계산 (강도 기반 '최고점')
+    // ✨ [수정] 필터링된 포인트를 시각화 위젯으로 전송
+    QVector3D graspPoint = m_icpPointCloudWidget->setRawBaseFramePoints(filteredHandlePoints);
+    QVector3D centroid(global_mean_eigen.x(), global_mean_eigen.y(), global_mean_eigen.z());
+    QVector3D global_pc1(global_pc1_eigen.x(), global_pc1_eigen.y(), global_pc1_eigen.z());
+    QVector3D global_pc2(global_pc2_eigen.x(), global_pc2_eigen.y(), global_pc2_eigen.z());
+    QVector3D global_normal(global_normal_eigen.x(), global_normal_eigen.y(), global_normal_eigen.z());
 
-    if (!graspPoint.isNull() && pca_ok)
+
+    if (!graspPoint.isNull() && global_pca_ok)
     {
-        // 1. Z축 계산 (파지점 -> 무게중심) [높은 우선순위]
-        QVector3D Z_axis = (centroid - graspPoint).normalized();
+        // 3c. 로컬 PCA 실행 (주변부 법선 벡터 계산)
+        QVector<QVector3D> localNeighborhoodPoints;
+        const float local_radius = 0.02f; // 2cm 반경
+        // ✨ [수정] 필터링된 포인트를 사용
+        for (const QVector3D& p : filteredHandlePoints) {
+            if (p.distanceToPoint(graspPoint) < local_radius) {
+                localNeighborhoodPoints.append(p);
+            }
+        }
+        qInfo() << "[ICP] Found" << localNeighborhoodPoints.size() << "points within" << local_radius << "m of graspPoint for Local PCA.";
 
-        // 2. Y축 "힌트" (PCA의 '짧은 방향' Normal) [낮은 우선순위]
-        QVector3D Y_axis_hint = QVector3D(normal_eigen.x(), normal_eigen.y(), normal_eigen.z()).normalized();
-
-        // 짐벌락 체크: Y_hint가 Z축과 너무 가까우면 (거의 평행하면)
-        if (qAbs(QVector3D::dotProduct(Y_axis_hint, Z_axis)) > 0.95f) {
-            qWarning() << "[ICP] Gimbal lock: PCA Normal is parallel to Grasp Axis. Using World Up as fallback 'Hint'.";
-            // Y_hint를 월드 Z축(Up)으로 대신 사용
-            Y_axis_hint = QVector3D(0.0f, 0.0f, 1.0f);
+        Eigen::Vector3f local_mean, local_pc1, local_pc2, local_normal_eigen;
+        QVector<QPointF> local_projected;
+        bool local_pca_ok = false;
+        if (localNeighborhoodPoints.size() >= 3) {
+            local_pca_ok = calculatePCA(localNeighborhoodPoints, local_projected,
+                                        local_mean, local_pc1, local_pc2, local_normal_eigen);
         }
 
-        // 3. X축 계산 (Y_hint와 Z축 모두에 수직인 벡터)
-        QVector3D X_axis = QVector3D::crossProduct(Y_axis_hint, Z_axis).normalized();
+        if (!local_pca_ok) {
+            qWarning() << "[ICP] Local PCA failed (not enough neighbors?). Using GLOBAL normal as fallback.";
+            local_normal_eigen = global_normal_eigen; // 실패 시 글로벌 법선으로 대체
+        }
 
-        // 4. Y축 계산 (Z축과 X축 모두에 수직인 벡터)
-        QVector3D Y_axis = QVector3D::crossProduct(Z_axis, X_axis).normalized();
+        // --- 3d. (*** ✨ 사용자 요청 수정 ***) 좌표계 계산 ---
 
-        // 5. 실제 EF 위치 계산 (파지점에서 Z축 방향으로 뒤로 물러남)
+        // 1. ✨ Y축 (그리퍼 녹색선, 목표 2) = "손잡이 PCA 파란색 선" (Global Normal)
+        QVector3D Y_axis = global_normal.normalized();
+
+        if (QVector3D::dotProduct(Y_axis, QVector3D(0.0f, 0.0f, 1.0f)) < 0.0f) {
+            Y_axis = -Y_axis;
+            qInfo() << "[ICP] Flipped Y-Axis (Global Normal) to point generally upwards.";
+        }
+
+        // 2. ✨ Z축 (진입 방향, 목표 1) 계산
+        QVector3D local_normal(local_normal_eigen.x(), local_normal_eigen.y(), local_normal_eigen.z());
+        QVector3D inward_ref = (centroid - graspPoint).normalized();
+        if (QVector3D::dotProduct(local_normal, inward_ref) > 0) {
+            local_normal = -local_normal;
+        }
+
+        QVector3D Z_axis = local_normal - QVector3D::dotProduct(local_normal, Y_axis) * Y_axis;
+
+        if (Z_axis.length() < 0.1f) {
+            qWarning() << "[ICP] Gimbal lock: Local Normal is parallel to Y-Axis (Global Normal).";
+            qWarning() << "[ICP] Using Global PC1 (Red Line) as fallback Z-Axis.";
+            Z_axis = global_pc1.normalized();
+        } else {
+            Z_axis.normalize();
+        }
+
+        // 3. ✨ [핵심 수정] Z축 방향 뒤집기 (위에서 잡기)
+        if (Z_axis.z() > 0.0f) {
+            qInfo() << "[ICP] Z-Axis was pointing UP (approaching from bottom). Flipping to approach from TOP.";
+            Z_axis = -Z_axis;
+        }
+
+        // 4. X축 계산
+        QVector3D X_axis = QVector3D::crossProduct(Y_axis, Z_axis).normalized();
+
+        // 5. ✨ X축 방향 보정 (항상 아래를 향하도록)
+        if (X_axis.z() > 0.0f) {
+            qInfo() << "[ICP] X-Axis was pointing UP. Rotating 180 deg around Z-Axis to point DOWN.";
+            X_axis = -X_axis;
+            Y_axis = -Y_axis;
+        }
+
+        // 6. 실제 EF 위치 계산
         QVector3D ef_position = graspPoint - Z_axis * GRIPPER_Z_OFFSET;
 
-        // 6. 최종 4x4 행렬 생성 (위치 = ef_position)
+        // 7. 최종 4x4 행렬 생성
         QMatrix4x4 graspPose;
         graspPose.setColumn(0, QVector4D(X_axis, 0.0f));
         graspPose.setColumn(1, QVector4D(Y_axis, 0.0f));
         graspPose.setColumn(2, QVector4D(Z_axis, 0.0f));
         graspPose.setColumn(3, QVector4D(ef_position, 1.0f));
+        // --- (*** 수정 완료 ***) ---
+
 
         emit requestRawGraspPoseUpdate(graspPose, true);
 
         m_icpGraspPose = graspPose;
         m_showIcpGraspPose = true;
 
-        qInfo() << "[ICP] Grasp pose calculated and sent to visualizer.";
+        qInfo() << "[ICP] Grasp pose calculated (Z=Projected_Flipped, Y=GlobalNormal, X_Flipped).";
         qInfo() << "[ICP] Grasp Point (Magenta): " << graspPoint;
         qInfo() << "[ICP] EF Position (Axis Origin): " << ef_position;
 
-        // --- ✨ [수정] 빠진 시각화 emit 코드 추가 ---
-        QVector3D pca_normal(normal_eigen.x(), normal_eigen.y(), normal_eigen.z());
-
-        // 법선 벡터가 파지점에서 무게중심을 향하는 방향(inward_ref)과
-        // 같은 방향(내적 > 0)을 가리키면, 뒤집어서 "바깥쪽"을 향하도록 함
-        QVector3D inward_ref = (centroid - graspPoint).normalized();
-        if (QVector3D::dotProduct(pca_normal, inward_ref) > 0) {
-            pca_normal = -pca_normal;
-        }
-
-        // vvv 사용자 요청: 0.15f (15cm)로 길이 수정 vvv
+        // --- 3e. 시각화 ---
         float normal_viz_length = 0.15f;
-        QVector3D line_start = graspPoint; // 자홍색 구체에서 시작
-        QVector3D line_end = graspPoint + (pca_normal * normal_viz_length);
-
-        // 메인 뷰와 팝업 뷰 양쪽에 시그널 전송
+        QVector3D line_start = graspPoint;
+        QVector3D line_end = graspPoint + (Z_axis * normal_viz_length);
         emit requestDebugNormalUpdate(line_start, line_end, true);
 
-        // PCA 축 시각화 (Centroid에서 시작)
         emit requestPCAAxesUpdate(centroid,
-                                  QVector3D(pc1.x(), pc1.y(), pc1.z()),
-                                  QVector3D(pc2.x(), pc2.y(), pc2.z()),
-                                  QVector3D(normal_eigen.x(), normal_eigen.y(), normal_eigen.z()),
+                                  global_pc1,
+                                  global_pc2,
+                                  global_normal,
                                   true);
-        // --- [수정 완료] ---
 
     } else {
+        // (실패 시 로직)
         emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
 
-        // --- ✨ [수정] 빠진 시각화 emit 코드 추가 (끄기) ---
         emit requestDebugNormalUpdate(QVector3D(), QVector3D(), false);
         emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false);
-        // --- [수정 완료] ---
 
         m_icpGraspPose.setToIdentity();
         m_showIcpGraspPose = false;
 
-        if(!pca_ok) qWarning() << "[ICP] PCA calculation failed.";
+        if(!global_pca_ok) qWarning() << "[ICP] Global PCA calculation failed.";
         if(graspPoint.isNull()) qWarning() << "[ICP] Grasp point calculation failed (no points?).";
     }
 
@@ -1328,7 +1430,7 @@ void RealSenseWidget::onShowICPVisualization()
     m_icpVizDialog->raise();
     m_icpVizDialog->activateWindow();
 
-    qInfo() << "[ICP] Displayed" << focusedHandlePoints.size() << " points in new window.";
+    qInfo() << "[ICP] Displayed" << (filteredHandlePoints.isEmpty() ? 0 : filteredHandlePoints.size()) << " points in new window.";
 }
 void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 {
