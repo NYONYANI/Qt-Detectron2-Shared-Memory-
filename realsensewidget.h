@@ -36,6 +36,7 @@
 #include <QDialog>
 #include <QVBoxLayout>
 #include "pointcloudwidget.h"
+#include "projectionplotwidget.h" // ✨ 2D 프로젝션 플롯 헤더
 
 struct GraspingTarget
 {
@@ -79,10 +80,9 @@ public slots:
     void onShowICPVisualization();
     void onShowHorizontalGraspVisualization();
     void onHangCupSequenceRequested();
-
-    // ✨ [수정] 여기에 두 함수 선언을 다시 추가합니다.
     void updateFrame();
     void checkProcessingResult();
+
 
 signals:
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
@@ -105,14 +105,13 @@ signals:
     void visionTaskComplete();
 
     void requestRawGraspPoseUpdate(const QMatrix4x4& pose, bool show);
-    // ✨ [오류 수정] QVector33D -> QVector3D
     void requestHangCupSequence(const QVector3D& approach_pos_mm, const QVector3D& place_pos_mm, const QVector3D& retreat_pos_mm, const QVector3D& orientation_deg);
     void requestPCAAxesUpdate(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal, bool show);
 
     void requestDebugLookAtPointUpdate(const QVector3D& point, bool show);
     void requestDebugLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
     void requestDebugNormalUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
-    // (여기에는 updateFrame, checkProcessingResult가 없어야 합니다)
+
 
 private:
     struct HandleAnalysisResult {
@@ -125,7 +124,7 @@ private:
         Eigen::Vector3f pcaNormal;
         bool isValid = false;
         float distanceToRobot = std::numeric_limits<float>::max();
-        QPointF cupBodyCenter2D; // ✨ [추가] 컵 몸통의 2D 중심 (X, Y)
+        QPointF cupBodyCenter2D;
     };
 
 
@@ -190,8 +189,12 @@ private:
     QMatrix4x4 m_icpGraspPose;
     bool m_showIcpGraspPose = false;
     QVector<QVector3D> m_selectedHandlePoints3D;
+
+    // ✨ [수정] 선언 1개만 남김
     QDialog* m_icpVizDialog = nullptr;
     PointCloudWidget* m_icpPointCloudWidget = nullptr;
+    QDialog* m_projectionPlotDialog = nullptr;
+    ProjectionPlotWidget* m_projectionPlotWidget = nullptr;
 
 
     QMatrix4x4 m_calculatedTargetPose; QVector3D m_calculatedTargetPos_m; QVector3D m_calculatedTargetOri_deg;
@@ -201,7 +204,7 @@ private:
     std::vector<int> m_clusterIds;
 
     const float APPROACH_HEIGHT_M = 0.15f;
-    const float GRIPPER_Z_OFFSET = 0.143f;
+    const float GRIPPER_Z_OFFSET = 0.146f;
     const int IMAGE_WIDTH = 640, IMAGE_HEIGHT = 480, IMAGE_CHANNELS = 3;
     const int IMAGE_SIZE = IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS;
     const int RESULT_SIZE = 100 * 1024, CONTROL_SIZE = 16;

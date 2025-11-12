@@ -23,6 +23,7 @@
 #include <QRandomGenerator> // 랜덤 선택용
 #include <algorithm> // ✨ [추가] std::sort 사용
 #include <QVBoxLayout> // ✨ [추가] QDialog 레이아웃을 위해 포함
+#include "projectionplotwidget.h" // ✨ [추가] 2D 프로젝션 플롯 헤더
 
 // ✨ [추가] IK Check를 위해 DRFL 전역 변수 선언
 #include "DRFLEx.h"
@@ -45,7 +46,11 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     m_showPlotWindow(false), m_depth_to_disparity(true), m_disparity_to_depth(false),
     m_hasCalculatedViewPose(false), m_hasPCAData(false),
     m_showRandomGraspPose(false),
-    m_newResultAwaitingFrameUpdate(false)
+    m_newResultAwaitingFrameUpdate(false),
+    m_icpVizDialog(nullptr), // ✨ [수정] 초기화 리스트로 이동
+    m_icpPointCloudWidget(nullptr), // ✨ [수정] 초기화 리스트로 이동
+    m_projectionPlotDialog(nullptr),   // ✨ [수정] 초기화 리스트로 이동
+    m_projectionPlotWidget(nullptr) // ✨ [수정] 초기화 리스트로 이동
 {
     initSharedMemory();
     m_config.enable_stream(RS2_STREAM_DEPTH, IMAGE_WIDTH, IMAGE_HEIGHT, RS2_FORMAT_Z16, 30);
@@ -80,6 +85,8 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
             m_pointCloudWidget, &PointCloudWidget::updateDebugLookAtPoint);
     connect(this, &RealSenseWidget::requestDebugLineUpdate,
             m_pointCloudWidget, &PointCloudWidget::updateDebugLine);
+    connect(this, &RealSenseWidget::requestDebugNormalUpdate,
+            m_pointCloudWidget, &PointCloudWidget::updateDebugNormal);
     m_pointCloudWidget->setFocus();
 }
 
@@ -89,11 +96,15 @@ RealSenseWidget::~RealSenseWidget()
     if (data_control) { static_cast<char*>(data_control)[OFFSET_SHUTDOWN] = 1; }
     qDeleteAll(m_plotWidgets); m_plotWidgets.clear();
     delete m_handlePlotWidget;
-    // ICP 시각화 다이얼로그가 열려있다면 닫고 삭제
+
     if (m_icpVizDialog) {
         m_icpVizDialog->close();
-        // Qt::WA_DeleteOnClose 속성을 사용했으므로 delete m_icpVizDialog는 필요 없음
     }
+
+    if (m_projectionPlotDialog) {
+        m_projectionPlotDialog->close();
+    }
+
     try { m_pipeline.stop(); } catch (...) {}
 }
 
@@ -109,8 +120,6 @@ void RealSenseWidget::onToggleMaskedPoints()
     m_pointCloudWidget->processPoints();
 }
 
-// ✨ [수정] IK 체크 헬퍼 함수: ikin 성공 시 반환되는 관절 값(posj)을 로그로 출력
-// ✨ [수정] IK 체크 헬퍼 함수: sol_space 인자를 0 -> 2로 변경
 bool RealSenseWidget::checkPoseReachable(const QVector3D& pos_mm, const QVector3D& ori_deg)
 {
     float target_posx[6];
@@ -121,9 +130,6 @@ bool RealSenseWidget::checkPoseReachable(const QVector3D& pos_mm, const QVector3
     target_posx[4] = ori_deg.y();
     target_posx[5] = ori_deg.z();
 
-    // ✨ [수정] ikin 함수의 solution space 인자를 '0'에서 '2'로 변경합니다.
-    // '0'이 특이점(J3=0)을 반환했으므로, 다른 해 공간(예: 2)을 시도합니다.
-    // (참고: 5_minimal_instruction_sample.cpp 예제에서 '2'를 사용했습니다)
     LPROBOT_POSE ik_solution = GlobalDrfl.ikin(target_posx, 2);
 
     bool isReachable = (ik_solution != nullptr);
@@ -139,7 +145,6 @@ bool RealSenseWidget::checkPoseReachable(const QVector3D& pos_mm, const QVector3
                  << ik_solution->_fPosition[3] << ","
                  << ik_solution->_fPosition[4] << ","
                  << ik_solution->_fPosition[5];
-        // ✨ J3 값이 0이 아닌지 확인해보세요.
     }
 
     return isReachable;
@@ -187,14 +192,14 @@ bool RealSenseWidget::calculatePCA(const QVector<QVector3D>& points,
 
 void RealSenseWidget::onShowHandlePlot(bool showWindow)
 {
-    qDebug() << "[PLOT] Handle Plot requested. (Show Window:" << showWindow << ")"; // ✨ [추가]
+    qDebug() << "[PLOT] Handle Plot requested. (Show Window:" << showWindow << ")";
     // 1. 상태 초기화
     m_handleCenterline3D.clear();
     m_handleSegmentIds.clear();
     m_randomGraspPose.setToIdentity();
     m_showRandomGraspPose = false;
     m_hasPCAData = false;
-    m_selectedHandlePoints3D.clear(); // ✨ [추가] 선택된 핸들 포인트 초기화
+    m_selectedHandlePoints3D.clear();
 
     if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
         qDebug() << "[PLOT] No detection results or point cloud available.";
@@ -279,12 +284,12 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
         return;
     }
 
-    // 3. ✨ [추가] 손잡이를 로봇 베이스와 가까운 순서로 정렬
+    // 3. 손잡이를 로봇 베이스와 가까운 순서로 정렬
     std::sort(allHandleResults.begin(), allHandleResults.end(), [](const HandleAnalysisResult& a, const HandleAnalysisResult& b) {
         return a.distanceToRobot < b.distanceToRobot;
     });
 
-    // 4. ✨ [수정] 가장 가까운 손잡이부터 순서대로 IK 체크
+    // 4. 가장 가까운 손잡이부터 순서대로 IK 체크
     bool foundReachablePose = false;
     for (const HandleAnalysisResult& handle : allHandleResults)
     {
@@ -335,11 +340,11 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
             continue;
         }
 
-        // 4d. ✨ [핵심] 계산된 자세가 도달 가능한지 IK 체크
+        // 4d. 계산된 자세가 도달 가능한지 IK 체크
         QVector3D calculatedPos_mm = calculatedPos_m * 1000.0f;
         if (checkPoseReachable(calculatedPos_mm, calculatedOri_deg))
         {
-            // 4e. ✨ [성공] 도달 가능한 자세를 찾음!
+            // 4e. 성공: 도달 가능한 자세를 찾음!
             qDebug() << "[PLOT] ✅ SUCCESS: Cup" << handle.cupIndex << "pose is reachable. Selecting this handle.";
 
             // 이 자세를 최종 자세로 확정
@@ -351,14 +356,14 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
             m_pcaPC2 = handle.pcaPC2;
             m_pcaNormal = handle.pcaNormal;
             m_hasPCAData = true;
-            m_selectedHandlePoints3D = handle.handlePoints3D; // ✨ [추가] 선택된 핸들 포인트 저장
+            m_selectedHandlePoints3D = handle.handlePoints3D;
 
             foundReachablePose = true;
             break; // 루프 종료
         }
         else
         {
-            // 4f. ✨ [실패] 도달 불가능. 다음 손잡이로 계속
+            // 4f. 실패: 도달 불가능. 다음 손잡이로 계속
             qWarning() << "[PLOT] ❌ REJECTED: Cup" << handle.cupIndex << "pose is unreachable. Trying next closest handle.";
         }
     } // --- End of handle loop ---
@@ -373,10 +378,8 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
         m_randomGraspPose.setToIdentity();
         m_showRandomGraspPose = false;
         m_handlePlotWidget->updateData({}); // 플롯 클리어
-        m_selectedHandlePoints3D.clear(); // ✨ [추가] 실패 시 포인트 클리어
+        m_selectedHandlePoints3D.clear();
     } else {
-        // ✨ [수정]
-        // 성공한 경우, showWindow 플래그가 true일 때만 플롯 창을 띄웁니다.
         if (showWindow) {
             qDebug() << "[PLOT] Showing HandlePlotWidget window.";
             m_handlePlotWidget->show();
@@ -392,7 +395,6 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
     emit visionTaskComplete();
 }
 
-// ✨ [수정] calculateRandomGraspPoseOnSegment: 시그니처 변경, 멤버 변수 대신 out 매개변수 사용
 bool RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId,
                                                         const Eigen::Vector3f& mean,
                                                         const Eigen::Vector3f& pc1,
@@ -404,8 +406,6 @@ bool RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId,
 {
     outPose.setToIdentity();
 
-    // 이 함수가 호출되기 전에 m_handleCenterline3D와 m_handleSegmentIds가
-    // 호출자에 의해 (onShowHandlePlot에서) 설정되어 있어야 함
     if (m_handleCenterline3D.size() < 2 || m_handleSegmentIds.size() != m_handleCenterline3D.size()) {
         qWarning() << "[RandGrasp] Cannot calculate: Missing centerline/segment info (Set by caller).";
         return false;
@@ -463,7 +463,7 @@ bool RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId,
     outPose.setColumn(3, QVector4D(tcpPosition, 1.0f));
     outPose.rotate(-90.0f, 0.0f, 0.0f, 1.0f); // 로컬 Z축(0,0,1) 기준 90도 회전
 
-    outPos_m = tcpPosition; // ✨ [추가] out 매개변수에 위치(m) 저장
+    outPos_m = tcpPosition;
 
     // --- 6. 로봇 (A,B,C) 방향 계산 ---
     QMatrix3x3 rotMat = outPose.toGenericMatrix<3,3>();
@@ -475,7 +475,7 @@ bool RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId,
     while(cmdB > 180.0f) cmdB -= 360.0f; while(cmdB <= -180.0f) cmdB += 360.0f;
     while(cmdC > 180.0f) cmdC -= 360.0f; while(cmdC <= -180.0f) cmdC += 360.0f;
 
-    outOri_deg = QVector3D(cmdA, cmdB, cmdC); // ✨ [추가] out 매개변수에 방향(deg) 저장
+    outOri_deg = QVector3D(cmdA, cmdB, cmdC);
 
     qDebug() << "[RandGrasp] Pose calculation complete. Pos(m):" << outPos_m << "Ori(deg):" << outOri_deg;
 
@@ -721,9 +721,7 @@ void RealSenseWidget::onCalculateHandleViewPose()
     QVector3D vecGraspToHandle = handlePos3D - graspPoint;
     float dot_X = QVector3D::dotProduct(vecGraspToHandle, graspX_axis_ef);
 
-    // ✨ [사용자 요청 수정] X 오프셋 0.20f -> 0.25f
     const float EF_OFF_X_AMOUNT = 0.25f;
-    // const float EF_OFF_Y = 0.0f; // <-- ✨ [사용자 요청 수정] 이 줄 삭제
     const float EF_OFF_Z = -0.04f;
 
     float DYNAMIC_EF_OFF_X;
@@ -735,50 +733,29 @@ void RealSenseWidget::onCalculateHandleViewPose()
         qInfo() << "[VIEW] Handle is on -EF_X side (dot=" << dot_X << "). Setting EF_OFF_X to -" << EF_OFF_X_AMOUNT;
     }
 
-    // --- ✨ [사용자 요청 수정] 동적 Y 오프셋 계산 ---
-    // 파지 지점에서 컵 중앙으로 향하는 벡터 (항상 '안쪽'을 가리킴)
+    // --- 동적 Y 오프셋 계산 ---
     QVector3D vecGraspToCenter = (bodyCenter3D - graspPoint).normalized();
-    // 파지 좌표계의 Y축
     QVector3D graspY_axis_ef = m_calculatedTargetPose.column(1).toVector3D().normalized();
 
-    // 내적을 통해 Y축이 '안쪽'을 향하는지 '바깥쪽'을 향하는지 확인
     float dot_Y = QVector3D::dotProduct(graspY_axis_ef, vecGraspToCenter);
 
     float DYNAMIC_EF_OFF_Y;
     if (dot_Y > 0) {
-        // graspY_axis_ef가 이미 '안쪽'을 향함 (dot_Y가 양수)
-        // 사용자가 "+오프셋"을 원하셨으므로, 반지름만큼 +방향으로 이동
         DYNAMIC_EF_OFF_Y = circleRadius;
         qInfo() << "[VIEW] Grasp +Y points INWARD (dot=" << dot_Y << "). Setting EF_OFF_Y to +" << DYNAMIC_EF_OFF_Y;
     } else {
-        // graspY_axis_ef가 '바깥쪽'을 향함 (dot_Y가 음수)
-        // 사용자가 "-오프셋"을 원하셨으므로, 반지름만큼 -방향으로 이동
         DYNAMIC_EF_OFF_Y = -circleRadius;
         qInfo() << "[VIEW] Grasp +Y points OUTWARD (dot=" << dot_Y << "). Setting EF_OFF_Y to " << DYNAMIC_EF_OFF_Y;
     }
-    // (설명: 'translate' 함수는 해당 축을 기준으로 이동합니다.
-    //  - Y축이 '안쪽'일 때 +이동 -> 안쪽으로 이동
-    //  - Y축이 '바깥쪽'일 때 -이동 -> Y축의 반대방향, 즉 '안쪽'으로 이동
-    //  결과적으로 DYNAMIC_EF_OFF_Y 값은 항상 컵 안쪽으로 이동하게 됩니다.)
-    // --- [수정 완료] ---
-
 
     // --- 5. 오프셋 적용하여 카메라 목표 위치 계산 ---
     QMatrix4x4 offsetPoseInGraspFrame = m_calculatedTargetPose;
-    // ✨ [사용자 요청 수정] DYNAMIC_EF_OFF_Y 적용
     offsetPoseInGraspFrame.translate(DYNAMIC_EF_OFF_X, DYNAMIC_EF_OFF_Y, EF_OFF_Z);
 
-    // 이 위치가 카메라가 있어야 할 위치
     QVector3D cameraTargetPos = offsetPoseInGraspFrame.column(3).toVector3D();
 
     // --- 6. [새로운 기능] 카메라가 바라볼 교점 계산 ---
-    // 6a. (위에서 이미 계산됨)
-    // QVector3D bodyCenter3D(bodyCenter2D.x(), bodyCenter2D.y(), graspPoint.z());
-
-    // 6b. [핵심 수정] 바디 중심에서 핸들 중심으로 향하는 방향 벡터
     QVector3D dirBodyToHandle = (handlePos3D - bodyCenter3D).normalized();
-
-    // 6c. [수정] 바디 중심에서 핸들 방향으로 반지름만큼 이동한 교점
     QVector3D intersectionPoint = bodyCenter3D + dirBodyToHandle * circleRadius;
 
 
@@ -838,7 +815,6 @@ void RealSenseWidget::onMoveToCalculatedHandleViewPose()
     }
 
     // --- 1. Get Final Target Pose (already calculated) ---
-    // m_calculatedViewMatrix는 목표 EF 자세입니다.
     QMatrix3x3 finalRotMat = m_calculatedViewMatrix.toGenericMatrix<3,3>();
     QVector3D finalOriZYZ = rotationMatrixToEulerAngles(finalRotMat, "ZYZ");
     float f_cmdA = finalOriZYZ.x() + 180.0f; float f_cmdB = -finalOriZYZ.y(); float f_cmdC = finalOriZYZ.z() + 180.0f;
@@ -847,12 +823,10 @@ void RealSenseWidget::onMoveToCalculatedHandleViewPose()
     while(f_cmdC>180.0f) f_cmdC-=360.0f; while(f_cmdC<=-180.0f) f_cmdC+=360.0f;
 
     QVector3D finalCmdOri_deg(f_cmdA, f_cmdB, f_cmdC);
-    // m_calculatedViewPos_mm는 목표 EF 위치(mm)입니다.
     QVector3D finalPos_mm = m_calculatedViewPos_mm;
 
 
     // --- 2. Get Current Pose (from last update) ---
-    // m_baseToTcpTransform은 onRobotTransformUpdated에 의해 계속 업데이트됩니다.
     QVector3D currentPos_m = m_baseToTcpTransform.column(3).toVector3D();
     QVector3D currentPos_mm = currentPos_m * 1000.0f;
 
@@ -867,16 +841,11 @@ void RealSenseWidget::onMoveToCalculatedHandleViewPose()
 
 
     // --- 3. Calculate Intermediate Pose (Base X+20cm) ---
-    // 현재 위치에서 베이스 X축으로 20cm(200mm) 앞으로 이동
     QVector3D intermediatePos_mm = currentPos_mm + QVector3D(200.0f, 0.0f, 0.0f);
-    // 방향은 현재 방향을 그대로 유지
     QVector3D intermediateCmdOri_deg = currentCmdOri_deg;
 
 
     // --- 4. Emit Move Commands (Queued) ---
-    // requestRobotMove는 RobotController의 moveToPositionAndWait(블로킹)에 연결됩니다.
-    // 따라서 로봇 스레드는 1번 명령이 완료될 때까지 대기한 후, 2번 명령을 실행합니다.
-
     qInfo() << "[VIEW] Queuing 2-step move:";
 
     qInfo() << "  - 1. (Intermediate) Pos (mm):" << intermediatePos_mm;
@@ -966,14 +935,8 @@ void RealSenseWidget::captureAndProcess(bool isAutoSequence)
 {
     if (m_isProcessing || m_latestFrame.empty()) {
         qDebug() << "[WARN] Capture failed. (Processing:" << m_isProcessing << "FrameEmpty:" << m_latestFrame.empty() << ")";
-
-        // ✨ [수정] 자동 시퀀스 중복 요청이 거부된 경우 (isAutoSequence && m_isProcessing)
-        // 여기서 visionTaskComplete()를 emit하면 시퀀스가 즉시 '성공'한 것으로
-        // 오해하고 (잘못된 데이터로) 다음 단계를 진행하므로,
-        // 시그널을 절대 보내지 않고 경고만 출력 후 리턴해야 합니다.
         if (isAutoSequence && m_isProcessing) {
             qWarning() << "[SEQ] Auto-sequence capture request IGNORED (already processing). Sequencer will wait.";
-            // emit visionTaskComplete(); // ✨ [삭제]
         }
         return;
     }
@@ -984,7 +947,7 @@ void RealSenseWidget::captureAndProcess(bool isAutoSequence)
 
     sendImageToPython(m_latestFrame);
     m_isProcessing = true;
-    m_processingTimer.start(); // <-- ✨ [추가] 타임아웃 타이머 시작
+    m_processingTimer.start();
     m_resultTimer->start(100);
 }
 
@@ -996,34 +959,25 @@ void RealSenseWidget::checkProcessingResult()
     if (!results.isEmpty()) {
         qDebug() << "[INFO] Received" << results.size() << "results.";
         m_detectionResults = results;
-        m_isProcessing = false; // <-- 정상적으로 플래그 리셋
-        m_resultTimer->stop();  // <-- 정상적으로 타이머 중지
+        m_isProcessing = false;
+        m_resultTimer->stop();
 
-        // ✨ [수정] 자동 시퀀스의 일부로 캡처된 경우
         if (m_isAutoSequenceCapture) {
-            // ✨ [수정] 즉시 시그널을 보내지 않고, updateFrame에서 처리하도록 플래그만 설정
             qDebug() << "[INFO] Results received. Flagging for frame update before signaling complete.";
             m_newResultAwaitingFrameUpdate = true;
-            // emit visionTaskComplete(); // ✨ [이동] 이 라인을 updateFrame() 끝으로 이동
         } else {
             qDebug() << "[INFO] Manual capture complete. (Not emitting signal)";
         }
-
-        // 플래그 초기화
         m_isAutoSequenceCapture = false;
     } else {
-        // ✨ [추가] 타임아웃 체크 로직
-        // 결과가 비어있다면 (Python이 아직 응답 안함)
-        // 타임아웃을 확인합니다. (예: 5000ms = 5초)
         if (m_processingTimer.elapsed() > 5000) {
             qWarning() << "[WARN] Python detection timed out after 5 seconds.";
             qWarning() << "[WARN] Forcibly resetting processing flag. Python server may need restart.";
 
-            m_isProcessing = false; // <-- ✨ [추가] 강제로 플래그 리셋
-            m_resultTimer->stop();  // <-- ✨ [추가] 결과 확인 타이머 중지
-            m_isAutoSequenceCapture = false; // <-- ✨ [추가] 시퀀스 플래그도 리셋
+            m_isProcessing = false;
+            m_resultTimer->stop();
+            m_isAutoSequenceCapture = false;
         }
-        // 타임아웃이 아니라면, 타이머는 계속 실행되며 다음 100ms 후에 다시 체크합니다.
     }
 }
 void RealSenseWidget::onDenoisingToggled()
@@ -1125,6 +1079,7 @@ QJsonArray RealSenseWidget::receiveResultsFromPython() {
     sem_wait(sem_control); static_cast<char*>(data_control)[OFFSET_RESULT_READY] = 0; sem_post(sem_control);
     return results;
 }
+
 void RealSenseWidget::onShowICPVisualization()
 {
     qInfo() << "[ICP] 'ICPButton' clicked. Finding closest handle from *current* capture...";
@@ -1264,7 +1219,7 @@ void RealSenseWidget::onShowICPVisualization()
     // --- ✨ 노이즈 필터링 종료 ---
 
 
-    // --- 2. 다이얼로그 생성 ---
+    // --- 2. 다이얼로그 생성 (3D 뷰어) ---
     if (m_icpVizDialog == nullptr) {
         m_icpVizDialog = new QDialog(this);
         m_icpVizDialog->setWindowTitle("Focused Handle Point Cloud (Base Frame)");
@@ -1290,17 +1245,35 @@ void RealSenseWidget::onShowICPVisualization()
                 m_icpPointCloudWidget, &PointCloudWidget::updateDebugNormal);
     }
 
+    // --- ✨ [새 기능] 2B. 2D 프로젝션 다이얼로그 생성 ---
+    if (m_projectionPlotDialog == nullptr) {
+        m_projectionPlotDialog = new QDialog(this);
+        m_projectionPlotDialog->setWindowTitle("PCA XY Projection (Outline)");
+        m_projectionPlotDialog->setAttribute(Qt::WA_DeleteOnClose);
+        m_projectionPlotDialog->resize(500, 500);
+        m_projectionPlotWidget = new ProjectionPlotWidget(m_projectionPlotDialog);
+        QVBoxLayout* layout = new QVBoxLayout(m_projectionPlotDialog);
+        layout->addWidget(m_projectionPlotWidget);
+        m_projectionPlotDialog->setLayout(layout);
+
+        connect(m_projectionPlotDialog, &QDialog::finished, [this](){
+            m_projectionPlotDialog = nullptr;
+            m_projectionPlotWidget = nullptr;
+            qDebug() << "[ProjPlot] Projection plot dialog closed.";
+        });
+    }
+    // --- [새 기능 완료] ---
+
+
     // --- 3. PCA 실행 및 파지 좌표계 계산 ---
 
-    // 3a. (글로벌) PCA 실행 -> '무게중심(centroid)'과 '글로벌 축' 확보
+    // 3a. (글로벌) PCA 실행
     Eigen::Vector3f global_mean_eigen, global_pc1_eigen, global_pc2_eigen, global_normal_eigen;
-    QVector<QPointF> projectedPoints;
-    // ✨ [수정] 필터링된 포인트를 사용
-    bool global_pca_ok = calculatePCA(filteredHandlePoints, projectedPoints,
+    QVector<QPointF> projectedPoints_Legacy;
+    bool global_pca_ok = calculatePCA(filteredHandlePoints, projectedPoints_Legacy,
                                       global_mean_eigen, global_pc1_eigen, global_pc2_eigen, global_normal_eigen);
 
-    // 3b. 파지 포인트(graspPoint) 계산 (강도 기반 '최고점')
-    // ✨ [수정] 필터링된 포인트를 시각화 위젯으로 전송
+    // 3b. 파지 포인트(graspPoint) 계산
     QVector3D graspPoint = m_icpPointCloudWidget->setRawBaseFramePoints(filteredHandlePoints);
     QVector3D centroid(global_mean_eigen.x(), global_mean_eigen.y(), global_mean_eigen.z());
     QVector3D global_pc1(global_pc1_eigen.x(), global_pc1_eigen.y(), global_pc1_eigen.z());
@@ -1313,7 +1286,6 @@ void RealSenseWidget::onShowICPVisualization()
         // 3c. 로컬 PCA 실행 (주변부 법선 벡터 계산)
         QVector<QVector3D> localNeighborhoodPoints;
         const float local_radius = 0.02f; // 2cm 반경
-        // ✨ [수정] 필터링된 포인트를 사용
         for (const QVector3D& p : filteredHandlePoints) {
             if (p.distanceToPoint(graspPoint) < local_radius) {
                 localNeighborhoodPoints.append(p);
@@ -1398,7 +1370,7 @@ void RealSenseWidget::onShowICPVisualization()
         qInfo() << "[ICP] Grasp Point (Magenta): " << graspPoint;
         qInfo() << "[ICP] EF Position (Axis Origin): " << ef_position;
 
-        // --- 3e. 시각화 ---
+        // --- 3e. 시각화 (3D) ---
         float normal_viz_length = 0.15f;
         QVector3D line_start = graspPoint;
         QVector3D line_end = graspPoint + (Z_axis * normal_viz_length);
@@ -1410,28 +1382,54 @@ void RealSenseWidget::onShowICPVisualization()
                                   global_normal,
                                   true);
 
+        // --- ✨ [새 기능] 3f. 2D 프로젝션 플롯용 데이터 계산 및 전송 ---
+        QVector<QPointF> pcaProjectedPoints;
+        pcaProjectedPoints.reserve(filteredHandlePoints.size());
+        for (const QVector3D& p : filteredHandlePoints) {
+            QVector3D p_centered = p - centroid;
+            float proj_x = QVector3D::dotProduct(p_centered, global_pc1); // PC1 (빨강)
+            float proj_y = QVector3D::dotProduct(p_centered, global_pc2); // PC2 (초록)
+            pcaProjectedPoints.append(QPointF(proj_x, proj_y));
+        }
+
+        if (m_projectionPlotWidget) {
+            m_projectionPlotWidget->updateData(pcaProjectedPoints);
+        }
+        // --- [새 기능 완료] ---
+
     } else {
         // (실패 시 로직)
         emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
-
         emit requestDebugNormalUpdate(QVector3D(), QVector3D(), false);
         emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false);
-
         m_icpGraspPose.setToIdentity();
         m_showIcpGraspPose = false;
+
+        // ✨ [새 기능] 실패 시 2D 플롯도 클리어
+        if (m_projectionPlotWidget) {
+            m_projectionPlotWidget->updateData({});
+        }
 
         if(!global_pca_ok) qWarning() << "[ICP] Global PCA calculation failed.";
         if(graspPoint.isNull()) qWarning() << "[ICP] Grasp point calculation failed (no points?).";
     }
-
 
     // --- 4. 다이얼로그 표시 ---
     m_icpVizDialog->show();
     m_icpVizDialog->raise();
     m_icpVizDialog->activateWindow();
 
+    // ✨ [새 기능] 2D 플롯 다이얼로그 표시
+    if (m_projectionPlotDialog) {
+        m_projectionPlotDialog->show();
+        m_projectionPlotDialog->raise();
+        m_projectionPlotDialog->activateWindow();
+    }
+
     qInfo() << "[ICP] Displayed" << (filteredHandlePoints.isEmpty() ? 0 : filteredHandlePoints.size()) << " points in new window.";
 }
+
+
 void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 {
     qInfo() << "[GRASP] 'Grasp Handle' move requested (with 5cm approach).";
@@ -1464,7 +1462,7 @@ void RealSenseWidget::onMoveToRandomGraspPoseRequested()
     QVector3D robotApproachPos_mm = approachPos_m * 1000.0f;
 
 
-    // --- ✨ [추가] 4. 이동 요청 전 IK 체크 수행 ---
+    // --- 4. 이동 요청 전 IK 체크 수행 ---
     qDebug() << "[GRASP] Checking reachability before emitting move request...";
 
     // (A) 최종 파지 자세 체크
@@ -1472,8 +1470,6 @@ void RealSenseWidget::onMoveToRandomGraspPoseRequested()
         qWarning() << "[GRASP] ❌ Final grasp pose is UNREACHABLE. Move Canceled.";
         qWarning() << "  - Pos(mm):" << robotGraspPos_mm << "Ori(deg):" << robotCmdOri_deg;
         qWarning() << "[GRASP] Please press 'View handle Plot' again to find a new pose.";
-        // 참고: 이 버튼은 '다음' 물체를 자동으로 시도하지 않습니다.
-        // 'View handle Plot'을 다시 눌러야 새 자세를 찾습니다.
         return;
     }
 
@@ -1494,7 +1490,7 @@ void RealSenseWidget::onMoveToRandomGraspPoseRequested()
     qInfo() << "  - 2. Final Pos (mm):"    << robotGraspPos_mm;
     qInfo() << "  - Cmd Rot (A, B, C deg):" << robotCmdOri_deg;
 
-    // 5. 시그널 발생 (이제 IK 체크가 완료된 상태)
+    // 5. 시그널 발생
     emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg);
 }
 
@@ -1558,7 +1554,7 @@ void RealSenseWidget::onMoveToIcpGraspPoseRequested()
     qInfo() << "  - 2. Final Pos (mm):"    << robotGraspPos_mm;
     qInfo() << "  - Cmd Rot (A, B, C deg):" << robotCmdOri_deg;
 
-    // 5. 시그널 발생 (이제 IK 체크가 완료된 상태)
+    // 5. 시그널 발생
     emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg);
 }
 
@@ -1668,9 +1664,8 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
                 m_icpPointCloudWidget, &PointCloudWidget::setPCAAxes);
         connect(this, &RealSenseWidget::requestDebugLineUpdate,
                 m_pointCloudWidget, &PointCloudWidget::updateDebugLine);
-        connect(this, &RealSenseWidget::requestDebugNormalUpdate, // ✨ [이 줄 추가]
-                m_pointCloudWidget, &PointCloudWidget::updateDebugNormal); // ✨ [이 줄 추가]
-        m_pointCloudWidget->setFocus();
+        connect(this, &RealSenseWidget::requestDebugNormalUpdate,
+                m_pointCloudWidget, &PointCloudWidget::updateDebugNormal);
     }
 
     // --- 3. PCA 실행 및 파지 좌표계 계산 ---
@@ -1748,50 +1743,61 @@ void RealSenseWidget::onHangCupSequenceRequested()
 {
     qInfo() << "[HANG] 'Hang Cup' sequence requested.";
 
-    // 1. ICP 버튼으로 계산된 파지 자세가 있는지 확인
+    // 1. 파지 자세가 유효한지 확인 (Z_OFFSET 계산에 필요)
     if (!m_showIcpGraspPose || m_icpGraspPose.isIdentity()) {
-        qWarning() << "[HANG] Move failed: No ICP grasp pose calculated. Press 'ICP' button first.";
+        qWarning() << "[HANG] Move failed: No ICP grasp pose calculated. Press 'Vertical Grip' first.";
         return;
     }
 
     // 2. 봉(Pole) 위치 정의 (drawPole 함수와 동일한 값, 단위: m)
     const float POLE_X = 0.48f;
     const float POLE_Z = 0.34f;
-    const float POLE_Y_START = -0.35f; // (0.48, -0.35, 0.34)에서 시작
     const float POLE_LEN = 0.15f;
+    const float POLE_Y_MID = -0.35f - (POLE_LEN / 2.0f); // -0.425f
 
-    // 봉의 중앙 지점 (컵 손잡이의 목표 지점)
-    // (-Y 방향으로 15cm 뻗어나가므로, 중앙은 Y_START에서 -7.5cm)
-    const float POLE_Y_MID = POLE_Y_START - (POLE_LEN / 2.0f); // -0.425f
-
-    // 3. 컵 손잡이가 위치할 최종 목표 지점 (m)
+    // 3. 컵 손잡이가 위치할 최종 목표 지점 (Grasp Point) (m)
     QVector3D cup_hang_pos_m(POLE_X, POLE_Y_MID, POLE_Z);
 
-    // 4. 파지 자세에서 Z축(파지 방향)과 방향(A,B,C) 가져오기
-    QVector3D ef_z_axis = m_icpGraspPose.column(2).toVector3D().normalized();
-    QMatrix3x3 rotMat = m_icpGraspPose.toGenericMatrix<3,3>();
+    // 4. ✨ [새로운] "봉 걸이" 방향 정의
+    // X축 (빨간선) = 월드 Y축 (0, 1, 0) (손잡이 구멍)
+    // Z축 (파란선) = 월드 X축 (1, 0, 0) (수평 접근)
+    // Y축 (녹색선) = Z x X = (0, 0, 1) (위쪽)
 
-    QVector3D graspOriZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
-    float cmdA = graspOriZYZ.x() + 180.0f; float cmdB = -graspOriZYZ.y(); float cmdC = graspOriZYZ.z() + 180.0f;
-    while(cmdA > 180.0f) cmdA -= 360.0f; while(cmdA <= -180.0f) cmdA += 360.0f;
-    while(cmdB > 180.0f) cmdB -= 360.0f; while(cmdB <= -180.0f) cmdB += 360.0f;
-    while(cmdC > 180.0f) cmdC -= 360.0f; while(cmdC <= -180.0f) cmdC += 360.0f;
-    QVector3D robotCmdOri_deg(cmdA, cmdB, cmdC); // (이 방향은 파지/배치 시 동일)
+    QVector3D final_X_axis(0.0f, 1.0f, 0.0f);
+    QVector3D final_Y_axis(0.0f, 0.0f, 1.0f); // Z x X 결과
+    QVector3D final_Z_axis(1.0f, 0.0f, 0.0f);
 
     // 5. 로봇 EF(End Effector)의 최종 "배치(Place)" 위치 계산
-    // (컵 목표 지점 - 그리퍼 Z 오프셋)
-    QVector3D place_pos_m = cup_hang_pos_m - (ef_z_axis * GRIPPER_Z_OFFSET);
+    QVector3D place_pos_m = cup_hang_pos_m - (final_Z_axis * GRIPPER_Z_OFFSET);
 
     // 6. "접근(Approach)" 및 "후퇴(Retreat)" 위치 계산
-    // (배치 위치보다 글로벌 Z축으로 10cm 위)
-    QVector3D approach_pos_m = place_pos_m + QVector3D(0.0f, 0.0f, 0.10f);
+    QVector3D approach_pos_m = place_pos_m - (final_Z_axis * 0.10f); // 10cm
+    QVector3D retreat_pos_mm = approach_pos_m * 1000.0f;
 
     // 7. mm 단위로 변환
     QVector3D place_pos_mm = place_pos_m * 1000.0f;
     QVector3D approach_pos_mm = approach_pos_m * 1000.0f;
-    QVector3D retreat_pos_mm = approach_pos_mm;
 
-    // 8. IK 체크
+    // 8. ✨ [새로운] (A,B,C) 방향 계산
+    QMatrix4x4 hangPoseMatrix;
+    hangPoseMatrix.setColumn(0, QVector4D(final_X_axis, 0.0f));
+    hangPoseMatrix.setColumn(1, QVector4D(final_Y_axis, 0.0f));
+    hangPoseMatrix.setColumn(2, QVector4D(final_Z_axis, 0.0f));
+    hangPoseMatrix.setColumn(3, QVector4D(place_pos_m, 1.0f));
+
+    QMatrix3x3 rotMat = hangPoseMatrix.toGenericMatrix<3,3>();
+    QVector3D hangOriZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
+
+    float cmdA = hangOriZYZ.x() + 180.0f; float cmdB = -hangOriZYZ.y(); float cmdC = hangOriZYZ.z() + 180.0f;
+    while(cmdA > 180.0f) cmdA -= 360.0f; while(cmdA <= -180.0f) cmdA += 360.0f;
+    while(cmdB > 180.0f) cmdB -= 360.0f; while(cmdB <= -180.0f) cmdB += 360.0f;
+    while(cmdC > 180.0f) cmdC -= 360.0f; while(cmdC <= -180.0f) cmdC += 360.0f;
+    QVector3D robotCmdOri_deg(cmdA, cmdB, cmdC);
+
+    qInfo() << "[HANG] Calculated Hang Pose (m):" << place_pos_m;
+    qInfo() << "[HANG] Calculated Hang Ori (A,B,C):" << robotCmdOri_deg;
+
+    // 9. IK 체크
     qDebug() << "[HANG] Checking reachability for Hang sequence...";
     if (!checkPoseReachable(place_pos_mm, robotCmdOri_deg)) {
         qWarning() << "[HANG] ❌ Place pose is UNREACHABLE. Move Canceled.";
@@ -1803,6 +1809,6 @@ void RealSenseWidget::onHangCupSequenceRequested()
     }
     qInfo() << "[HANG] ✅ All poses are reachable. Emitting sequence request.";
 
-    // 9. 시퀀서에 작업 요청
+    // 10. 시퀀서에 작업 요청
     emit requestHangCupSequence(approach_pos_mm, place_pos_mm, retreat_pos_mm, robotCmdOri_deg);
 }
