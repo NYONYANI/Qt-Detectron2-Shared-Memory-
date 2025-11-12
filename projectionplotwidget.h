@@ -14,6 +14,9 @@ class ProjectionPlotWidget : public QWidget
 public:
     explicit ProjectionPlotWidget(QWidget *parent = nullptr);
 
+    // ✨ [추가] 2D 데이터 중심점(BBox)을 반환하는 getter
+    QPointF getDataCenter() const { return m_dataCenter; }
+
 public slots:
     void updateData(const QVector<QPointF>& projectedPoints);
 
@@ -30,12 +33,13 @@ private:
     void drawAxes(QPainter& painter);
     void drawPoints(QPainter& painter);
     void drawOutline(QPainter& painter);
+    void drawCenterPoint(QPainter& painter);
 
     QVector<QPointF> m_projectedPoints;
     QPolygonF m_outlinePolygon;
 
     // 뷰포트 관리
-    QPointF m_dataCenter = QPointF(0, 0);
+    QPointF m_dataCenter = QPointF(0, 0); // ✨ 이 값을 getter로 반환
     float m_range = 0.1f; // 기본 10cm
     QPointF m_viewCenter;
     float m_pixelsPerUnit = 1.0f;

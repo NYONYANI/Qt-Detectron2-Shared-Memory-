@@ -29,6 +29,7 @@ PointCloudWidget::PointCloudWidget(QWidget *parent)
     m_showDebugLookAtPoint = false; // (이미 있음)
     m_showDebugLine = false;      // (이미 있음)
     m_showDebugNormal = false;
+    m_showVerticalLine = false; // ✨ [추가]
 }
 PointCloudWidget::~PointCloudWidget() {}
 
@@ -254,7 +255,8 @@ void PointCloudWidget::paintGL()
         drawRawGraspPoint();
         drawRawGraspPoseAxis();
 
-        drawPCAAxes(); // ✨ [이 줄을 추가]
+        drawPCAAxes();
+        drawVerticalLine(); // ✨ [추가]
 
     } else {
         glPushMatrix(); // 로봇+포인트클라우드 시작
@@ -297,7 +299,8 @@ void PointCloudWidget::paintGL()
         drawDebugNormal();
     } else {
         drawPCAAxes();
-        drawDebugNormal(); // ✨ [이 줄 추가]
+        drawDebugNormal();
+        drawVerticalLine(); // ✨ [추가]
     }
     glEnable(GL_DEPTH_TEST); // 깊이 테스트 다시 켜기
 }
@@ -796,5 +799,34 @@ void PointCloudWidget::drawDebugNormal()
     glVertex3f(m_debugNormalP2.x(), m_debugNormalP2.y(), m_debugNormalP2.z());
     glEnd();
 
+    glLineWidth(1.0f); // 라인 두께 복원
+}
+
+// ✨ [추가] 새로운 슬롯 구현
+void PointCloudWidget::updateVerticalLine(const QVector3D& p1, const QVector3D& p2, bool show)
+{
+    m_verticalLineP1 = p1;
+    m_verticalLineP2 = p2;
+    m_showVerticalLine = show;
+    update();
+}
+
+// ✨ [추가] 새로운 그리기 함수 구현
+void PointCloudWidget::drawVerticalLine()
+{
+    if (!m_showVerticalLine) return;
+
+    // 노란색 점선으로 그리기
+    glLineWidth(2.0f);
+    glColor3f(1.0f, 1.0f, 0.0f); // Yellow
+    glLineStipple(1, 0xAAAA); // 점선 패턴 (0b1010101010101010)
+    glEnable(GL_LINE_STIPPLE);
+
+    glBegin(GL_LINES);
+    glVertex3f(m_verticalLineP1.x(), m_verticalLineP1.y(), m_verticalLineP1.z());
+    glVertex3f(m_verticalLineP2.x(), m_verticalLineP2.y(), m_verticalLineP2.z());
+    glEnd();
+
+    glDisable(GL_LINE_STIPPLE); // 점선 비활성화
     glLineWidth(1.0f); // 라인 두께 복원
 }

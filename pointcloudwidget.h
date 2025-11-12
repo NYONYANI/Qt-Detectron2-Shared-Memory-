@@ -42,6 +42,9 @@ public slots:
     void updateDebugLine(const QVector3D& p1, const QVector3D& p2, bool show);
     void updateDebugNormal(const QVector3D& p1, const QVector3D& p2, bool show); // (이전 단계에서 추가됨)
 
+    // ✨ [추가] 2D 중심점을 관통하는 수직선을 업데이트하는 슬롯
+    void updateVerticalLine(const QVector3D& p1, const QVector3D& p2, bool show);
+
 signals:
     void denoisingToggled();
     void zFilterToggled();
@@ -78,7 +81,9 @@ private:
     void drawPCAAxes();
     void drawDebugLookAtPoint();
     void drawDebugLine();
-    void drawDebugNormal(); // ✨ [오류 수정] 이 줄이 빠져있었습니다.
+    void drawDebugNormal();
+    void drawVerticalLine(); // ✨ [추가] 수직선 그리기 함수 선언
+
     std::vector<float> m_vertexData;
     rs2::points m_points;
     rs2::video_frame m_colorFrame;
@@ -122,6 +127,11 @@ private:
     QVector3D m_debugNormalP1;
     QVector3D m_debugNormalP2;
     bool m_showDebugNormal;
+
+    // ✨ [추가] 수직선 데이터
+    QVector3D m_verticalLineP1;
+    QVector3D m_verticalLineP2;
+    bool m_showVerticalLine;
 
     friend class RealSenseWidget;
 

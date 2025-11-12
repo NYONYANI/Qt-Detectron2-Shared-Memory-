@@ -82,7 +82,7 @@ public slots:
     void onHangCupSequenceRequested();
     void updateFrame();
     void checkProcessingResult();
-
+    void onAlignHangRequested();
 
 signals:
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
@@ -112,6 +112,12 @@ signals:
     void requestDebugLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
     void requestDebugNormalUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
 
+    // ✨ [추가] 2D 중심점을 관통하는 수직선 시각화 요청
+    void requestVerticalLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
+    void requestAlignHangSequence(const QVector3D& approach_pos_mm,
+                                  const QVector3D& place_pos_mm,
+                                  const QVector3D& retreat_pos_mm,
+                                  const QVector3D& orientation_deg);
 
 private:
     struct HandleAnalysisResult {

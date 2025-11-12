@@ -22,6 +22,7 @@ void ProjectionPlotWidget::updateData(const QVector<QPointF>& projectedPoints)
 
     if (m_projectedPoints.size() < 3) {
         qWarning() << "[ProjPlot] Not enough points for outline:" << m_projectedPoints.size();
+        m_dataCenter = QPointF(0,0); // ✨ [추가] 포인트가 없으면 센터 초기화
     } else {
         // 데이터 범위 계산
         float minX = m_projectedPoints[0].x(), maxX = m_projectedPoints[0].x();
@@ -30,6 +31,7 @@ void ProjectionPlotWidget::updateData(const QVector<QPointF>& projectedPoints)
             if (p.x() < minX) minX = p.x(); if (p.x() > maxX) maxX = p.x();
             if (p.y() < minY) minY = p.y(); if (p.y() > maxY) maxY = p.y();
         }
+        // ✨ [수정] m_dataCenter는 PCA 평균(0,0)이 아닌, 2D BBox의 중심으로 설정
         m_dataCenter = QPointF((minX + maxX) / 2.0f, (minY + maxY) / 2.0f);
         float dataWidth = qMax(maxX - minX, 0.01f) * 1.1f;
         float dataHeight = qMax(maxY - minY, 0.01f) * 1.1f;
@@ -55,6 +57,7 @@ void ProjectionPlotWidget::paintEvent(QPaintEvent *event)
     if (m_projectedPoints.isEmpty()) return;
     drawPoints(painter);
     drawOutline(painter);
+    drawCenterPoint(painter); // ✨ [이 줄 추가]
 }
 
 QPointF ProjectionPlotWidget::dataToWidget(const QPointF& dataPoint)
@@ -99,6 +102,20 @@ void ProjectionPlotWidget::drawOutline(QPainter& painter)
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(path);
 }
+
+// ✨ [아래 함수 새로 추가]
+void ProjectionPlotWidget::drawCenterPoint(QPainter &painter)
+{
+    // m_dataCenter는 updateData에서 계산된 데이터 좌표계의 2D BBox 중심입니다.
+    // 이 점은 dataToWidget 변환의 (0,0) 기준점이 되므로,
+    // dataToWidget(m_dataCenter)는 항상 m_viewCenter (위젯의 픽셀 중심)와 같습니다.
+
+    // 검은색 원으로 그립니다.
+    painter.setBrush(Qt::black);
+    painter.setPen(QPen(Qt::black, 2.0));
+    painter.drawEllipse(m_viewCenter, 4, 4); // 반지름 4px
+}
+
 
 // 2D 포인트 간의 외적 (회전 방향 판별용)
 qreal ProjectionPlotWidget::cross_product(const QPointF& o, const QPointF& a, const QPointF& b)

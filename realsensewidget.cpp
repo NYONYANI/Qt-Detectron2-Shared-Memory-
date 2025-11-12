@@ -67,6 +67,8 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     connect(m_pointCloudWidget, &PointCloudWidget::moveRobotToPreGraspPoseRequested, this, &RealSenseWidget::onMoveRobotToPreGraspPose);
     connect(m_pointCloudWidget, &PointCloudWidget::pickAndReturnRequested, this, &RealSenseWidget::onPickAndReturnRequested);
     m_layout->addWidget(m_colorLabel, 1); m_layout->addWidget(m_pointCloudWidget, 1);
+
+    // ✨ [오류 수정] setLayout(this) -> setLayout(m_layout)
     setLayout(m_layout);
 
     m_baseToTcpTransform.setToIdentity();
@@ -1243,6 +1245,9 @@ void RealSenseWidget::onShowICPVisualization()
                 m_icpPointCloudWidget, &PointCloudWidget::setPCAAxes);
         connect(this, &RealSenseWidget::requestDebugNormalUpdate,
                 m_icpPointCloudWidget, &PointCloudWidget::updateDebugNormal);
+        // ✨ [추가] 새로운 시그널 연결
+        connect(this, &RealSenseWidget::requestVerticalLineUpdate,
+                m_icpPointCloudWidget, &PointCloudWidget::updateVerticalLine);
     }
 
     // --- ✨ [새 기능] 2B. 2D 프로젝션 다이얼로그 생성 ---
@@ -1394,6 +1399,22 @@ void RealSenseWidget::onShowICPVisualization()
 
         if (m_projectionPlotWidget) {
             m_projectionPlotWidget->updateData(pcaProjectedPoints);
+
+            // --- ✨ [요청 사항] 2D 중심점을 3D로 변환하여 수직선 계산 ---
+            QPointF center2D = m_projectionPlotWidget->getDataCenter(); // (PC1, PC2) 좌표
+            // 2D 중심점(BBox)을 3D 평면(PC1, PC2) 위의 점으로 변환 (3D Centroid 기준)
+            QVector3D P_3D_center_on_plane = centroid +
+                                             (center2D.x() * global_pc1) +
+                                             (center2D.y() * global_pc2);
+
+            float line_half_length = 0.1f; // 선 길이 10cm (총 20cm)
+            // 3D 평면의 법선(Normal) 방향으로 선을 그림
+            QVector3D vertical_line_start = P_3D_center_on_plane - (global_normal * line_half_length);
+            QVector3D vertical_line_end   = P_3D_center_on_plane + (global_normal * line_half_length);
+
+            // 3D 뷰어에 노란색 점선 그리도록 시그널 전송
+            emit requestVerticalLineUpdate(vertical_line_start, vertical_line_end, true);
+            // --- [요청 사항 완료] ---
         }
         // --- [새 기능 완료] ---
 
@@ -1409,6 +1430,8 @@ void RealSenseWidget::onShowICPVisualization()
         if (m_projectionPlotWidget) {
             m_projectionPlotWidget->updateData({});
         }
+        // ✨ [추가] 실패 시 수직선도 숨김
+        emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false);
 
         if(!global_pca_ok) qWarning() << "[ICP] Global PCA calculation failed.";
         if(graspPoint.isNull()) qWarning() << "[ICP] Grasp point calculation failed (no points?).";
@@ -1666,6 +1689,9 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
                 m_pointCloudWidget, &PointCloudWidget::updateDebugLine);
         connect(this, &RealSenseWidget::requestDebugNormalUpdate,
                 m_pointCloudWidget, &PointCloudWidget::updateDebugNormal);
+        // ✨ [추가] 수직선 시그널 연결
+        connect(this, &RealSenseWidget::requestVerticalLineUpdate,
+                m_icpPointCloudWidget, &PointCloudWidget::updateVerticalLine);
     }
 
     // --- 3. PCA 실행 및 파지 좌표계 계산 ---
@@ -1676,6 +1702,7 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
 
     QVector3D graspPoint = m_icpPointCloudWidget->setRawBaseFramePoints(focusedHandlePoints);
     QVector3D centroid(mean_eigen.x(), mean_eigen.y(), mean_eigen.z());
+    QVector3D global_normal(normal_eigen.x(), normal_eigen.y(), normal_eigen.z()); // ✨ [추가]
 
     if (!graspPoint.isNull() && pca_ok)
     {
@@ -1721,12 +1748,17 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
         qInfo() << "[ICP-H] Grasp Point (Magenta): " << graspPoint;
         qInfo() << "[ICP-H] EF Position (Axis Origin): " << ef_position;
 
+        // ✨ [추가] 수직선 숨기기 (이 모드에서는 2D 플롯을 사용하지 않음)
+        emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false);
+
     } else {
         emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
         emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false);
         emit requestDebugNormalUpdate(QVector3D(), QVector3D(), false);
         m_icpGraspPose.setToIdentity();
         m_showIcpGraspPose = false;
+        // ✨ [추가] 수직선 숨기기
+        emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false);
 
         if(!pca_ok) qWarning() << "[ICP-H] PCA calculation failed.";
         if(graspPoint.isNull()) qWarning() << "[ICP-H] Grasp point calculation failed (no points?).";
@@ -1739,76 +1771,126 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
 
     qInfo() << "[ICP-H] Displayed" << focusedHandlePoints.size() << " points in new window.";
 }
-void RealSenseWidget::onHangCupSequenceRequested()
-{
-    qInfo() << "[HANG] 'Hang Cup' sequence requested.";
 
-    // 1. 파지 자세가 유효한지 확인 (Z_OFFSET 계산에 필요)
+// ✨ [수정] onHangCupSequenceRequested -> onAlignHangRequested
+// (이전 이름) onHangCupSequenceRequested
+// (새 이름) onAlignHangRequested
+void RealSenseWidget::onAlignHangRequested()
+{
+    qInfo() << "[ALIGN HANG] 'Align Hang Pose' (start of pole) VISUALIZE requested.";
+
+    // 1. Vertical Grip (ICP) 자세가 유효한지 확인
+    // (이 자세는 Y축 = global_normal (노란선) / X축 = Down 으로 정의되었음)
     if (!m_showIcpGraspPose || m_icpGraspPose.isIdentity()) {
-        qWarning() << "[HANG] Move failed: No ICP grasp pose calculated. Press 'Vertical Grip' first.";
+        qWarning() << "[ALIGN HANG] Viz failed: No ICP grasp pose calculated. Press 'Vertical Grip' first.";
         return;
     }
 
-    // 2. 봉(Pole) 위치 정의 (drawPole 함수와 동일한 값, 단위: m)
+    // 2. 봉(Pole) 위치 정의 (pointcloudwidget.cpp의 drawPole과 일치)
     const float POLE_X = 0.48f;
     const float POLE_Z = 0.34f;
     const float POLE_LEN = 0.15f;
-    const float POLE_Y_MID = -0.35f - (POLE_LEN / 2.0f); // -0.425f
+    const float POLE_Y_CENTER = -0.275f;
+    // (이전) const float POLE_Y_END = POLE_Y_CENTER + (POLE_LEN / 2.0f); // -0.20f
+    const float POLE_Y_END = POLE_Y_CENTER + (POLE_LEN / 2.0f); // -0.20f
+
 
     // 3. 컵 손잡이가 위치할 최종 목표 지점 (Grasp Point) (m)
-    QVector3D cup_hang_pos_m(POLE_X, POLE_Y_MID, POLE_Z);
+    QVector3D cup_hang_pos_m(POLE_X, POLE_Y_END, POLE_Z);
 
-    // 4. ✨ [새로운] "봉 걸이" 방향 정의
-    // X축 (빨간선) = 월드 Y축 (0, 1, 0) (손잡이 구멍)
-    // Z축 (파란선) = 월드 X축 (1, 0, 0) (수평 접근)
-    // Y축 (녹색선) = Z x X = (0, 0, 1) (위쪽)
+    // 4. "정렬" 방향 정의
+    // Vertical Grip 자세(Y=노란선, X=Down)를 기준으로 함
 
-    QVector3D final_X_axis(0.0f, 1.0f, 0.0f);
-    QVector3D final_Y_axis(0.0f, 0.0f, 1.0f); // Z x X 결과
-    QVector3D final_Z_axis(1.0f, 0.0f, 0.0f);
+    // X축 (Red) = Vertical Grip과 동일하게 '아래'를 보도록 (0, 0, -1)
+    QVector3D final_X_axis(0.0f, 0.0f, -1.0f);
+
+    // ✨ [사용자 요청 수정] Y축을 (0, 1, 0)으로 변경
+    // (이전) Y축 (Green, 노란선) = 봉의 방향 (0, -1, 0)과 정렬
+    // QVector3D final_Y_axis(0.0f, -1.0f, 0.0f);
+    // (변경) Y축 (Green, 노란선) = 봉의 반대 방향 (0, 1, 0)을 향하도록
+    QVector3D final_Y_axis(0.0f, 1.0f, 0.0f);
+    qInfo() << "[ALIGN HANG] Y-Axis (Green) set to (0, 1, 0) to approach from base side.";
+
+
+    // Z축 (Blue, 접근방향) = X x Y = (0,0,-1) x (0,1,0) = (1, 0, 0)
+    QVector3D final_Z_axis = QVector3D::crossProduct(final_X_axis, final_Y_axis).normalized();
+    qInfo() << "[ALIGN HANG] Resulting Z-Axis (Blue, Approach) is:" << final_Z_axis;
 
     // 5. 로봇 EF(End Effector)의 최종 "배치(Place)" 위치 계산
+    // (컵 손잡이 위치에서 접근 방향(Z축)으로 그리퍼 옵셋만큼 뒤로 물러남)
     QVector3D place_pos_m = cup_hang_pos_m - (final_Z_axis * GRIPPER_Z_OFFSET);
 
-    // 6. "접근(Approach)" 및 "후퇴(Retreat)" 위치 계산
-    QVector3D approach_pos_m = place_pos_m - (final_Z_axis * 0.10f); // 10cm
-    QVector3D retreat_pos_mm = approach_pos_m * 1000.0f;
-
-    // 7. mm 단위로 변환
-    QVector3D place_pos_mm = place_pos_m * 1000.0f;
-    QVector3D approach_pos_mm = approach_pos_m * 1000.0f;
-
-    // 8. ✨ [새로운] (A,B,C) 방향 계산
+    // 6. (A,B,C) 방향 계산을 위한 최종 행렬
     QMatrix4x4 hangPoseMatrix;
     hangPoseMatrix.setColumn(0, QVector4D(final_X_axis, 0.0f));
     hangPoseMatrix.setColumn(1, QVector4D(final_Y_axis, 0.0f));
     hangPoseMatrix.setColumn(2, QVector4D(final_Z_axis, 0.0f));
-    hangPoseMatrix.setColumn(3, QVector4D(place_pos_m, 1.0f));
+    hangPoseMatrix.setColumn(3, QVector4D(place_pos_m, 1.0f)); // place_pos_m이 P_ef_current 입니다.
 
-    QMatrix3x3 rotMat = hangPoseMatrix.toGenericMatrix<3,3>();
-    QVector3D hangOriZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
+    // ✨ [이전 요청] 로컬 X축(Rx) 기준으로 30도 추가 회전
+    float additional_rx_angle = 30.0f;
+    hangPoseMatrix.rotate(additional_rx_angle, 1.0f, 0.0f, 0.0f);
+    qInfo() << "[ALIGN HANG] Applied additional" << additional_rx_angle << "deg rotation around local X-axis.";
 
-    float cmdA = hangOriZYZ.x() + 180.0f; float cmdB = -hangOriZYZ.y(); float cmdC = hangOriZYZ.z() + 180.0f;
-    while(cmdA > 180.0f) cmdA -= 360.0f; while(cmdA <= -180.0f) cmdA += 360.0f;
-    while(cmdB > 180.0f) cmdB -= 360.0f; while(cmdB <= -180.0f) cmdB += 360.0f;
-    while(cmdC > 180.0f) cmdC -= 360.0f; while(cmdC <= -180.0f) cmdC += 360.0f;
-    QVector3D robotCmdOri_deg(cmdA, cmdB, cmdC);
+    // --- ✨ [새로운 사용자 요청] ---
+    // "회전"은 유지하되, "월드 Y축 이동"을 적용하여
+    // "Z축 끝단(Tip)"이 "봉 끝단(cup_hang_pos_m)"에 정확히 오도록 "위치"를 보정합니다.
 
-    qInfo() << "[HANG] Calculated Hang Pose (m):" << place_pos_m;
-    qInfo() << "[HANG] Calculated Hang Ori (A,B,C):" << robotCmdOri_deg;
+    // 1. 현재 (회전된) Z축 방향 벡터 (월드 좌표계 기준)
+    QVector3D Z_axis_rotated = hangPoseMatrix.column(2).toVector3D().normalized();
 
-    // 9. IK 체크
-    qDebug() << "[HANG] Checking reachability for Hang sequence...";
-    if (!checkPoseReachable(place_pos_mm, robotCmdOri_deg)) {
-        qWarning() << "[HANG] ❌ Place pose is UNREACHABLE. Move Canceled.";
-        return;
-    }
-    if (!checkPoseReachable(approach_pos_mm, robotCmdOri_deg)) {
-        qWarning() << "[HANG] ❌ Approach/Retreat pose is UNREACHABLE. Move Canceled.";
-        return;
-    }
-    qInfo() << "[HANG] ✅ All poses are reachable. Emitting sequence request.";
+    // 2. 현재 (회전된) EF의 위치 (P_ef_current)
+    QVector3D P_ef_current = hangPoseMatrix.column(3).toVector3D(); // == place_pos_m
 
-    // 10. 시퀀서에 작업 요청
-    emit requestHangCupSequence(approach_pos_mm, place_pos_mm, retreat_pos_mm, robotCmdOri_deg);
+    // 3. 현재 (회전된) Z축 끝단(Tip)의 위치
+    QVector3D P_tip_current = P_ef_current + Z_axis_rotated * GRIPPER_Z_OFFSET;
+
+    // 4. 목표 Z축 끝단(Tip)의 위치 (봉 끝단)
+    QVector3D P_tip_target = cup_hang_pos_m; // (POLE_X, POLE_Y_END, POLE_Z)
+
+    // 5. Z축 끝단(Tip)이 목표에 도달하기 위해 필요한 (월드) 이동 벡터
+    QVector3D Displacement_world = P_tip_target - P_tip_current;
+
+    // 6. 이 이동 벡터에서 "월드 Y" 성분만 추출
+    QVector3D Displacement_Y_only = QVector3D(0.0f, Displacement_world.y(), 0.0f);
+    qInfo() << "[ALIGN HANG] Tip position error is:" << Displacement_world;
+    qInfo() << "[ALIGN HANG] Applying World-Y correction:" << Displacement_Y_only.y() << "m";
+
+    // 7. 현재 EF 위치에 이 "월드 Y" 보정값을 더하여 새로운 EF 위치 계산
+    QVector3D P_ef_new = P_ef_current + Displacement_Y_only;
+
+    // 8. 행렬의 위치(Position) 부분만 이 새로운 EF 위치로 덮어쓰기
+    hangPoseMatrix.setColumn(3, QVector4D(P_ef_new, 1.0f));
+    // --- [요청 완료] ---
+
+
+    qInfo() << "[ALIGN HANG] Calculated Hang Pose (m):" << P_ef_new; // P_ef_new로 로그 수정
+
+    // 7. 3D 뷰어에 자세 표시
+    const QMatrix4x4& existingTargetPose = m_pointCloudWidget->m_targetTcpTransform;
+    bool showExistingTargetPose = m_pointCloudWidget->m_showTargetPose;
+    const QMatrix4x4& existingViewPose = m_pointCloudWidget->m_viewPoseTransform;
+    bool showExistingViewPose = m_pointCloudWidget->m_showViewPose;
+
+    m_pointCloudWidget->updateTargetPoses(
+        existingTargetPose,   // 기존 보라색 자세 유지
+        showExistingTargetPose,
+        hangPoseMatrix,         // ✨ hangPoseMatrix (Cyan)
+        true,                   // ✨ true (보이기)
+        existingViewPose,       // 기존 노란색 자세 유지
+        showExistingViewPose
+        );
+
+    qInfo() << "[ALIGN HANG] ✅ Visualization sent to PointCloudWidget (Cyan Pose).";
+}
+
+
+// (이전 이름) onHangCupSequenceRequested -> (새 이름) onAlignHangRequested
+// ✨ [수정] 이 함수는 이제 사용되지 않지만, 이전 버튼(Hang Cup)이
+//         호출할 수 있으므로 남겨두되, 새 함수(onAlignHangRequested)를 대신 호출하도록 수정합니다.
+void RealSenseWidget::onHangCupSequenceRequested()
+{
+    qWarning() << "[HANG] 'onHangCupSequenceRequested' (Old Hang Cup button) was pressed.";
+    qWarning() << "[HANG] This button is deprecated. Retargeting to 'onAlignHangRequested' (Visualize Only).";
+    onAlignHangRequested();
 }

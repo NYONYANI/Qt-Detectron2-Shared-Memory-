@@ -422,3 +422,51 @@ void RobotSequencer::onApproachThenGrasp(const QVector3D& approach_pos_mm, const
 
     qInfo() << "[ROBOT_SEQ] ========== Approach-Then-Grasp & Lift Completed! ==========";
 }
+void RobotSequencer::onAlignHangSequence(const QVector3D& approach_pos_mm,
+                                         const QVector3D& place_pos_mm,
+                                         const QVector3D& retreat_pos_mm,
+                                         const QVector3D& orientation_deg)
+{
+    if (!m_robotController) {
+        qWarning() << "[SEQ] RobotController not set!"; return;
+    }
+
+    GlobalDrfl.set_robot_mode(ROBOT_MODE_AUTONOMOUS);
+    GlobalDrfl.set_robot_system(ROBOT_SYSTEM_REAL);
+
+    if (!g_bHasControlAuthority || GlobalDrfl.GetRobotState() != STATE_STANDBY) {
+        qWarning() << "[ROBOT_SEQ] Cannot start Align-Hang: No control or not STANDBY.";
+        return;
+    }
+
+    qInfo() << "[ROBOT_SEQ] ========== Starting Align-Hang Sequence (Pole Start) ==========";
+
+    // Step 1: 접근 위치로 이동
+    qDebug() << "[ROBOT] Step 1/4: Moving to Approach Pose";
+    if (!m_robotController->moveToPositionAndWait(approach_pos_mm, orientation_deg)) {
+        qWarning() << "[ROBOT_SEQ] Step 1 (Approach) FAILED. Aborting sequence.";
+        return;
+    }
+
+    // Step 2: 최종 배치(Place) 위치로 이동 (천천히)
+    // (속도를 느리게 하려면 onApproachThenGrasp처럼 별도 movel 호출 필요)
+    // (여기서는 표준 속도 사용)
+    qDebug() << "[ROBOT] Step 2/4: Moving to Final Place Pose";
+    if (!m_robotController->moveToPositionAndWait(place_pos_mm, orientation_deg)) {
+        qWarning() << "[ROBOT_SEQ] Step 2 (Place) FAILED. Aborting sequence.";
+        return;
+    }
+
+    // Step 3: 그리퍼 열기 (컵 놓기)
+    qDebug() << "[ROBOT] Step 3/4: Opening Gripper (Release)";
+    m_robotController->onGripperAction(0); // 0 = Open
+    QThread::msleep(1500);
+
+    // Step 4: 후퇴 위치로 이동
+    qDebug() << "[ROBOT] Step 4/4: Moving to Retreat Pose";
+    if (!m_robotController->moveToPositionAndWait(retreat_pos_mm, orientation_deg)) {
+        qWarning() << "[ROBOT_SEQ] Step 4 (Retreat) FAILED.";
+    }
+
+    qInfo() << "[ROBOT_SEQ] ========== Align-Hang Sequence Completed! ==========";
+}

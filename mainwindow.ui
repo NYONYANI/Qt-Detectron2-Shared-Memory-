@@ -219,6 +219,19 @@
      <string>Horizon Grip</string>
     </property>
    </widget>
+   <widget class="QPushButton" name="AlignHangButton">
+    <property name="geometry">
+     <rect>
+      <x>940</x>
+      <y>570</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>AlignHang</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">

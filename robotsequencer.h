@@ -51,7 +51,10 @@ public slots:
     void onStartFullAutomation();
     void onVisionTaskComplete(); // RealSenseWidget으로부터 완료 신호를 받음
     void onMoveTaskComplete(); // RobotController로부터 이동 완료 신호를 받음
-
+    void onAlignHangSequence(const QVector3D& approach_pos_mm,
+                             const QVector3D& place_pos_mm,
+                             const QVector3D& retreat_pos_mm,
+                             const QVector3D& orientation_deg);
 
 signals:
     // ✨ [추가] RealSenseWidget에 비전 작업을 요청하는 시그널

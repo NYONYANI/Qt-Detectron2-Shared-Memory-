@@ -139,6 +139,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(this, &MainWindow::requestFullAutomation, m_robotSequencer, &RobotSequencer::onStartFullAutomation);
     connect(m_robotSequencer, &RobotSequencer::automationFinished, this, &MainWindow::onAutomationFinished);
 
+    // ✨ [추가] 새로운 걸기 시퀀스 연결 (Widget -> Sequencer)
+    connect(ui->widget, &RealSenseWidget::requestAlignHangSequence, m_robotSequencer, &RobotSequencer::onAlignHangSequence);
+
 
     // --- RobotController -> MainWindow (상태 업데이트) ---
     connect(m_robotController, &RobotController::robotStateChanged, this, &MainWindow::updateRobotStateLabel);
@@ -159,6 +162,15 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->CaptureButton, &QPushButton::clicked, ui->widget, [=](){
         ui->widget->captureAndProcess(false);
     });
+
+    // ✨ [추가] 새로 추가한 AlignHangButton 연결 (UI -> Widget)
+    // .ui 파일에 AlignHangButton이 추가되었다고 가정
+    if (ui->AlignHangButton) {
+        connect(ui->AlignHangButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onAlignHangRequested);
+    } else {
+        qWarning() << "[SETUP] 'AlignHangButton' not found in .ui file. Please add it.";
+    }
+
 
     // --- RealSenseWidget -> MainWindow (기본 명령 전달용) ---
 
@@ -355,6 +367,21 @@ void MainWindow::on_HandleGrapsButton_clicked()
     ui->widget->onMoveToIcpGraspPoseRequested();
 }
 
+// ✨ [추가] .ui 파일에 'AlignHangButton'이 추가되었을 경우를 위한 자동 연결 슬롯
+void MainWindow::on_AlignHangButton_clicked()
+{
+    // 이 함수는 on_AlignHangButton_clicked() 슬롯이 .ui 파일에 정의되어 있을 때
+    // 자동으로 연결됩니다.
+    // 하지만 저희는 위 생성자에서 수동으로 connect(...)를 사용했기 때문에,
+    // 이 함수는 실제로는 호출되지 않습니다.
+    // (만약 수동 connect를 지우고 이 자동 연결을 사용하고 싶다면,
+    //  여기에 qDebug() << "[MAIN] 'Align Hang' button clicked (Auto-Slot).";
+    //  ui->widget->onAlignHangRequested();
+    //  라고 작성해야 합니다.)
+    qDebug() << "[MAIN] 'Align Hang' (Auto-Slot) clicked. (Note: Should be handled by manual connect)";
+}
+
+
 void MainWindow::updateRobotStateLabel(int state)
 {
     ROBOT_STATE eState = (ROBOT_STATE)state;
@@ -402,7 +429,7 @@ void MainWindow::updateRobotPoseLabel(const float* pose)
     }
 }
 
-\
+
 void MainWindow::on_AutoMoveButton_clicked()
 {
     qDebug() << "[MAIN] 'AutoMoveButton' clicked. Starting full sequence.";
@@ -412,7 +439,7 @@ void MainWindow::on_AutoMoveButton_clicked()
 
     emit requestFullAutomation();
 }
-\
+
 void MainWindow::onAutomationFinished()
 {
     qDebug() << "[MAIN] Full automation sequence finished.";
