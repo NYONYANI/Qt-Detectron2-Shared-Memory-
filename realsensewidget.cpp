@@ -47,10 +47,12 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     m_hasCalculatedViewPose(false), m_hasPCAData(false),
     m_showRandomGraspPose(false),
     m_newResultAwaitingFrameUpdate(false),
-    m_icpVizDialog(nullptr), // ✨ [수정] 초기화 리스트로 이동
-    m_icpPointCloudWidget(nullptr), // ✨ [수정] 초기화 리스트로 이동
-    m_projectionPlotDialog(nullptr),   // ✨ [수정] 초기화 리스트로 이동
-    m_projectionPlotWidget(nullptr) // ✨ [수정] 초기화 리스트로 이동
+    m_icpVizDialog(nullptr),
+    m_icpPointCloudWidget(nullptr),
+    m_projectionPlotDialog(nullptr),
+    m_projectionPlotWidget(nullptr),
+    m_showIcpGraspPose(false), // (이전 버전에서 이동됨)
+    m_hasCalculatedHangPose(false) // ✨ [추가] 새 멤버 변수 초기화
 {
     initSharedMemory();
     m_config.enable_stream(RS2_STREAM_DEPTH, IMAGE_WIDTH, IMAGE_HEIGHT, RS2_FORMAT_Z16, 30);
@@ -68,7 +70,6 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     connect(m_pointCloudWidget, &PointCloudWidget::pickAndReturnRequested, this, &RealSenseWidget::onPickAndReturnRequested);
     m_layout->addWidget(m_colorLabel, 1); m_layout->addWidget(m_pointCloudWidget, 1);
 
-    // ✨ [오류 수정] setLayout(this) -> setLayout(m_layout)
     setLayout(m_layout);
 
     m_baseToTcpTransform.setToIdentity();
@@ -89,6 +90,11 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
             m_pointCloudWidget, &PointCloudWidget::updateDebugLine);
     connect(this, &RealSenseWidget::requestDebugNormalUpdate,
             m_pointCloudWidget, &PointCloudWidget::updateDebugNormal);
+
+    // ✨ [추가] 3D 뷰어에 변환된 핸들 클라우드를 그리도록 시그널 연결
+    connect(this, &RealSenseWidget::requestTransformedHandleCloudUpdate,
+            m_pointCloudWidget, &PointCloudWidget::updateTransformedHandleCloud);
+
     m_pointCloudWidget->setFocus();
 }
 
@@ -201,12 +207,13 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
     m_randomGraspPose.setToIdentity();
     m_showRandomGraspPose = false;
     m_hasPCAData = false;
-    m_selectedHandlePoints3D.clear();
+    m_selectedHandlePoints3D.clear(); // ✨ [수정] m_selectedHandlePoints3D도 초기화
 
     if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
         qDebug() << "[PLOT] No detection results or point cloud available.";
         emit requestHandleCenterlineUpdate(m_handleCenterline3D, m_handleSegmentIds);
         emit requestRandomGraspPoseUpdate(m_randomGraspPose, m_showRandomGraspPose);
+        emit visionTaskComplete(); // ✨ [추가] 데이터 없어도 완료 신호 전송
         return;
     }
 
@@ -283,6 +290,7 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
         qDebug() << "[PLOT] No valid handle results found after PCA.";
         emit requestHandleCenterlineUpdate(m_handleCenterline3D, m_handleSegmentIds);
         emit requestRandomGraspPoseUpdate(m_randomGraspPose, m_showRandomGraspPose);
+        emit visionTaskComplete(); // ✨ [추가] 완료 신호 전송
         return;
     }
 
@@ -358,7 +366,7 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
             m_pcaPC2 = handle.pcaPC2;
             m_pcaNormal = handle.pcaNormal;
             m_hasPCAData = true;
-            m_selectedHandlePoints3D = handle.handlePoints3D;
+            m_selectedHandlePoints3D = handle.handlePoints3D; // ✨ [수정] m_selectedHandlePoints3D 저장
 
             foundReachablePose = true;
             break; // 루프 종료
@@ -380,7 +388,7 @@ void RealSenseWidget::onShowHandlePlot(bool showWindow)
         m_randomGraspPose.setToIdentity();
         m_showRandomGraspPose = false;
         m_handlePlotWidget->updateData({}); // 플롯 클리어
-        m_selectedHandlePoints3D.clear();
+        m_selectedHandlePoints3D.clear(); // ✨ [수정] m_selectedHandlePoints3D 클리어
     } else {
         if (showWindow) {
             qDebug() << "[PLOT] Showing HandlePlotWidget window.";
@@ -678,9 +686,9 @@ void RealSenseWidget::onCalculateHandleViewPose()
     qInfo() << "[VIEW] 'Move View' requested. Calculating Look-At Pose...";
 
     // 1. 파지 자세 및 타겟 리스트 계산
-    if (!calculateGraspingPoses(false)) { qWarning() << "[VIEW] Grasp Pose calc failed."; m_hasCalculatedViewPose=false; return; }
-    if (m_calculatedTargetPose.isIdentity()) { qWarning() << "[VIEW] Grasp pose invalid."; m_hasCalculatedViewPose=false; return; }
-    if (m_graspingTargets.isEmpty()) { qWarning() << "[VIEW] No grasping targets."; m_hasCalculatedViewPose=false; return; }
+    if (!calculateGraspingPoses(false)) { qWarning() << "[VIEW] Grasp Pose calc failed."; m_hasCalculatedViewPose=false; emit visionTaskComplete(); return; }
+    if (m_calculatedTargetPose.isIdentity()) { qWarning() << "[VIEW] Grasp pose invalid."; m_hasCalculatedViewPose=false; emit visionTaskComplete(); return; }
+    if (m_graspingTargets.isEmpty()) { qWarning() << "[VIEW] No grasping targets."; m_hasCalculatedViewPose=false; emit visionTaskComplete(); return; }
 
     // 2. bestTarget 찾기
     QVector3D graspTargetPos_m = m_calculatedTargetPos_m - QVector3D(0, 0, GRIPPER_Z_OFFSET);
@@ -697,7 +705,7 @@ void RealSenseWidget::onCalculateHandleViewPose()
 
     if (bestTarget == nullptr || minDistToCalculated > 0.001f) {
         qWarning() << "[VIEW] Failed to find the original bestTarget. Using m_graspingTargets[0] as fallback.";
-        if(m_graspingTargets.isEmpty()) return;
+        if(m_graspingTargets.isEmpty()) { emit visionTaskComplete(); return; }
         bestTarget = &m_graspingTargets[0];
     } else {
         qInfo() << "[VIEW] Found matching bestTarget for view calculation.";
@@ -1418,6 +1426,11 @@ void RealSenseWidget::onShowICPVisualization()
         }
         // --- [새 기능 완료] ---
 
+        // ✨ [추가] 변환에 사용할 수 있도록 필터링된 핸들 포인트를 저장
+        m_selectedHandlePoints3D = filteredHandlePoints;
+        qInfo() << "[ICP] Stored" << m_selectedHandlePoints3D.size() << "filtered points for later use.";
+
+
     } else {
         // (실패 시 로직)
         emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
@@ -1425,6 +1438,9 @@ void RealSenseWidget::onShowICPVisualization()
         emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false);
         m_icpGraspPose.setToIdentity();
         m_showIcpGraspPose = false;
+
+        // ✨ [추가] 실패 시 저장된 포인트도 클리어
+        m_selectedHandlePoints3D.clear();
 
         // ✨ [새 기능] 실패 시 2D 플롯도 클리어
         if (m_projectionPlotWidget) {
@@ -1514,7 +1530,8 @@ void RealSenseWidget::onMoveToRandomGraspPoseRequested()
     qInfo() << "  - Cmd Rot (A, B, C deg):" << robotCmdOri_deg;
 
     // 5. 시그널 발생
-    emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg);
+    // ✨ [오류 수정] 4번째 인자로 빈 QMatrix4x4()를 전달하여 인자 개수 맞춤
+    emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg, QMatrix4x4());
 }
 
 void RealSenseWidget::onMoveToIcpGraspPoseRequested()
@@ -1551,6 +1568,19 @@ void RealSenseWidget::onMoveToIcpGraspPoseRequested()
     QVector3D robotApproachPos_mm = approachPos_m * 1000.0f;
 
 
+    // ✨ [추가] 걸기 자세(Hang Pose)가 계산되었는지 확인
+    QMatrix4x4 hang_pose_to_send;
+    hang_pose_to_send.setToIdentity(); // 기본값은 Identity
+
+    if (m_hasCalculatedHangPose) {
+        qInfo() << "[GRASP ICP] Found a pre-calculated Hang Pose. Bundling it with the request.";
+        hang_pose_to_send = m_calculatedHangPose;
+    } else {
+        qWarning() << "[GRASP ICP] No Hang Pose found. (Did you press 'AlignHang' first?)";
+        qWarning() << "[GRASP ICP] The robot will grasp and lift, but NOT proceed to hang.";
+    }
+
+
     // --- 4. 이동 요청 전 IK 체크 수행 ---
     qDebug() << "[GRASP ICP] Checking reachability before emitting move request...";
 
@@ -1577,8 +1607,9 @@ void RealSenseWidget::onMoveToIcpGraspPoseRequested()
     qInfo() << "  - 2. Final Pos (mm):"    << robotGraspPos_mm;
     qInfo() << "  - Cmd Rot (A, B, C deg):" << robotCmdOri_deg;
 
-    // 5. 시그널 발생
-    emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg);
+    // 5. 시그널 발생 (✨ 수정됨)
+    emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg,
+                                  hang_pose_to_send); // ✨ [추가] hang_pose_to_send 전달
 }
 
 
@@ -1663,6 +1694,59 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
             << allHandleResults[0].cupIndex << ", " << focusedHandlePoints.size() << " points).";
 
 
+    // --- ✨ 노이즈 필터링 (DBSCAN) 추가 ---
+    qInfo() << "[ICP-H] Applying noise filter to" << focusedHandlePoints.size() << "handle points...";
+    std::vector<Point3D> dbscanPoints;
+    dbscanPoints.reserve(focusedHandlePoints.size());
+    for(int i=0; i<focusedHandlePoints.size(); ++i) {
+        dbscanPoints.push_back({
+            focusedHandlePoints[i].x(),
+            focusedHandlePoints[i].y(),
+            focusedHandlePoints[i].z(),
+            0, i
+        });
+    }
+
+    const float dbscan_eps = 0.02f; // 2cm
+    const int dbscan_minPts = 10;   // 10개
+    DBSCAN dbscan_h(dbscan_eps, dbscan_minPts, dbscanPoints);
+    dbscan_h.run();
+
+    std::map<int, int> clusterCounts;
+    for(const auto& p : dbscanPoints) {
+        if(p.clusterId > 0) clusterCounts[p.clusterId]++;
+    }
+
+    int largestClusterId = -1;
+    int maxClusterSize = 0;
+    for(const auto& pair : clusterCounts) {
+        if(pair.second > maxClusterSize) {
+            maxClusterSize = pair.second;
+            largestClusterId = pair.first;
+        }
+    }
+
+    QVector<QVector3D> filteredHandlePoints;
+    if(largestClusterId != -1) {
+        filteredHandlePoints.reserve(maxClusterSize);
+        for(const auto& p : dbscanPoints) {
+            if(p.clusterId == largestClusterId) {
+                filteredHandlePoints.append(focusedHandlePoints[p.originalIndex]);
+            }
+        }
+        qInfo() << "[ICP-H] Filtered to largest cluster (" << largestClusterId << ") with" << filteredHandlePoints.size() << "points.";
+    } else {
+        qWarning() << "[ICP-H] DBSCAN found no clusters. Using original points as fallback.";
+        filteredHandlePoints = focusedHandlePoints;
+    }
+
+    if (filteredHandlePoints.isEmpty()) {
+        qWarning() << "[ICP-H] Filtering resulted in zero points. Aborting.";
+        return;
+    }
+    // --- ✨ 노이즈 필터링 종료 ---
+
+
     // ... (2. 다이얼로그 생성 로직 - 변경 없음) ...
     if (m_icpVizDialog == nullptr) {
         m_icpVizDialog = new QDialog(this);
@@ -1694,15 +1778,36 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
                 m_icpPointCloudWidget, &PointCloudWidget::updateVerticalLine);
     }
 
+    // --- 2B. 2D 프로젝션 다이얼로그 생성 (ICP-H에서는 사용 안 함) ---
+    if (m_projectionPlotDialog == nullptr) {
+        m_projectionPlotDialog = new QDialog(this);
+        m_projectionPlotDialog->setWindowTitle("PCA XY Projection (Outline)");
+        m_projectionPlotDialog->setAttribute(Qt::WA_DeleteOnClose);
+        m_projectionPlotDialog->resize(500, 500);
+        m_projectionPlotWidget = new ProjectionPlotWidget(m_projectionPlotDialog);
+        QVBoxLayout* layout = new QVBoxLayout(m_projectionPlotDialog);
+        layout->addWidget(m_projectionPlotWidget);
+        m_projectionPlotDialog->setLayout(layout);
+
+        connect(m_projectionPlotDialog, &QDialog::finished, [this](){
+            m_projectionPlotDialog = nullptr;
+            m_projectionPlotWidget = nullptr;
+            qDebug() << "[ProjPlot] Projection plot dialog closed.";
+        });
+    }
+
+
     // --- 3. PCA 실행 및 파지 좌표계 계산 ---
 
     Eigen::Vector3f mean_eigen, pc1_eigen, pc2_eigen, normal_eigen;
     QVector<QPointF> projectedPoints;
-    bool pca_ok = calculatePCA(focusedHandlePoints, projectedPoints, mean_eigen, pc1_eigen, pc2_eigen, normal_eigen);
+    // ✨ [수정] 필터링된 포인트 사용
+    bool pca_ok = calculatePCA(filteredHandlePoints, projectedPoints, mean_eigen, pc1_eigen, pc2_eigen, normal_eigen);
 
-    QVector3D graspPoint = m_icpPointCloudWidget->setRawBaseFramePoints(focusedHandlePoints);
+    // ✨ [수정] 필터링된 포인트 사용
+    QVector3D graspPoint = m_icpPointCloudWidget->setRawBaseFramePoints(filteredHandlePoints);
     QVector3D centroid(mean_eigen.x(), mean_eigen.y(), mean_eigen.z());
-    QVector3D global_normal(normal_eigen.x(), normal_eigen.y(), normal_eigen.z()); // ✨ [추가]
+    QVector3D global_normal(normal_eigen.x(), normal_eigen.y(), normal_eigen.z());
 
     if (!graspPoint.isNull() && pca_ok)
     {
@@ -1750,6 +1855,15 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
 
         // ✨ [추가] 수직선 숨기기 (이 모드에서는 2D 플롯을 사용하지 않음)
         emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false);
+        // ✨ [추가] 2D 플롯 클리어
+        if (m_projectionPlotWidget) {
+            m_projectionPlotWidget->updateData({});
+        }
+
+        // ✨ [추가] 변환에 사용할 수 있도록 필터링된 핸들 포인트를 저장
+        m_selectedHandlePoints3D = filteredHandlePoints;
+        qInfo() << "[ICP-H] Stored" << m_selectedHandlePoints3D.size() << "filtered points for later use.";
+
 
     } else {
         emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
@@ -1759,6 +1873,13 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
         m_showIcpGraspPose = false;
         // ✨ [추가] 수직선 숨기기
         emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false);
+        // ✨ [추가] 2D 플롯 클리어
+        if (m_projectionPlotWidget) {
+            m_projectionPlotWidget->updateData({});
+        }
+        // ✨ [추가] 실패 시 저장된 포인트도 클리어
+        m_selectedHandlePoints3D.clear();
+
 
         if(!pca_ok) qWarning() << "[ICP-H] PCA calculation failed.";
         if(graspPoint.isNull()) qWarning() << "[ICP-H] Grasp point calculation failed (no points?).";
@@ -1769,7 +1890,12 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
     m_icpVizDialog->raise();
     m_icpVizDialog->activateWindow();
 
-    qInfo() << "[ICP-H] Displayed" << focusedHandlePoints.size() << " points in new window.";
+    // ✨ [수정] 2D 플롯 다이얼로그는 표시하지 않음 (ICP-V만 표시)
+    if (m_projectionPlotDialog) {
+        m_projectionPlotDialog->hide();
+    }
+
+    qInfo() << "[ICP-H] Displayed" << (filteredHandlePoints.isEmpty() ? 0 : filteredHandlePoints.size()) << " points in new window.";
 }
 
 // ✨ [수정] onHangCupSequenceRequested -> onAlignHangRequested
@@ -1779,15 +1905,22 @@ void RealSenseWidget::onAlignHangRequested()
 {
     qInfo() << "[ALIGN HANG] 'Align Hang Pose' (start of pole) VISUALIZE requested.";
 
-    // 1. Vertical Grip (ICP) 자세가 유효한지 확인
+    // 1. Vertical Grip (ICP) 자세 및 *원본 포인트*가 유효한지 확인
     // (이 자세는 Y축 = global_normal (노란선) / X축 = Down 으로 정의되었음)
-    if (!m_showIcpGraspPose || m_icpGraspPose.isIdentity()) {
-        qWarning() << "[ALIGN HANG] Viz failed: No ICP grasp pose calculated. Press 'Vertical Grip' first.";
+    if (!m_showIcpGraspPose || m_icpGraspPose.isIdentity() || m_selectedHandlePoints3D.isEmpty()) {
+        qWarning() << "[ALIGN HANG] Viz failed: No ICP grasp pose or original handle points found.";
+        qWarning() << "Please press 'Vertical Grip' or 'Horizon Grip' first to capture handle points.";
+
+        m_hasCalculatedHangPose = false;
+        m_calculatedHangPose.setToIdentity();
+
+        // ✨ [추가] 시각화 숨기기
+        emit requestTransformedHandleCloudUpdate({}, false);
         return;
     }
 
     // 2. 봉(Pole) 위치 정의 (pointcloudwidget.cpp의 drawPole과 일치)
-    const float POLE_X = 0.48f;
+    const float POLE_X = 0.68f;
     const float POLE_Z = 0.34f;
     const float POLE_LEN = 0.15f;
     const float POLE_Y_CENTER = -0.275f;
@@ -1864,24 +1997,51 @@ void RealSenseWidget::onAlignHangRequested()
     // --- [요청 완료] ---
 
 
-    qInfo() << "[ALIGN HANG] Calculated Hang Pose (m):" << P_ef_new; // P_ef_new로 로그 수정
+    // ✨ [추가] 계산된 걸기 자세를 멤버 변수에 저장
+    m_calculatedHangPose = hangPoseMatrix; // hangPoseMatrix가 최종 EF hang pose
+    m_hasCalculatedHangPose = true;
 
-    // 7. 3D 뷰어에 자세 표시
+
+    // --- ✨ [사용자 요청] 핸들 클라우드 포인트 변환 ---
+
+    // 1. 변환 행렬 계산: T_hang_world * T_world_grasp
+    // (T_world_grasp = m_icpGraspPose.inverted())
+    QMatrix4x4 transform = m_calculatedHangPose * m_icpGraspPose.inverted();
+
+    // 2. 원본 포인트(m_selectedHandlePoints3D)에 변환 적용
+    QVector<QVector3D> transformedPoints;
+    transformedPoints.reserve(m_selectedHandlePoints3D.size());
+    for (const QVector3D& p_world_original : m_selectedHandlePoints3D) {
+        QVector3D p_world_new = transform * p_world_original;
+        transformedPoints.append(p_world_new);
+    }
+
+    qInfo() << "[ALIGN HANG] Transformed" << transformedPoints.size() << "handle points to hang location.";
+
+    // 3. 3D 뷰어에 그리도록 시그널 전송 (자홍색)
+    emit requestTransformedHandleCloudUpdate(transformedPoints, true);
+
+    // --- [요청 완료] ---
+
+
+    qInfo() << "[ALIGN HANG] Calculated Hang Pose (m):" << P_ef_new;
+
+    // 7. 3D 뷰어에 자세 표시 (Cyan Pose)
     const QMatrix4x4& existingTargetPose = m_pointCloudWidget->m_targetTcpTransform;
     bool showExistingTargetPose = m_pointCloudWidget->m_showTargetPose;
     const QMatrix4x4& existingViewPose = m_pointCloudWidget->m_viewPoseTransform;
     bool showExistingViewPose = m_pointCloudWidget->m_showViewPose;
 
     m_pointCloudWidget->updateTargetPoses(
-        existingTargetPose,   // 기존 보라색 자세 유지
+        existingTargetPose,
         showExistingTargetPose,
-        hangPoseMatrix,         // ✨ hangPoseMatrix (Cyan)
-        true,                   // ✨ true (보이기)
-        existingViewPose,       // 기존 노란색 자세 유지
+        hangPoseMatrix,         // Cyan Pose
+        true,
+        existingViewPose,
         showExistingViewPose
         );
 
-    qInfo() << "[ALIGN HANG] ✅ Visualization sent to PointCloudWidget (Cyan Pose).";
+    qInfo() << "[ALIGN HANG] ✅ Visualization sent to PointCloudWidget (Cyan Pose + Magenta Points).";
 }
 
 

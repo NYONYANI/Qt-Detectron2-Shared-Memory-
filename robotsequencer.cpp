@@ -3,6 +3,8 @@
 #include <QThread>
 #include "DRFLEx.h" // extern 전역 변수 사용을 위해 포함
 #include <QApplication>
+#include <QMatrix4x4> // "invalid use of incomplete type" 오류 해결
+
 // 전역 변수 접근 (RobotController와 동일한 스레드)
 extern CDRFLEx GlobalDrfl;
 extern bool g_bHasControlAuthority;
@@ -333,7 +335,8 @@ void RobotSequencer::onFullPickAndPlaceSequence(
 }
 
 
-void RobotSequencer::onApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg)
+void RobotSequencer::onApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg,
+                                         const QMatrix4x4& hang_pose_matrix) // ✨
 {
     if (!m_robotController) {
         qWarning() << "[SEQ] RobotController not set!"; return;
@@ -421,6 +424,81 @@ void RobotSequencer::onApproachThenGrasp(const QVector3D& approach_pos_mm, const
     }
 
     qInfo() << "[ROBOT_SEQ] ========== Approach-Then-Grasp & Lift Completed! ==========";
+
+
+    // --- ✨ [수정] 걸기(Hang) 시퀀스 자동 실행 ---
+    if (hang_pose_matrix.isIdentity()) {
+        qWarning() << "[ROBOT_SEQ] No hang pose was provided (matrix is identity).";
+        qInfo() << "[ROBOT_SEQ] ========== Sequence Finished (Grasp & Lift only) ==========";
+        return; // 기존 동작: 여기서 종료
+    }
+
+    // ✨ [사용자 요청] 걸기 동작 직전에 Reset Position으로 이동
+    qInfo() << "[ROBOT_SEQ] Moving to Reset Position before starting Hang sequence...";
+    m_robotController->onResetPosition(); // 이 함수는 블로킹(동기) 방식입니다.
+    qInfo() << "[ROBOT_SEQ] Reset Position complete.";
+    QThread::msleep(500); // 0.5초 대기
+
+
+    qInfo() << "[ROBOT_SEQ] ========== Proceeding to Aligned Hang Sequence... ==========";
+
+    // 1. 걸기 자세(Hang Pose)에서 (A,B,C) 방향 및 (X,Y,Z) 위치 추출
+    QVector3D place_pos_m = hang_pose_matrix.column(3).toVector3D();
+    QMatrix3x3 rotMat = hang_pose_matrix.toGenericMatrix<3,3>();
+
+    // (A,B,C) 계산 (RobotController의 헬퍼 함수 사용)
+    QVector3D oriZYZ = m_robotController->rotationMatrixToEulerAngles(rotMat, "ZYZ");
+    float cmdA = oriZYZ.x() + 180.0f;
+    float cmdB = -oriZYZ.y();
+    float cmdC = oriZYZ.z() + 180.0f;
+    while(cmdA > 180.0f) cmdA -= 360.0f; while(cmdA <= -180.0f) cmdA += 360.0f;
+    while(cmdB > 180.0f) cmdB -= 360.0f; while(cmdB <= -180.0f) cmdB += 360.0f;
+    while(cmdC > 180.0f) cmdC -= 360.0f; while(cmdC <= -180.0f) cmdC += 360.0f;
+    QVector3D place_ori_deg(cmdA, cmdB, cmdC);
+    QVector3D place_pos_mm = place_pos_m * 1000.0f; // <-- 최종 목표 EF 위치
+
+    // 2. ✨ [사용자 요청 수정] Y축 +10cm (100mm) 중간 지점 계산
+    // 월드 좌표계 기준 Y축으로 100mm 오프셋
+    QVector3D y_offset_mm(0.0f, 100.0f, 0.0f); // 300mm -> 100mm (10cm)
+    QVector3D intermediate_Y_offset_pos_mm = place_pos_mm + y_offset_mm;
+
+    qInfo() << "[ROBOT_SEQ] Original Hang Pos (mm):" << place_pos_mm;
+    qInfo() << "[ROBOT_SEQ] Moving to Intermediate Y-Offset Pos (mm):" << intermediate_Y_offset_pos_mm;
+
+
+    // 3. (Hang Step 1: 수정된 중간 지점(Y+10cm)으로 이동)
+    qDebug() << "[ROBOT] Hang Step 1/2: Moving to Intermediate Hang Pose (Y+10cm)";
+    if (!m_robotController->moveToPositionAndWait(intermediate_Y_offset_pos_mm, place_ori_deg)) {
+        qWarning() << "[ROBOT_SEQ] Hang Step 1 (Intermediate Move) FAILED. Aborting sequence.";
+        return;
+    }
+
+    // 4. ✨ [사용자 요청 추가] (Hang Step 2: 최종 목표 지점으로 이동)
+    qDebug() << "[ROBOT] Hang Step 2/2: Moving to Final Hang Pose";
+    if (!m_robotController->moveToPositionAndWait(place_pos_mm, place_ori_deg)) {
+        qWarning() << "[ROBOT_SEQ] Hang Step 2 (Final Move) FAILED. Aborting sequence.";
+        return;
+    }
+
+    // ✨ [사용자 요청] 최종 지점으로 이동 후 시퀀스 종료 (이하 동작 주석 처리)
+
+    // (Hang Step 3: 그리퍼 열기 - 컵 놓기)
+    // qDebug() << "[ROBOT] Hang Step 3/3: Opening Gripper (Release)";
+    // m_robotController->onGripperAction(0); // 0 = Open
+    // QThread::msleep(1500);
+
+    // (Hang Step 4: 후퇴 위치로 이동)
+    // (후퇴 위치 계산)
+    // QVector3D ef_z_axis = hang_pose_matrix.column(2).toVector3D().normalized();
+    // float approach_dist_m = 0.05f; // 5cm
+    // QVector3D approach_pos_m = place_pos_m - (ef_z_axis * approach_dist_m);
+    // QVector3D retreat_pos_mm = approach_pos_m * 1000.0f; // mm 단위로 변환
+    // qDebug() << "[ROBOT] Hang Step 4/4: Moving to Retreat Pose";
+    // if (!m_robotController->moveToPositionAndWait(retreat_pos_mm, place_ori_deg)) {
+    //     qWarning() << "[ROBOT_SEQ] Hang Step 4 (Retreat) FAILED.";
+    // }
+
+    qInfo() << "[ROBOT_SEQ] ========== Full Grasp-to-Hang Sequence Completed! (Stopped at Final Hang Pos) ==========";
 }
 void RobotSequencer::onAlignHangSequence(const QVector3D& approach_pos_mm,
                                          const QVector3D& place_pos_mm,

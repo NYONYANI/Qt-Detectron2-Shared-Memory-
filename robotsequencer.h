@@ -45,8 +45,8 @@ public slots:
         const QVector3D& place_pos_mm, const QVector3D& place_ori_deg
         );
 
-    void onApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg);
-
+    void onApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg,
+                             const QMatrix4x4& hang_pose_matrix);
     // ✨ [추가] 자동화 시퀀스 슬롯
     void onStartFullAutomation();
     void onVisionTaskComplete(); // RealSenseWidget으로부터 완료 신호를 받음

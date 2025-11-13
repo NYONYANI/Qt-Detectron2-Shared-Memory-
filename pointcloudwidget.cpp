@@ -14,7 +14,7 @@
 // ===================================================================
 
 PointCloudWidget::PointCloudWidget(QWidget *parent)
-    : QOpenGLWidget(parent), m_colorFrame(nullptr)
+    : QOpenGLWidget(parent), m_colorFrame(nullptr), m_showTransformedHandleCloud(false)
 {
     setFocusPolicy(Qt::StrongFocus);
     // ✨ [수정] m_panY = -0.3f -> m_panZ = -0.3f로 변경
@@ -284,9 +284,13 @@ void PointCloudWidget::paintGL()
         glPopMatrix(); // 로봇+포인트클라우드 끝
     }
 
+    // ✨ [추가] 변환된 핸들 클라우드 그리기 (깊이 테스트 ON, 자홍색)
+    drawTransformedHandleCloud();
+
 
     // --- 2. 3D 오버레이 (깊이 테스트 OFF) ---
     glDisable(GL_DEPTH_TEST); // 깊이 테스트 끄기
+
     if (!m_isRawVizMode) { // Raw Viz 모드에서는 오버레이를 그리지 않음
         drawGraspingSpheres();
         drawTargetPose(); // 보라색 (컵 파지)
@@ -628,7 +632,7 @@ void PointCloudWidget::drawPole()
         gluQuadricNormals(quadric, GLU_SMOOTH);
 
         // --- 봉 매개변수 (cm -> m 변환) ---
-        const float pole_x = 0.48f;
+        const float pole_x = 0.68f;
         const float pole_z = 0.34f;
         const float pole_len = 0.15f;
         const float pole_y_center = -0.275f;
@@ -829,4 +833,33 @@ void PointCloudWidget::drawVerticalLine()
 
     glDisable(GL_LINE_STIPPLE); // 점선 비활성화
     glLineWidth(1.0f); // 라인 두께 복원
+}
+// ✨ [추가] 새로운 슬롯 구현
+void PointCloudWidget::updateTransformedHandleCloud(const QVector<QVector3D>& points, bool show)
+{
+    m_transformedHandlePoints = points;
+    m_showTransformedHandleCloud = show;
+    update(); // 화면 갱신 요청
+}
+
+// ✨ [추가] 새로운 그리기 함수 구현
+void PointCloudWidget::drawTransformedHandleCloud()
+{
+    if (!m_showTransformedHandleCloud || m_transformedHandlePoints.isEmpty()) return;
+
+    GLUquadric* quadric = gluNewQuadric();
+    if(quadric) {
+        gluQuadricNormals(quadric, GLU_SMOOTH);
+
+        // 자홍색(Magenta) 포인트로 그립니다.
+        glColor3f(1.0f, 0.0f, 1.0f); // Magenta
+        for (const auto& point : m_transformedHandlePoints) {
+            glPushMatrix();
+            glTranslatef(point.x(), point.y(), point.z());
+            // 3mm 반지름, 낮은 디테일로 작게 그립니다.
+            gluSphere(quadric, 0.003, 8, 8);
+            glPopMatrix();
+        }
+        gluDeleteQuadric(quadric);
+    }
 }

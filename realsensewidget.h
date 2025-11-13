@@ -101,7 +101,8 @@ signals:
     void requestHandleCenterlineUpdate(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
     void requestRandomGraspPoseUpdate(const QMatrix4x4& pose, bool show);
 
-    void requestApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg);
+    void requestApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg,
+                                  const QMatrix4x4& hang_pose_matrix);
     void visionTaskComplete();
 
     void requestRawGraspPoseUpdate(const QMatrix4x4& pose, bool show);
@@ -118,7 +119,7 @@ signals:
                                   const QVector3D& place_pos_mm,
                                   const QVector3D& retreat_pos_mm,
                                   const QVector3D& orientation_deg);
-
+    void requestTransformedHandleCloudUpdate(const QVector<QVector3D>& points, bool show);
 private:
     struct HandleAnalysisResult {
         int cupIndex = -1;
@@ -195,7 +196,8 @@ private:
     QMatrix4x4 m_icpGraspPose;
     bool m_showIcpGraspPose = false;
     QVector<QVector3D> m_selectedHandlePoints3D;
-
+    QMatrix4x4 m_calculatedHangPose;
+    bool m_hasCalculatedHangPose;
     // ✨ [수정] 선언 1개만 남김
     QDialog* m_icpVizDialog = nullptr;
     PointCloudWidget* m_icpPointCloudWidget = nullptr;
@@ -222,5 +224,9 @@ private:
     void sendImageToPython(const cv::Mat &mat);
     QJsonArray receiveResultsFromPython();
     void drawMaskOverlay(QImage &image, const QJsonArray &results);
+
+    // ✨ [요청 사항] Vertical Grip의 3D 중심점을 저장할 멤버 변수 추가
+    QVector3D m_verticalGripHandleCenter3D;
+    bool m_hasVerticalGripHandleCenter;
 };
 #endif // REALSENSEWIDGET_H
