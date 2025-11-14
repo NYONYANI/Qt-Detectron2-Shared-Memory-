@@ -87,6 +87,9 @@ private slots:
     // ✨ [추가] 시퀀스 완료 시 UI 업데이트용 슬롯
     void onAutomationFinished();
 
+    // ✨ [추가] UI에 새로 추가한 버튼 슬롯 (AlignHangButton)
+    void on_AlignHangButton_clicked();
+
 
 private:
     Ui::MainWindow *ui;

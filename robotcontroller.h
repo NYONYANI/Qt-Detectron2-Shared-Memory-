@@ -20,6 +20,7 @@ class RobotController : public QObject
     Q_OBJECT
 public:
     explicit RobotController(QObject *parent = nullptr);
+    QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
 
 signals:
     void robotStateChanged(int state);
@@ -56,7 +57,7 @@ private:
     bool m_angleDebugPrinted;
 
     // --- 헬퍼 함수 ---
-    QVector3D rotationMatrixToEulerAngles(const QMatrix3x3& R, const QString& order);
+
 
 };
 

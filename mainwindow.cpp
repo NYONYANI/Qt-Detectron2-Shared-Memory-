@@ -124,7 +124,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(this, &MainWindow::requestGripperAction, m_robotController, &RobotController::onGripperAction);
     // connect(this, &MainWindow::startRobotMonitoring, m_robotController, &RobotController::startMonitoring); // ✨ [삭제]
 
-    // ✨ [추가] Init, Servo, Close 시그널 연결
+    // ✨ [추가] Init, Servo, Close 요청 시그널 연결
     connect(this, &MainWindow::requestInitializeRobot, m_robotController, &RobotController::onInitializeRobot);
     connect(this, &MainWindow::requestServoOn, m_robotController, &RobotController::onServoOn);
     connect(this, &MainWindow::requestCloseConnection, m_robotController, &RobotController::onCloseConnection);
@@ -138,6 +138,9 @@ MainWindow::MainWindow(QWidget *parent)
     // ✨ [추가] 자동화 시퀀스 시그널/슬롯 연결
     connect(this, &MainWindow::requestFullAutomation, m_robotSequencer, &RobotSequencer::onStartFullAutomation);
     connect(m_robotSequencer, &RobotSequencer::automationFinished, this, &MainWindow::onAutomationFinished);
+
+    // ✨ [추가] 새로운 걸기 시퀀스 연결 (Widget -> Sequencer)
+    connect(ui->widget, &RealSenseWidget::requestAlignHangSequence, m_robotSequencer, &RobotSequencer::onAlignHangSequence);
 
 
     // --- RobotController -> MainWindow (상태 업데이트) ---
@@ -160,6 +163,15 @@ MainWindow::MainWindow(QWidget *parent)
         ui->widget->captureAndProcess(false);
     });
 
+    // ✨ [추가] 새로 추가한 AlignHangButton 연결 (UI -> Widget)
+    // .ui 파일에 AlignHangButton이 추가되었다고 가정
+    if (ui->AlignHangButton) {
+        connect(ui->AlignHangButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onAlignHangRequested);
+    } else {
+        qWarning() << "[SETUP] 'AlignHangButton' not found in .ui file. Please add it.";
+    }
+
+
     // --- RealSenseWidget -> MainWindow (기본 명령 전달용) ---
 
     // ✨ [수정] RealSenseWidget의 requestRobotMove를 RobotController의 *블로킹* 슬롯에 연결
@@ -179,6 +191,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->widget, &RealSenseWidget::requestApproachThenGrasp,
             m_robotSequencer, &RobotSequencer::onApproachThenGrasp); // ✨ [수정] m_robotSequencer로 연결
 
+    // ✨ [이 파일 수정] ICPButton 연결
+    connect(ui->ICPButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onShowICPVisualization);
+    connect(ui->HorizonGripButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onShowHorizontalGraspVisualization);
 
     // --- ✨ [수정] RobotSequencer <-> RealSenseWidget 브릿지 연결 ---
     // (모든 주석 해제 + 필터 3줄 추가)
@@ -348,8 +363,22 @@ void MainWindow::on_MovepointButton_clicked()
 
 void MainWindow::on_HandleGrapsButton_clicked()
 {
-    qDebug() << "[MAIN] 'Grasp Handle' button clicked. Requesting move to random grasp pose.";
-    ui->widget->onMoveToRandomGraspPoseRequested();
+    qDebug() << "[MAIN] 'Grasp Handle' button clicked. Requesting move to *ICP* grasp pose.";
+    ui->widget->onMoveToIcpGraspPoseRequested();
+}
+
+// ✨ [추가] .ui 파일에 'AlignHangButton'이 추가되었을 경우를 위한 자동 연결 슬롯
+void MainWindow::on_AlignHangButton_clicked()
+{
+    // 이 함수는 on_AlignHangButton_clicked() 슬롯이 .ui 파일에 정의되어 있을 때
+    // 자동으로 연결됩니다.
+    // 하지만 저희는 위 생성자에서 수동으로 connect(...)를 사용했기 때문에,
+    // 이 함수는 실제로는 호출되지 않습니다.
+    // (만약 수동 connect를 지우고 이 자동 연결을 사용하고 싶다면,
+    //  여기에 qDebug() << "[MAIN] 'Align Hang' button clicked (Auto-Slot).";
+    //  ui->widget->onAlignHangRequested();
+    //  라고 작성해야 합니다.)
+    qDebug() << "[MAIN] 'Align Hang' (Auto-Slot) clicked. (Note: Should be handled by manual connect)";
 }
 
 
@@ -400,7 +429,7 @@ void MainWindow::updateRobotPoseLabel(const float* pose)
     }
 }
 
-// ✨ [수정] 자동화 버튼 슬롯 (.ui 파일에 맞춰 b 소문자로 변경)
+
 void MainWindow::on_AutoMoveButton_clicked()
 {
     qDebug() << "[MAIN] 'AutoMoveButton' clicked. Starting full sequence.";
@@ -411,7 +440,6 @@ void MainWindow::on_AutoMoveButton_clicked()
     emit requestFullAutomation();
 }
 
-// ✨ [추가] 자동화 완료 슬롯
 void MainWindow::onAutomationFinished()
 {
     qDebug() << "[MAIN] Full automation sequence finished.";
