@@ -1,0 +1,258 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1315</width>
+    <height>757</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MainWindow</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <widget class="QPushButton" name="RobotInit">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>20</y>
+      <width>131</width>
+      <height>41</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Init</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="RobotState">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>40</y>
+      <width>171</width>
+      <height>17</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string/>
+    </property>
+   </widget>
+   <widget class="RealSenseWidget" name="widget" native="true">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>80</y>
+      <width>1280</width>
+      <height>480</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="CaptureButton">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>570</y>
+      <width>391</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Capture</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="RobotPos">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>10</y>
+      <width>511</width>
+      <height>17</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Robot pos</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="ResetPosButton">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>640</y>
+      <width>391</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Reset pos</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="GripperOpenButton">
+    <property name="geometry">
+     <rect>
+      <x>680</x>
+      <y>570</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Gripper open</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="GripperCloseButton">
+    <property name="geometry">
+     <rect>
+      <x>810</x>
+      <y>570</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Gripper close</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="MoveButton">
+    <property name="geometry">
+     <rect>
+      <x>410</x>
+      <y>570</y>
+      <width>141</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Move</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="HandlePlotButton">
+    <property name="geometry">
+     <rect>
+      <x>410</x>
+      <y>640</y>
+      <width>141</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Calc Handle Point</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="MoveViewButton">
+    <property name="geometry">
+     <rect>
+      <x>680</x>
+      <y>640</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Calc View point</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="MovepointButton">
+    <property name="geometry">
+     <rect>
+      <x>810</x>
+      <y>640</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Move View point</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="HandleGrapsButton">
+    <property name="geometry">
+     <rect>
+      <x>560</x>
+      <y>640</y>
+      <width>111</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Graps Handle</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="AutoMoveButton">
+    <property name="geometry">
+     <rect>
+      <x>560</x>
+      <y>570</y>
+      <width>111</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Auto Move</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="ICPButton">
+    <property name="geometry">
+     <rect>
+      <x>940</x>
+      <y>640</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Vertical Grip</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="HorizonGripButton">
+    <property name="geometry">
+     <rect>
+      <x>1070</x>
+      <y>640</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Horizon Grip</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="AlignHangButton">
+    <property name="geometry">
+     <rect>
+      <x>940</x>
+      <y>570</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>AlignHang</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1315</width>
+     <height>22</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>RealSenseWidget</class>
+   <extends>QWidget</extends>
+   <header>realsensewidget.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>
