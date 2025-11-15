@@ -47,7 +47,7 @@ public slots:
 
     // ✨ [추가] 걸기(Hang) 위치로 변환된 핸들 클라우드 시각화용 슬롯
     void updateTransformedHandleCloud(const QVector<QVector3D>& points, bool show);
-
+    void updateGraspToBodyLine(const QVector3D& graspPoint, const QVector3D& bodyCenter, bool show);
 
 signals:
     void denoisingToggled();
@@ -91,6 +91,8 @@ private:
     // ✨ [추가] 변환된 핸들 클라우드 그리기 함수
     void drawTransformedHandleCloud();
 
+    // ✨ [추가] 바디 중심-파지점 연결선 그리기 함수
+    void drawGraspToBodyLine(); // <--- 새 함수
     std::vector<float> m_vertexData;
     rs2::points m_points;
     rs2::video_frame m_colorFrame;
@@ -144,7 +146,9 @@ private:
     QVector<QVector3D> m_transformedHandlePoints;
     bool m_showTransformedHandleCloud;
 
-
+    QVector3D m_graspToBodyP1; // 파지점 (Grasp Point)
+    QVector3D m_graspToBodyP2; // 핸들 무게 중심 (PCA Mean/Body Center)
+    bool m_showGraspToBodyLine; // <--- 새 멤버
     friend class RealSenseWidget;
 
     QMatrix4x4 m_baseToTcpTransform;

@@ -4,6 +4,7 @@
 #include <QMatrix4x4>
 #include <QtMath> // qRadiansToDegrees 사용
 #include <cstring> // memcpy 사용
+#include <QCoreApplication> // ✨ [추가] QCoreApplication::processEvents 사용을 위해 포함
 
 // ✨ [추가] mainwindow.cpp에 정의된 콜백 함수들의 전방 선언
 void OnMonitoringStateCB(const ROBOT_STATE eState);
@@ -371,13 +372,28 @@ bool RobotController::moveToPositionAndWait(const QVector3D& pos_mm, const QVect
     int timeout_ms = 10000;
     int elapsed_ms = 0;
     while (GlobalDrfl.GetRobotState() != STATE_STANDBY) {
+        ROBOT_STATE currentState = GlobalDrfl.GetRobotState(); // ✨ [수정] 현재 상태를 읽습니다.
+        if (currentState != STATE_MOVING && currentState != STATE_RECOVERY) {
+            // STATE_STANDBY도 아니고, STATE_MOVING도 STATE_RECOVERY도 아니면 오류로 간주하고 종료
+            if (currentState != STATE_INITIALIZING) { // 초기화 중이 아니라면 오류로 간주
+                qWarning() << "[ROBOT_THREAD] Move aborted. Robot entered an unexpected state:" << currentState;
+                GlobalDrfl.MoveStop(STOP_TYPE_SLOW);
+                emit moveFinished();
+                return false;
+            }
+        }
+
         if (elapsed_ms > timeout_ms) {
             qWarning() << "[ROBOT_THREAD] Timeout: Move did not complete in 10s.";
             GlobalDrfl.MoveStop(STOP_TYPE_SLOW);
             emit moveFinished();
             return false;
         }
-        QThread::msleep(100);
+
+        // ✨ [수정] 스레드 차단 대신 이벤트 루프 처리와 짧은 대기 사용
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50); // 최대 50ms 이벤트 처리
+        QThread::msleep(50); // 50ms 대기 (총 100ms 주기 유지)
+
         elapsed_ms += 100;
     }
 

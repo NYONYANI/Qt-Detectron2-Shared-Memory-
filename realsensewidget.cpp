@@ -54,7 +54,8 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     m_showIcpGraspPose(false), // (이전 버전에서 이동됨)
     m_hasCalculatedHangPose(false),
     m_hasVerticalGripHandleCenter(false),
-    m_verticalGripGlobalNormal(QVector3D())
+    m_verticalGripGlobalNormal(QVector3D()),
+    m_hasGraspPoseCentroidLine(false)
 {
     initSharedMemory();
     m_config.enable_stream(RS2_STREAM_DEPTH, IMAGE_WIDTH, IMAGE_HEIGHT, RS2_FORMAT_Z16, 30);
@@ -502,6 +503,7 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
     if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
         qDebug() << "[CALC] No data available.";
         m_pointCloudWidget->updateTargetPoses(QMatrix4x4(), false, QMatrix4x4(), false, QMatrix4x4(), false);
+        m_hasGraspPoseCentroidLine = false;
         return false;
     }
     const rs2::points& currentPoints = m_pointCloudWidget->m_points;
@@ -563,7 +565,11 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
     QVector3D currentTcpPos = m_baseToTcpTransform.column(3).toVector3D(); float minDist = std::numeric_limits<float>::max();
     GraspingTarget bestTarget = m_graspingTargets[0];
     for (const auto& target : m_graspingTargets) { float dist = currentTcpPos.distanceToPoint(target.point); if (dist < minDist) { minDist = dist; bestTarget = target; } }
-
+    float best_grasp_z = bestTarget.point.z(); // Grasping Z-level
+    m_bodyCenter3D_bestTarget = QVector3D(bestTarget.circleCenter.x(), bestTarget.circleCenter.y(), best_grasp_z);
+    m_handleCentroid3D_bestTarget = QVector3D(bestTarget.handleCentroid.x(), bestTarget.handleCentroid.y(), best_grasp_z);
+    m_hasGraspPoseCentroidLine = true;
+    qDebug() << "[CALC] Stored Grasp Pose Centroid Line: Body=" << m_bodyCenter3D_bestTarget << "Handle=" << m_handleCentroid3D_bestTarget;
     m_calculatedTargetPos_m = bestTarget.point + QVector3D(0, 0, GRIPPER_Z_OFFSET); // Use constant
     const QVector3D& N = bestTarget.direction;
     float target_rz_rad = atan2(N.y(), N.x()) - (M_PI / 2.0f); // Align Y with N
@@ -1258,6 +1264,8 @@ void RealSenseWidget::onShowICPVisualization()
                 m_icpPointCloudWidget, &PointCloudWidget::updateDebugNormal);
         connect(this, &RealSenseWidget::requestVerticalLineUpdate,
                 m_icpPointCloudWidget, &PointCloudWidget::updateVerticalLine);
+        connect(this, &RealSenseWidget::requestGraspToBodyLineUpdate,
+                m_icpPointCloudWidget, &PointCloudWidget::updateGraspToBodyLine);
     }
 
     // --- 2B. 2D 프로젝션 다이얼로그 생성 ---
@@ -1434,6 +1442,24 @@ void RealSenseWidget::onShowICPVisualization()
         m_selectedHandlePoints3D = filteredHandlePoints;
         qInfo() << "[ICP] Stored" << m_selectedHandlePoints3D.size() << "filtered points for later use.";
 
+        // ✨ [추가] Grasp-to-Body Line 업데이트 (키 '4' 시각화)
+        QVector3D lineP1, lineP2;
+        bool showLine = true;
+
+        // 1. Calc View Point에서 저장한 BodyCenter-HandleCentroid Line이 있는지 확인
+        if (m_hasGraspPoseCentroidLine) {
+            lineP1 = m_bodyCenter3D_bestTarget;
+            lineP2 = m_handleCentroid3D_bestTarget;
+            qInfo() << "[ICP] Using stored Body Center - Handle Centroid Line for Key '4' visualization.";
+        } else {
+            // 2. 없으면 기존의 Grasp Point - PCA Mean Line을 사용합니다.
+            lineP1 = graspPoint;
+            lineP2 = centroid;
+            qInfo() << "[ICP] Using Grasp Point - PCA Mean Line as no Body Center Line available.";
+        }
+
+        emit requestGraspToBodyLineUpdate(lineP1, lineP2, showLine);
+
     } else {
         // (실패 시 로직)
         emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
@@ -1449,6 +1475,9 @@ void RealSenseWidget::onShowICPVisualization()
             m_projectionPlotWidget->updateData({});
         }
         emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false);
+
+        // ✨ [추가] Grasp-to-Body Line 시각화도 끔
+        emit requestGraspToBodyLineUpdate(QVector3D(), QVector3D(), false);
 
         if(!global_pca_ok) qWarning() << "[ICP] Global PCA calculation failed.";
         if(graspPoint.isNull()) qWarning() << "[ICP] Grasp point calculation failed (no points?).";

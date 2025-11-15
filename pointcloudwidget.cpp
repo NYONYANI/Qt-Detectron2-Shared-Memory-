@@ -30,6 +30,7 @@ PointCloudWidget::PointCloudWidget(QWidget *parent)
     m_showDebugLine = false;      // (이미 있음)
     m_showDebugNormal = false;
     m_showVerticalLine = false; // ✨ [추가]
+    m_showGraspToBodyLine = false;
 }
 PointCloudWidget::~PointCloudWidget() {}
 
@@ -206,7 +207,7 @@ void PointCloudWidget::drawRawCentroid()
         glColor3f(0.0f, 0.0f, 0.0f); // 검은색
         glPushMatrix();
         glTranslatef(m_rawCentroid.x(), m_rawCentroid.y(), m_rawCentroid.z());
-        gluSphere(quadric, 0.008, 16, 16); // 8mm
+        gluSphere(quadric, 0.002, 16, 16); // 8mm
         glPopMatrix();
 
         gluDeleteQuadric(quadric);
@@ -256,7 +257,8 @@ void PointCloudWidget::paintGL()
         drawRawGraspPoseAxis();
 
         drawPCAAxes();
-        drawVerticalLine(); // ✨ [추가]
+        drawVerticalLine();
+        //drawGraspToBodyLine();
 
     } else {
         glPushMatrix(); // 로봇+포인트클라우드 시작
@@ -304,7 +306,8 @@ void PointCloudWidget::paintGL()
     } else {
         drawPCAAxes();
         drawDebugNormal();
-        drawVerticalLine(); // ✨ [추가]
+        drawVerticalLine();
+        drawGraspToBodyLine();
     }
     glEnable(GL_DEPTH_TEST); // 깊이 테스트 다시 켜기
 }
@@ -400,7 +403,12 @@ void PointCloudWidget::mousePressEvent(QMouseEvent *event)
 {
     m_lastPos = event->pos();
 }
-
+void PointCloudWidget::wheelEvent(QWheelEvent *event)
+{
+    if (event->angleDelta().y() > 0) m_distance *= 1.0f / 1.1f; else m_distance *= 1.1f;
+    if (m_distance < 0.01f) m_distance = 0.01f; if (m_distance > 50.0f) m_distance = 50.0f;
+    update();
+}
 // ✨ [수정] 뷰 중심 회전을 위한 패닝 로직 수정
 void PointCloudWidget::mouseMoveEvent(QMouseEvent *event)
 {
@@ -447,14 +455,91 @@ void PointCloudWidget::mouseMoveEvent(QMouseEvent *event)
     update();
 }
 
-void PointCloudWidget::wheelEvent(QWheelEvent *event)
-{
-    if (event->angleDelta().y() > 0) m_distance *= 1.0f / 1.1f; else m_distance *= 1.1f;
-    if (m_distance < 0.01f) m_distance = 0.01f; if (m_distance > 50.0f) m_distance = 50.0f;
-    update();
-}
 void PointCloudWidget::keyPressEvent(QKeyEvent *event)
 {
+    if (m_isRawVizMode) // ✨ [수정] Raw Visualization Mode (ICP Viewer) 전용 키 바인딩
+    {
+        switch (event->key()) {
+        case Qt::Key_1:
+            m_showPCAAxes = !m_showPCAAxes; // PCA Axes (PC1, PC2, Normal)
+            qDebug() << "[ICP Key] Toggle PCA Axes:" << m_showPCAAxes;
+            break;
+        case Qt::Key_2:
+            m_showDebugNormal = !m_showDebugNormal; // Normal Vector (Cyan Line)
+            qDebug() << "[ICP Key] Toggle Normal Vector:" << m_showDebugNormal;
+            break;
+        case Qt::Key_3:
+            m_showVerticalLine = !m_showVerticalLine; // Yellow Vertical Line
+            qDebug() << "[ICP Key] Toggle Vertical Line:" << m_showVerticalLine;
+            break;
+        case Qt::Key_4:
+            m_showGraspToBodyLine = !m_showGraspToBodyLine; // Grasp-to-Body Line (White Line)
+            qDebug() << "[ICP Key] Toggle Grasp-to-Body Line:" << m_showGraspToBodyLine;
+            break;
+
+        case Qt::Key_5: // ✨ [추가] PCA PC2를 Grasp-to-Body Line에 정렬 (회전만 적용)
+        {
+            if (m_pcaPC2Viz.isNull() || !m_showGraspToBodyLine) {
+                qWarning() << "[ICP Key 5] PCA axes or Grasp-to-Body Line not available. Aborting rotation.";
+                break;
+            }
+
+            // ✨ [수정] 벡터 방향을 (m_graspToBodyP1 - m_graspToBodyP2)로 반전합니다. (이전 요청 사항 반영)
+            //          이는 바디 중심(P2)에서 파지점(P1)을 향하는 방향으로 PC2를 정렬합니다.
+            QVector3D V_target_line = (m_graspToBodyP1 - m_graspToBodyP2); // Grasp-to-Body Line 벡터 (P2 -> P1)
+
+            if (V_target_line.isNull() || V_target_line.length() < 1e-6) {
+                qWarning() << "[ICP Key 5] Grasp-to-Body Line vector is zero. Aborting rotation.";
+                break;
+            }
+
+            QVector3D V_target_norm = V_target_line.normalized(); // 타겟 라인 방향
+
+            // 로컬 변수에 현재 축을 복사
+            QVector3D V_PC1_current = m_pcaPC1Viz;
+            QVector3D V_PC2_current = m_pcaPC2Viz;
+            QVector3D V_Normal_current = m_pcaNormalViz;
+            QVector3D V_PC2_current_norm = V_PC2_current.normalized();
+
+            // 1. 초기 회전: V_PC2를 V_target_norm으로 가장 짧게 회전시킵니다.
+            QQuaternion rotation = QQuaternion::rotationTo(V_PC2_current_norm, V_target_norm);
+
+            // 2. 회전 적용
+            QVector3D V_new_PC1 = rotation.rotatedVector(V_PC1_current);
+            QVector3D V_new_PC2 = rotation.rotatedVector(V_PC2_current);
+            QVector3D V_new_Normal = rotation.rotatedVector(V_Normal_current);
+
+            // 3. ✨ [핵심 보정] 최종 PC2 방향이 타겟과 반대라면 법선 축 기준으로 180도 회전
+            if (QVector3D::dotProduct(V_new_PC2.normalized(), V_target_norm) < 0.0f) {
+                qWarning() << "[ICP Key 5] Final PC2 is 180 deg off. Applying corrective 180 deg flip around V_new_Normal.";
+
+                QQuaternion flip_rot = QQuaternion::fromAxisAndAngle(V_new_Normal.normalized(), 180.0f);
+
+                V_new_PC1 = flip_rot.rotatedVector(V_new_PC1);
+                V_new_PC2 = flip_rot.rotatedVector(V_new_PC2);
+            }
+
+            // 4. 멤버 변수 업데이트
+            m_pcaPC1Viz = V_new_PC1;
+            m_pcaPC2Viz = V_new_PC2;
+            m_pcaNormalViz = V_new_Normal;
+            m_showPCAAxes = true;
+
+            qInfo() << "[ICP Key 5] Rotated PCA axes (PC2 aligned with Grasp-to-Body Line).";
+            break; // ✨ [수정] break를 블록 내부로 이동하여 컴파일 오류 해결
+        }
+
+        default:
+            QOpenGLWidget::keyPressEvent(event);
+            return;
+        }
+        update(); // 변경된 플래그로 화면 업데이트
+        return;
+    }
+
+
+
+    // ✨ [수정] Main Viewer의 기존 로직 유지
     switch (event->key()) {
     case Qt::Key_1: if (RealSenseWidget* rs = qobject_cast<RealSenseWidget*>(parentWidget())) rs->onToggleMaskedPoints(); break;
     case Qt::Key_2: emit denoisingToggled(); break;
@@ -478,6 +563,35 @@ void PointCloudWidget::drawGraspingSpheres()
         gluSphere(quadric, 0.005, 16, 16); glPopMatrix();
     }
     gluDeleteQuadric(quadric);
+}
+void PointCloudWidget::drawGraspToBodyLine()
+{
+    if (!m_showGraspToBodyLine) return;
+
+    // ✨ [수정] 흰색(White) 대신 진한 회색(Dark Gray)으로 변경하여 흰색 배경과의 대비를 높임.
+    glLineWidth(2.0f);
+    glColor3f(0.3f, 0.3f, 0.3f); // Dark Gray
+
+    // ✨ [수정] 얇은 점선 패턴 (0xCCCC)로 변경하여 가시성 개선
+    glLineStipple(1, 0xCCCC);
+    glEnable(GL_LINE_STIPPLE);
+
+    glBegin(GL_LINES);
+    // P1: 파지점 (Magenta Sphere)
+    glVertex3f(m_graspToBodyP1.x(), m_graspToBodyP1.y(), m_graspToBodyP1.z());
+    // P2: 핸들 무게 중심 (Black Sphere)
+    glVertex3f(m_graspToBodyP2.x(), m_graspToBodyP2.y(), m_graspToBodyP2.z());
+    glEnd();
+
+    glDisable(GL_LINE_STIPPLE); // 점선 비활성화
+    glLineWidth(1.0f); // 라인 두께 복원
+}
+void PointCloudWidget::updateGraspToBodyLine(const QVector3D& graspPoint, const QVector3D& bodyCenter, bool show)
+{
+    m_graspToBodyP1 = graspPoint;
+    m_graspToBodyP2 = bodyCenter;
+    m_showGraspToBodyLine = show;
+    update();
 }
 void PointCloudWidget::drawGripper()
 {
@@ -602,7 +716,7 @@ void PointCloudWidget::drawRawGraspPoint()
         glColor3f(1.0f, 0.0f, 1.0f); // 자홍색(Magenta/Pink)
         glPushMatrix();
         glTranslatef(m_rawGraspPoint.x(), m_rawGraspPoint.y(), m_rawGraspPoint.z());
-        gluSphere(quadric, 0.008, 16, 16); // 8mm radius
+        gluSphere(quadric, 0.002, 16, 16); // 8mm radius
         glPopMatrix();
 
         gluDeleteQuadric(quadric);

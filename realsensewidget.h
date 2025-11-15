@@ -120,6 +120,9 @@ signals:
                                   const QVector3D& retreat_pos_mm,
                                   const QVector3D& orientation_deg);
     void requestTransformedHandleCloudUpdate(const QVector<QVector3D>& points, bool show);
+
+    // ✨ [추가] 바디 중심-파지점 연결선 시각화 요청 (컴파일 오류 수정)
+    void requestGraspToBodyLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
 private:
     struct HandleAnalysisResult {
         int cupIndex = -1;
@@ -229,5 +232,8 @@ private:
     QVector3D m_verticalGripHandleCenter3D;
     bool m_hasVerticalGripHandleCenter;
     QVector3D m_verticalGripGlobalNormal;
+    QVector3D m_bodyCenter3D_bestTarget;
+    QVector3D m_handleCentroid3D_bestTarget;
+    bool m_hasGraspPoseCentroidLine = false; // <--- 새 플래그
 };
 #endif // REALSENSEWIDGET_H
