@@ -493,31 +493,33 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event)
                 break;
             }
 
-            QVector3D V_target_norm = V_target_line.normalized(); // 타겟 라인 방향
-
             // 로컬 변수에 현재 축을 복사
             QVector3D V_PC1_current = m_pcaPC1Viz;
             QVector3D V_PC2_current = m_pcaPC2Viz;
             QVector3D V_Normal_current = m_pcaNormalViz;
-            QVector3D V_PC2_current_norm = V_PC2_current.normalized();
 
-            // 1. 초기 회전: V_PC2를 V_target_norm으로 가장 짧게 회전시킵니다.
-            QQuaternion rotation = QQuaternion::rotationTo(V_PC2_current_norm, V_target_norm);
+            // --- ✨ [수정] XY 평면 투영 및 Global Z축 회전만 적용 ---
 
-            // 2. 회전 적용
-            QVector3D V_new_PC1 = rotation.rotatedVector(V_PC1_current);
-            QVector3D V_new_PC2 = rotation.rotatedVector(V_PC2_current);
-            QVector3D V_new_Normal = rotation.rotatedVector(V_Normal_current);
+            // 1. 목표 벡터와 현재 PC2 벡터를 XY 평면에 투영합니다. (Global Z=0)
+            QVector3D V_target_XY(V_target_line.x(), V_target_line.y(), 0.0f);
+            QVector3D V_PC2_XY(V_PC2_current.x(), V_PC2_current.y(), 0.0f);
 
-            // 3. ✨ [핵심 보정] 최종 PC2 방향이 타겟과 반대라면 법선 축 기준으로 180도 회전
-            if (QVector3D::dotProduct(V_new_PC2.normalized(), V_target_norm) < 0.0f) {
-                qWarning() << "[ICP Key 5] Final PC2 is 180 deg off. Applying corrective 180 deg flip around V_new_Normal.";
-
-                QQuaternion flip_rot = QQuaternion::fromAxisAndAngle(V_new_Normal.normalized(), 180.0f);
-
-                V_new_PC1 = flip_rot.rotatedVector(V_new_PC1);
-                V_new_PC2 = flip_rot.rotatedVector(V_new_PC2);
+            // 투영된 벡터가 0이 아닌지 확인
+            if (V_target_XY.lengthSquared() < 1e-6f || V_PC2_XY.lengthSquared() < 1e-6f) {
+                qWarning() << "[ICP Key 5] Projected vectors are too small. Aborting Z-axis rotation.";
+                break;
             }
+
+            // 2. 투영된 PC2를 투영된 목표 방향으로 회전시키는 쿼터니언을 계산합니다.
+            // 이 회전은 자동으로 Global Z축을 중심으로 이루어집니다.
+            QQuaternion rotation_Z = QQuaternion::rotationTo(V_PC2_XY.normalized(), V_target_XY.normalized());
+
+            // 3. 회전 적용
+            QVector3D V_new_PC1 = rotation_Z.rotatedVector(V_PC1_current);
+            QVector3D V_new_PC2 = rotation_Z.rotatedVector(V_PC2_current);
+            QVector3D V_new_Normal = rotation_Z.rotatedVector(V_Normal_current);
+
+            // --- ✨ [수정] XY 평면 투영 및 Global Z축 회전만 적용 끝 ---
 
             // 4. 멤버 변수 업데이트
             m_pcaPC1Viz = V_new_PC1;
@@ -525,8 +527,8 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event)
             m_pcaNormalViz = V_new_Normal;
             m_showPCAAxes = true;
 
-            qInfo() << "[ICP Key 5] Rotated PCA axes (PC2 aligned with Grasp-to-Body Line).";
-            break; // ✨ [수정] break를 블록 내부로 이동하여 컴파일 오류 해결
+            qInfo() << "[ICP Key 5] Rotated PCA axes (PC2 aligned with Grasp-to-Body Line projection).";
+            break;
         }
 
         default:
