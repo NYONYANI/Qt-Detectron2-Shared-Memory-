@@ -2006,10 +2006,19 @@ void RealSenseWidget::onAlignHangRequested()
     // 3a. '외곽선 중심'이 위치할 최종 목표 지점 (봉의 끝점)
     QVector3D P_target_world(POLE_X, POLE_Y_END, POLE_Z);
 
-    // 3b. '노란선'(Global Normal)이 정렬될 최종 목표 방향 (글로벌 Rz 30도 회전)
+    // 3b. '노란선'(Global Normal)이 정렬될 최종 목표 방향
+    // --------------------------------------------------------------------------------------------------
+    // ✨ [수정] 핸들 노멀이 월드 좌표계의 +X 방향을 바라보도록 목표 방향을 설정하고,
+    //          여기에 Z축 기준 -30도 회전을 다시 추가합니다. (사용자 요청)
+    // --------------------------------------------------------------------------------------------------
+
     QQuaternion Rz_30_quat = QQuaternion::fromAxisAndAngle(0.0f, 0.0f, 1.0f, -30.0f);
-    QVector3D V_original_target(0.0f, 1.0f, 0.0f); // 봉의 기본 방향 (World +Y)
-    QVector3D V_target_world = Rz_30_quat.rotatedVector(V_original_target);
+    // 베이스 벡터를 월드 -Y 방향으로 설정
+    QVector3D V_base_target(0.0f, -1.0f, 0.0f);
+
+    QVector3D V_target_world = Rz_30_quat.rotatedVector(V_base_target);
+    qInfo() << "[ALIGN HANG] Target Normal Dir (World +X + Rz-30deg):" << V_target_world;
+    // --------------------------------------------------------------------------------------------------
 
 
     // 4. 현재 (Current) 상태 정의 (파지 시점)
@@ -2027,7 +2036,7 @@ void RealSenseWidget::onAlignHangRequested()
     QVector3D P_center_ef = T_grasp_world.inverted() * P_center_world_grasp;
 
     // 5b. '노란선 방향'의 *EF 좌표계 기준* 방향 계산 (불변)
-    QVector3D V_center_ef = T_grasp_world.inverted().mapVector(V_center_world_grasp);
+    QVector3D V_center_ef = T_grasp_world.inverted().mapVector(m_verticalGripGlobalNormal); // m_verticalGripGlobalNormal 사용
 
     // 5c. 필요한 월드 회전(Q_rot) 계산: V_center_world_grasp -> V_target_world
     QQuaternion Q_rot = QQuaternion::rotationTo(V_center_world_grasp, V_target_world);
