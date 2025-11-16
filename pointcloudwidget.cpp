@@ -477,59 +477,7 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event)
             qDebug() << "[ICP Key] Toggle Grasp-to-Body Line:" << m_showGraspToBodyLine;
             break;
 
-        case Qt::Key_5: // ✨ [추가] PCA PC2를 Grasp-to-Body Line에 정렬 (회전만 적용)
-        {
-            if (m_pcaPC2Viz.isNull() || !m_showGraspToBodyLine) {
-                qWarning() << "[ICP Key 5] PCA axes or Grasp-to-Body Line not available. Aborting rotation.";
-                break;
-            }
-
-            // ✨ [수정] 벡터 방향을 (m_graspToBodyP1 - m_graspToBodyP2)로 반전합니다. (이전 요청 사항 반영)
-            //          이는 바디 중심(P2)에서 파지점(P1)을 향하는 방향으로 PC2를 정렬합니다.
-            QVector3D V_target_line = (m_graspToBodyP1 - m_graspToBodyP2); // Grasp-to-Body Line 벡터 (P2 -> P1)
-
-            if (V_target_line.isNull() || V_target_line.length() < 1e-6) {
-                qWarning() << "[ICP Key 5] Grasp-to-Body Line vector is zero. Aborting rotation.";
-                break;
-            }
-
-            // 로컬 변수에 현재 축을 복사
-            QVector3D V_PC1_current = m_pcaPC1Viz;
-            QVector3D V_PC2_current = m_pcaPC2Viz;
-            QVector3D V_Normal_current = m_pcaNormalViz;
-
-            // --- ✨ [수정] XY 평면 투영 및 Global Z축 회전만 적용 ---
-
-            // 1. 목표 벡터와 현재 PC2 벡터를 XY 평면에 투영합니다. (Global Z=0)
-            QVector3D V_target_XY(V_target_line.x(), V_target_line.y(), 0.0f);
-            QVector3D V_PC2_XY(V_PC2_current.x(), V_PC2_current.y(), 0.0f);
-
-            // 투영된 벡터가 0이 아닌지 확인
-            if (V_target_XY.lengthSquared() < 1e-6f || V_PC2_XY.lengthSquared() < 1e-6f) {
-                qWarning() << "[ICP Key 5] Projected vectors are too small. Aborting Z-axis rotation.";
-                break;
-            }
-
-            // 2. 투영된 PC2를 투영된 목표 방향으로 회전시키는 쿼터니언을 계산합니다.
-            // 이 회전은 자동으로 Global Z축을 중심으로 이루어집니다.
-            QQuaternion rotation_Z = QQuaternion::rotationTo(V_PC2_XY.normalized(), V_target_XY.normalized());
-
-            // 3. 회전 적용
-            QVector3D V_new_PC1 = rotation_Z.rotatedVector(V_PC1_current);
-            QVector3D V_new_PC2 = rotation_Z.rotatedVector(V_PC2_current);
-            QVector3D V_new_Normal = rotation_Z.rotatedVector(V_Normal_current);
-
-            // --- ✨ [수정] XY 평면 투영 및 Global Z축 회전만 적용 끝 ---
-
-            // 4. 멤버 변수 업데이트
-            m_pcaPC1Viz = V_new_PC1;
-            m_pcaPC2Viz = V_new_PC2;
-            m_pcaNormalViz = V_new_Normal;
-            m_showPCAAxes = true;
-
-            qInfo() << "[ICP Key 5] Rotated PCA axes (PC2 aligned with Grasp-to-Body Line projection).";
-            break;
-        }
+            // Key 5의 자동 정렬 로직은 RealSenseWidget::onShowICPVisualization으로 이동되었으므로 삭제합니다.
 
         default:
             QOpenGLWidget::keyPressEvent(event);
@@ -538,7 +486,6 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event)
         update(); // 변경된 플래그로 화면 업데이트
         return;
     }
-
 
 
     // ✨ [수정] Main Viewer의 기존 로직 유지

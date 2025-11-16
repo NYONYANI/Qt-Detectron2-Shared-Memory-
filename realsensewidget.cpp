@@ -1329,6 +1329,62 @@ void RealSenseWidget::onShowICPVisualization()
             local_normal_eigen = global_normal_eigen; // 실패 시 글로벌 법선으로 대체
         }
 
+        // --- ✨ [추가] Key '5' (PCA 축 정렬) 로직 자동 실행 시작 ---
+        QVector3D V_target_line;
+        QVector3D P_line_start;
+        QVector3D P_line_end;
+        bool align_target_available = false;
+
+        // 1. Grasp-to-Body Line (키 '4'에서 사용하는 라인) 정보 확인
+        if (m_hasGraspPoseCentroidLine) {
+            P_line_start = m_bodyCenter3D_bestTarget;
+            P_line_end = m_handleCentroid3D_bestTarget;
+            // Target Line Vector: P1 (Body Center) -> P2 (Handle Centroid) 방향으로 (P1 - P2)
+            V_target_line = (P_line_start - P_line_end);
+            qInfo() << "[ICP] Using stored Body Center - Handle Centroid Line for automatic PCA alignment.";
+            align_target_available = true;
+        } else {
+            // 2. 없으면 Grasp Point - PCA Mean Line을 사용
+            P_line_start = graspPoint;
+            P_line_end = centroid;
+            // Target Line Vector: P1 (Grasp Point) -> P2 (Centroid) 방향으로 (P1 - P2)
+            V_target_line = (P_line_start - P_line_end);
+            qInfo() << "[ICP] Using Grasp Point - PCA Mean Line as no Body Center Line available for automatic PCA alignment.";
+            align_target_available = true;
+        }
+
+        QVector3D V_new_PC1 = global_pc1;
+        QVector3D V_new_PC2 = global_pc2;
+        QVector3D V_new_Normal = global_normal;
+
+        if (align_target_available && !V_target_line.isNull() && V_target_line.length() > 1e-6)
+        {
+            QVector3D V_PC1_current = global_pc1;
+            QVector3D V_PC2_current = global_pc2;
+            QVector3D V_Normal_current = global_normal;
+
+            // 1. 목표 벡터와 현재 PC2 벡터를 XY 평면에 투영합니다. (Global Z=0)
+            QVector3D V_target_XY(V_target_line.x(), V_target_line.y(), 0.0f);
+            QVector3D V_PC2_XY(V_PC2_current.x(), V_PC2_current.y(), 0.0f);
+
+            // 투영된 벡터가 0이 아닌지 확인
+            if (V_target_XY.lengthSquared() < 1e-6f || V_PC2_XY.lengthSquared() < 1e-6f) {
+                qWarning() << "[ICP] Projected vectors are too small. Skipping Z-axis rotation.";
+            } else {
+                // 2. 투영된 PC2를 투영된 목표 방향으로 회전시키는 쿼터니언을 계산합니다.
+                QQuaternion rotation_Z = QQuaternion::rotationTo(V_PC2_XY.normalized(), V_target_XY.normalized());
+
+                // 3. 회전 적용
+                V_new_PC1 = rotation_Z.rotatedVector(V_PC1_current);
+                V_new_PC2 = rotation_Z.rotatedVector(V_PC2_current);
+                V_new_Normal = rotation_Z.rotatedVector(V_Normal_current);
+
+                qInfo() << "[ICP] Auto-Aligned PCA axes (PC2 aligned with Grasp-to-Body Line projection).";
+            }
+        }
+        // --- ✨ [추가] Key '5' (PCA 축 정렬) 로직 자동 실행 끝 ---
+
+
         // --- 3d. 좌표계 계산 ---
         // 1. Y축 (그리퍼 녹색선, 목표 2) = "손잡이 PCA 파란색 선" (Global Normal)
         QVector3D Y_axis = global_normal.normalized();
@@ -1396,30 +1452,36 @@ void RealSenseWidget::onShowICPVisualization()
         QVector3D line_end = graspPoint + (Z_axis * normal_viz_length);
         emit requestDebugNormalUpdate(line_start, line_end, true);
 
+        // ✨ [수정] 회전된 축을 3D 뷰어에 전송
         emit requestPCAAxesUpdate(centroid,
-                                  global_pc1,
-                                  global_pc2,
-                                  global_normal,
+                                  V_new_PC1, // ✨ 회전된 PC1
+                                  V_new_PC2, // ✨ 회전된 PC2
+                                  V_new_Normal, // ✨ 회전된 Normal
                                   true);
 
         // --- 3f. 2D 프로젝션 플롯용 데이터 계산 및 전송 ---
         QVector<QPointF> pcaProjectedPoints;
         pcaProjectedPoints.reserve(filteredHandlePoints.size());
+
+        // ✨ [수정] 회전된 축 (V_new_PC1, V_new_PC2)을 사용하여 투영
         for (const QVector3D& p : filteredHandlePoints) {
             QVector3D p_centered = p - centroid;
-            float proj_x = QVector3D::dotProduct(p_centered, global_pc1); // PC1 (빨강)
-            float proj_y = QVector3D::dotProduct(p_centered, global_pc2); // PC2 (초록)
+            float proj_x = QVector3D::dotProduct(p_centered, V_new_PC1); // PC1 (빨강)
+            float proj_y = QVector3D::dotProduct(p_centered, V_new_PC2); // PC2 (초록)
             pcaProjectedPoints.append(QPointF(proj_x, proj_y));
         }
 
         if (m_projectionPlotWidget) {
+            // ✨ [수정] 투영된 포인트로 업데이트
             m_projectionPlotWidget->updateData(pcaProjectedPoints);
 
             // 2D 중심점을 3D로 변환하여 수직선 계산
             QPointF center2D = m_projectionPlotWidget->getDataCenter(); // (PC1, PC2) 좌표
+
+            // ✨ [수정] 변환된 축 (V_new_PC1, V_new_PC2)을 사용하여 3D로 변환
             QVector3D P_3D_center_on_plane = centroid +
-                                             (center2D.x() * global_pc1) +
-                                             (center2D.y() * global_pc2);
+                                             (center2D.x() * V_new_PC1) +
+                                             (center2D.y() * V_new_PC2);
 
             // 계산된 3D 중심점을 멤버 변수에 저장
             m_verticalGripHandleCenter3D = P_3D_center_on_plane;
@@ -1427,13 +1489,13 @@ void RealSenseWidget::onShowICPVisualization()
             qInfo() << "[ICP] Stored 3D Outline Center:" << m_verticalGripHandleCenter3D;
 
             // '노란선'의 3D 방향 벡터(Global Normal)를 멤버 변수에 저장
-            m_verticalGripGlobalNormal = global_normal.normalized();
+            m_verticalGripGlobalNormal = V_new_Normal.normalized(); // ✨ 회전된 Normal 사용
             qInfo() << "[ICP] Stored 3D Global Normal (Yellow Line Dir):" << m_verticalGripGlobalNormal;
 
 
             float line_half_length = 0.1f; // 선 길이 10cm (총 20cm)
-            QVector3D vertical_line_start = P_3D_center_on_plane - (global_normal * line_half_length);
-            QVector3D vertical_line_end   = P_3D_center_on_plane + (global_normal * line_half_length);
+            QVector3D vertical_line_start = P_3D_center_on_plane - (V_new_Normal.normalized() * line_half_length);
+            QVector3D vertical_line_end   = P_3D_center_on_plane + (V_new_Normal.normalized() * line_half_length);
 
             // 3D 뷰어에 노란색 점선 그리도록 시그널 전송
             emit requestVerticalLineUpdate(vertical_line_start, vertical_line_end, true);
@@ -1443,22 +1505,8 @@ void RealSenseWidget::onShowICPVisualization()
         qInfo() << "[ICP] Stored" << m_selectedHandlePoints3D.size() << "filtered points for later use.";
 
         // ✨ [추가] Grasp-to-Body Line 업데이트 (키 '4' 시각화)
-        QVector3D lineP1, lineP2;
-        bool showLine = true;
-
-        // 1. Calc View Point에서 저장한 BodyCenter-HandleCentroid Line이 있는지 확인
-        if (m_hasGraspPoseCentroidLine) {
-            lineP1 = m_bodyCenter3D_bestTarget;
-            lineP2 = m_handleCentroid3D_bestTarget;
-            qInfo() << "[ICP] Using stored Body Center - Handle Centroid Line for Key '4' visualization.";
-        } else {
-            // 2. 없으면 기존의 Grasp Point - PCA Mean Line을 사용합니다.
-            lineP1 = graspPoint;
-            lineP2 = centroid;
-            qInfo() << "[ICP] Using Grasp Point - PCA Mean Line as no Body Center Line available.";
-        }
-
-        emit requestGraspToBodyLineUpdate(lineP1, lineP2, showLine);
+        // 이 부분은 회전 로직에 사용된 P_line_start, P_line_end를 그대로 사용.
+        emit requestGraspToBodyLineUpdate(P_line_start, P_line_end, true);
 
     } else {
         // (실패 시 로직)
