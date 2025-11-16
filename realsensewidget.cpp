@@ -1584,7 +1584,7 @@ void RealSenseWidget::onShowICPVisualization()
         m_projectionPlotDialog->raise();
         m_projectionPlotDialog->activateWindow();
     }
-    //asdfsa
+
     qInfo() << "[ICP] Displayed" << (filteredHandlePoints.isEmpty() ? 0 : filteredHandlePoints.size()) << " points in new window.";
 }
 void RealSenseWidget::onMoveToRandomGraspPoseRequested()
