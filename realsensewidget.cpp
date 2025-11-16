@@ -1196,7 +1196,7 @@ void RealSenseWidget::onShowICPVisualization()
         });
     }
 
-    const float dbscan_eps = 0.02f; // 2cm 반경
+    const float dbscan_eps = 0.005f; // 2cm 반경
     const int dbscan_minPts = 10;   // 최소 10개
     DBSCAN dbscan(dbscan_eps, dbscan_minPts, dbscanPoints);
     dbscan.run();
