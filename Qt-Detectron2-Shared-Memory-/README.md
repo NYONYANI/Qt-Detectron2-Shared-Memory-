@@ -1,1 +1,0 @@
-# Qt-Detectron2-Shared-Memory-
