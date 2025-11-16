@@ -2047,16 +2047,15 @@ void RealSenseWidget::onAlignHangRequested()
 
     // 3b. '노란선'(Global Normal)이 정렬될 최종 목표 방향
     // --------------------------------------------------------------------------------------------------
-    // ✨ [수정] 핸들 노멀이 월드 좌표계의 +X 방향을 바라보도록 목표 방향을 설정하고,
-    //          여기에 Z축 기준 -30도 회전을 다시 추가합니다. (사용자 요청)
+    // ✨ [수정] 핸들 노멀이 월드 좌표계의 -Y 방향을 Z축 기준 -30도 회전한 방향을 바라보도록 목표 방향을 설정
     // --------------------------------------------------------------------------------------------------
 
     QQuaternion Rz_30_quat = QQuaternion::fromAxisAndAngle(0.0f, 0.0f, 1.0f, -30.0f);
-    // 베이스 벡터를 월드 -Y 방향으로 설정
+    // 베이스 벡터를 월드 -Y 방향으로 설정 (베이스의 중앙부)
     QVector3D V_base_target(0.0f, -1.0f, 0.0f);
 
     QVector3D V_target_world = Rz_30_quat.rotatedVector(V_base_target);
-    qInfo() << "[ALIGN HANG] Target Normal Dir (World +X + Rz-30deg):" << V_target_world;
+    qInfo() << "[ALIGN HANG] Target Normal Dir (-Y + Rz-30deg):" << V_target_world;
     // --------------------------------------------------------------------------------------------------
 
 
@@ -2065,17 +2064,37 @@ void RealSenseWidget::onAlignHangRequested()
     QVector3D P_center_world_grasp = m_verticalGripHandleCenter3D;
     QVector3D V_center_world_grasp = m_verticalGripGlobalNormal;
 
+    // --------------------------------------------------------------------------------------------------
+    // ✨ [추가] V_center_world_grasp (손잡이 관통 축)의 방향을 강제로 로봇 베이스 쪽으로 향하도록 조정
+    // --------------------------------------------------------------------------------------------------
+    // 로봇 베이스(원점)를 향하는 벡터 (XY 평면에서만 비교)
+    QVector3D V_to_base = -P_center_world_grasp;
+    V_to_base.setZ(0.0f); // 수평 성분만 사용
+    V_to_base.normalize();
+
+    // V_center_world_grasp는 이미 수평화 되어 있음. XY 평면에서 V_to_base와 비교.
+    // 내적이 음수면 V_center_world_grasp가 베이스에서 멀어지는 방향이므로 뒤집어야 함.
+    if (QVector3D::dotProduct(V_center_world_grasp, V_to_base) < 0.0f) {
+        V_center_world_grasp = -V_center_world_grasp;
+        qInfo() << "[ALIGN HANG] Flipped current Handle Normal (V_center_world_grasp) to face the robot base.";
+    } else {
+        qInfo() << "[ALIGN HANG] Current Handle Normal (V_center_world_grasp) already faces the robot base.";
+    }
+    // --------------------------------------------------------------------------------------------------
+
+
     qInfo() << "[ALIGN HANG] Target Center Pos (Pole End):" << P_target_world;
     qInfo() << "[ALIGN HANG] Target Normal Dir (Rotated):" << V_target_world;
     qInfo() << "[ALIGN HANG] Current Center Pos:" << P_center_world_grasp;
-    qInfo() << "[ALIGN HANG] Current Normal Dir:" << V_center_world_grasp;
+    qInfo() << "[ALIGN HANG] Current Normal Dir (Adjusted):" << V_center_world_grasp;
 
     // 5. '걸기(Hang) 자세' 계산
     // 5a. '외곽선 중심'의 *EF 좌표계 기준* 위치 계산 (불변)
     QVector3D P_center_ef = T_grasp_world.inverted() * P_center_world_grasp;
 
     // 5b. '노란선 방향'의 *EF 좌표계 기준* 방향 계산 (불변)
-    QVector3D V_center_ef = T_grasp_world.inverted().mapVector(m_verticalGripGlobalNormal); // m_verticalGripGlobalNormal 사용
+    // 조정된 V_center_world_grasp를 사용하여 V_center_ef를 다시 계산해야 함
+    QVector3D V_center_ef = T_grasp_world.inverted().mapVector(V_center_world_grasp);
 
     // 5c. 필요한 월드 회전(Q_rot) 계산: V_center_world_grasp -> V_target_world
     QQuaternion Q_rot = QQuaternion::rotationTo(V_center_world_grasp, V_target_world);
