@@ -1098,6 +1098,7 @@ QJsonArray RealSenseWidget::receiveResultsFromPython() {
     return results;
 }
 
+
 void RealSenseWidget::onShowICPVisualization()
 {
     qInfo() << "[ICP] 'ICPButton' clicked. Finding closest handle from *current* capture...";
@@ -1385,7 +1386,46 @@ void RealSenseWidget::onShowICPVisualization()
         // --- Key '5' (PCA 축 정렬) 로직 자동 실행 끝 ---
 
 
-        // --- 3d. EF 좌표계 계산 (정렬된 PCA 축 기반) ---
+        // --------------------------------------------------------------------------------------------------
+        // ✨ [재수정] 정렬된 PCA Z축(V_new_Normal)을 월드 XY 평면에 평행하게 만듭니다.
+        //          (사용자 요청: PCA Y축(V_new_PC2) 기준 회전만 사용 - Ry 회전)
+        // --------------------------------------------------------------------------------------------------
+        {
+            // 1. V_new_Normal의 Z 성분을 0으로 만들기 위한 회전 각도를 계산합니다.
+            // Z축이 단위 벡터이므로 Z값 자체가 사인값입니다.
+            float normal_pitch_rad = qAsin(qBound(-1.0f, V_new_Normal.normalized().z(), 1.0f));
+
+            if (qAbs(normal_pitch_rad) > 1e-6) // Z축이 이미 수평이 아니라면
+            {
+                // V_new_Normal의 Z 성분 부호와 반대 방향으로 회전해야 수평이 됩니다.
+                float rotation_angle_deg = qRadiansToDegrees(normal_pitch_rad);
+
+                // V_new_Normal.z의 부호와 반대로 회전 방향을 설정
+                // Ry 회전(V_new_PC2 축 회전)을 통해 Z축을 수평으로 내립니다.
+                float final_rotation_angle_deg = (V_new_Normal.z() > 0) ? -rotation_angle_deg : rotation_angle_deg;
+
+                // V_new_PC2를 회전 축으로 하는 쿼터니언을 생성합니다 (Ry Rotation).
+                QQuaternion Q_level = QQuaternion::fromAxisAndAngle(V_new_PC2.normalized(), final_rotation_angle_deg);
+
+                // 세 PCA 축 모두에 회전을 적용합니다.
+                V_new_PC1 = Q_level.rotatedVector(V_new_PC1).normalized();
+                V_new_PC2 = Q_level.rotatedVector(V_new_PC2).normalized(); // 회전 축이므로 변하지 않지만, 계산 과정을 명시
+                V_new_Normal = Q_level.rotatedVector(V_new_Normal).normalized();
+
+                // 최종 정규화
+                V_new_PC1.normalize();
+                V_new_PC2.normalize();
+                V_new_Normal.normalize();
+
+                qInfo() << "[ICP] PCA Axes Leveling (Ry-based): Applied leveling rotation around V_new_PC2. New Normal Z:" << V_new_Normal.z();
+            } else {
+                qInfo() << "[ICP] PCA Normal is already horizontal (Z component is near zero). Skipping leveling.";
+            }
+        }
+        // --------------------------------------------------------------------------------------------------
+
+
+        // 3d. EF 좌표계 계산 (정렬된 PCA 축 기반)
         // 1. Y축 (그리퍼 녹색선, 목표 2) = "손잡이 PCA 파란색 선" (Aligned Global Normal)
         QVector3D Y_axis = V_new_Normal.normalized();
 
@@ -1547,7 +1587,6 @@ void RealSenseWidget::onShowICPVisualization()
 
     qInfo() << "[ICP] Displayed" << (filteredHandlePoints.isEmpty() ? 0 : filteredHandlePoints.size()) << " points in new window.";
 }
-
 void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 {
     qInfo() << "[GRASP] 'Grasp Handle' move requested (with 5cm approach).";
