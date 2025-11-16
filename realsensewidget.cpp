@@ -1329,7 +1329,7 @@ void RealSenseWidget::onShowICPVisualization()
             local_normal_eigen = global_normal_eigen; // 실패 시 글로벌 법선으로 대체
         }
 
-        // --- ✨ [추가] Key '5' (PCA 축 정렬) 로직 자동 실행 시작 ---
+        // --- Key '5' (PCA 축 정렬) 로직 자동 실행 시작 ---
         QVector3D V_target_line;
         QVector3D P_line_start;
         QVector3D P_line_end;
@@ -1382,31 +1382,34 @@ void RealSenseWidget::onShowICPVisualization()
                 qInfo() << "[ICP] Auto-Aligned PCA axes (PC2 aligned with Grasp-to-Body Line projection).";
             }
         }
-        // --- ✨ [추가] Key '5' (PCA 축 정렬) 로직 자동 실행 끝 ---
+        // --- Key '5' (PCA 축 정렬) 로직 자동 실행 끝 ---
 
 
-        // --- 3d. 좌표계 계산 ---
-        // 1. Y축 (그리퍼 녹색선, 목표 2) = "손잡이 PCA 파란색 선" (Global Normal)
-        QVector3D Y_axis = global_normal.normalized();
+        // --- 3d. EF 좌표계 계산 (정렬된 PCA 축 기반) ---
+        // 1. Y축 (그리퍼 녹색선, 목표 2) = "손잡이 PCA 파란색 선" (Aligned Global Normal)
+        QVector3D Y_axis = V_new_Normal.normalized();
 
         if (QVector3D::dotProduct(Y_axis, QVector3D(0.0f, 0.0f, 1.0f)) < 0.0f) {
             Y_axis = -Y_axis;
-            qInfo() << "[ICP] Flipped Y-Axis (Global Normal) to point generally upwards.";
+            qInfo() << "[ICP] Flipped Y-Axis (Aligned Global Normal) to point generally upwards.";
         }
 
-        // 2. Z축 (진입 방향, 목표 1) 계산
+        // 2. Z축 (진입 방향, 목표 1) 계산. Local Normal을 Y축에 수직으로 투영하여 Z축의 주 성분을 찾음.
         QVector3D local_normal(local_normal_eigen.x(), local_normal_eigen.y(), local_normal_eigen.z());
         QVector3D inward_ref = (centroid - graspPoint).normalized();
         if (QVector3D::dotProduct(local_normal, inward_ref) > 0) {
             local_normal = -local_normal;
         }
 
+        // Z_axis를 local_normal에서 Y_axis 성분을 제거하여 계산
+        // Y_axis는 정렬된 Normal이므로, Z축은 local_normal의 투영 성분 중 Y_axis에 수직인 성분을 사용
         QVector3D Z_axis = local_normal - QVector3D::dotProduct(local_normal, Y_axis) * Y_axis;
 
         if (Z_axis.length() < 0.1f) {
-            qWarning() << "[ICP] Gimbal lock: Local Normal is parallel to Y-Axis (Global Normal).";
-            qWarning() << "[ICP] Using Global PC1 (Red Line) as fallback Z-Axis.";
-            Z_axis = global_pc1.normalized();
+            // Gimbal lock fallback
+            // 정렬된 PC1 (V_new_PC1)을 Fallback Z축으로 사용
+            qWarning() << "[ICP] Gimbal lock: Local Normal is parallel to Y-Axis. Using Aligned PC1 as fallback Z-Axis.";
+            Z_axis = V_new_PC1.normalized();
         } else {
             Z_axis.normalize();
         }
@@ -1420,7 +1423,8 @@ void RealSenseWidget::onShowICPVisualization()
         // 4. X축 계산
         QVector3D X_axis = QVector3D::crossProduct(Y_axis, Z_axis).normalized();
 
-        // 5. X축 방향 보정 (항상 아래를 향하도록)
+        // 5. X축 방향 보정 (안정성 확보)
+        // X축이 위로 향하면 불안정하므로 X축을 뒤집고, 직교 행렬 유지를 위해 Y축도 뒤집습니다.
         if (X_axis.z() > 0.0f) {
             qInfo() << "[ICP] X-Axis was pointing UP. Rotating 180 deg around Z-Axis to point DOWN.";
             X_axis = -X_axis;
@@ -1442,7 +1446,7 @@ void RealSenseWidget::onShowICPVisualization()
         m_icpGraspPose = graspPose;
         m_showIcpGraspPose = true;
 
-        qInfo() << "[ICP] Grasp pose calculated (Z=Projected_Flipped, Y=GlobalNormal, X_Flipped).";
+        qInfo() << "[ICP] Grasp pose calculated (Z=Projected_Flipped, Y=AlignedNormal, X_Flipped).";
         qInfo() << "[ICP] Grasp Point (Magenta): " << graspPoint;
         qInfo() << "[ICP] EF Position (Axis Origin): " << ef_position;
 
@@ -1452,18 +1456,18 @@ void RealSenseWidget::onShowICPVisualization()
         QVector3D line_end = graspPoint + (Z_axis * normal_viz_length);
         emit requestDebugNormalUpdate(line_start, line_end, true);
 
-        // ✨ [수정] 회전된 축을 3D 뷰어에 전송
+        // 회전된 축을 3D 뷰어에 전송
         emit requestPCAAxesUpdate(centroid,
-                                  V_new_PC1, // ✨ 회전된 PC1
-                                  V_new_PC2, // ✨ 회전된 PC2
-                                  V_new_Normal, // ✨ 회전된 Normal
+                                  V_new_PC1, // 정렬된 PC1
+                                  V_new_PC2, // 정렬된 PC2
+                                  V_new_Normal, // 정렬된 Normal
                                   true);
 
         // --- 3f. 2D 프로젝션 플롯용 데이터 계산 및 전송 ---
         QVector<QPointF> pcaProjectedPoints;
         pcaProjectedPoints.reserve(filteredHandlePoints.size());
 
-        // ✨ [수정] 회전된 축 (V_new_PC1, V_new_PC2)을 사용하여 투영
+        // 회전된 축 (V_new_PC1, V_new_PC2)을 사용하여 투영
         for (const QVector3D& p : filteredHandlePoints) {
             QVector3D p_centered = p - centroid;
             float proj_x = QVector3D::dotProduct(p_centered, V_new_PC1); // PC1 (빨강)
@@ -1472,13 +1476,13 @@ void RealSenseWidget::onShowICPVisualization()
         }
 
         if (m_projectionPlotWidget) {
-            // ✨ [수정] 투영된 포인트로 업데이트
+            // 투영된 포인트로 업데이트
             m_projectionPlotWidget->updateData(pcaProjectedPoints);
 
             // 2D 중심점을 3D로 변환하여 수직선 계산
             QPointF center2D = m_projectionPlotWidget->getDataCenter(); // (PC1, PC2) 좌표
 
-            // ✨ [수정] 변환된 축 (V_new_PC1, V_new_PC2)을 사용하여 3D로 변환
+            // 변환된 축 (V_new_PC1, V_new_PC2)을 사용하여 3D로 변환
             QVector3D P_3D_center_on_plane = centroid +
                                              (center2D.x() * V_new_PC1) +
                                              (center2D.y() * V_new_PC2);
@@ -1489,7 +1493,7 @@ void RealSenseWidget::onShowICPVisualization()
             qInfo() << "[ICP] Stored 3D Outline Center:" << m_verticalGripHandleCenter3D;
 
             // '노란선'의 3D 방향 벡터(Global Normal)를 멤버 변수에 저장
-            m_verticalGripGlobalNormal = V_new_Normal.normalized(); // ✨ 회전된 Normal 사용
+            m_verticalGripGlobalNormal = V_new_Normal.normalized(); // 회전된 Normal 사용
             qInfo() << "[ICP] Stored 3D Global Normal (Yellow Line Dir):" << m_verticalGripGlobalNormal;
 
 
@@ -1504,8 +1508,7 @@ void RealSenseWidget::onShowICPVisualization()
         m_selectedHandlePoints3D = filteredHandlePoints;
         qInfo() << "[ICP] Stored" << m_selectedHandlePoints3D.size() << "filtered points for later use.";
 
-        // ✨ [추가] Grasp-to-Body Line 업데이트 (키 '4' 시각화)
-        // 이 부분은 회전 로직에 사용된 P_line_start, P_line_end를 그대로 사용.
+        // Grasp-to-Body Line 업데이트 (키 '4' 시각화)
         emit requestGraspToBodyLineUpdate(P_line_start, P_line_end, true);
 
     } else {
@@ -1524,7 +1527,7 @@ void RealSenseWidget::onShowICPVisualization()
         }
         emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false);
 
-        // ✨ [추가] Grasp-to-Body Line 시각화도 끔
+        // Grasp-to-Body Line 시각화도 끔
         emit requestGraspToBodyLineUpdate(QVector3D(), QVector3D(), false);
 
         if(!global_pca_ok) qWarning() << "[ICP] Global PCA calculation failed.";
@@ -1544,6 +1547,7 @@ void RealSenseWidget::onShowICPVisualization()
 
     qInfo() << "[ICP] Displayed" << (filteredHandlePoints.isEmpty() ? 0 : filteredHandlePoints.size()) << " points in new window.";
 }
+
 void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 {
     qInfo() << "[GRASP] 'Grasp Handle' move requested (with 5cm approach).";

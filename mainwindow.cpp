@@ -5,7 +5,7 @@
 #include <QThread>
 #include <QtMath>
 #include <QTimer>
-// QApplication은 on_MoveButton_clicked에서 제거되었으므로 여기서 필요 없습니다.
+#include <QCoreApplication> // applicationDirPath() 사용을 위해 필요
 
 // 전역 변수 및 콜백 함수
 using namespace DRAFramework;
@@ -106,6 +106,19 @@ MainWindow::MainWindow(QWidget *parent)
     s_robotStateLabel = ui->RobotState;
     MainWindow::s_instance = this;
     s_robotStateLabel->setText("Robot Status: Disconnected");
+
+    // --- ✨ [추가] Python Process 초기화 및 연결 ---
+    m_pythonProcess = new QProcess(this);
+    connect(m_pythonProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, &MainWindow::onPythonServerFinished);
+    // Python 프로세스의 표준 출력을 C++ Debug 창으로 리디렉션하여 로그 확인 가능
+    connect(m_pythonProcess, &QProcess::readyReadStandardOutput, [this](){
+        qDebug() << "[PYTHON STDOUT]" << m_pythonProcess->readAllStandardOutput();
+    });
+    connect(m_pythonProcess, &QProcess::readyReadStandardError, [this](){
+        qWarning() << "[PYTHON STDERR]" << m_pythonProcess->readAllStandardError();
+    });
+    // --- Python Process 초기화 끝 ---
 
     // --- ✨ [수정] RobotController 및 RobotSequencer 스레드 설정 ---
     m_robotController = new RobotController();
@@ -222,12 +235,28 @@ MainWindow::MainWindow(QWidget *parent)
 
     qDebug() << "[SETUP] RobotSequencer <-> RealSenseWidget 연결 완료.";
 
+    // --- ✨ [추가] 애플리케이션 시작과 함께 Python 서버를 실행합니다.
+    startPythonServer();
 
     ui->widget->setShowPlot(true);
 }
 
 MainWindow::~MainWindow()
 {
+    // ✨ [추가] Python 서버에 종료 신호를 보내고 QProcess 종료를 시도합니다.
+    if (m_pythonProcess && m_pythonProcess->state() != QProcess::NotRunning) {
+        qInfo() << "[MAIN] Attempting to close Python server process...";
+        // Python 서버의 IPC (Shared Memory) 제어 플래그를 변경하여 서버 자체 종료를 유도합니다.
+        // (이 로직은 RealSenseWidget의 소멸자에 구현되어 있습니다. 여기서는 QProcess 객체만 관리합니다.)
+
+        // QProcess 강제 종료
+        m_pythonProcess->terminate();
+        if (!m_pythonProcess->waitForFinished(3000)) { // 3초 대기
+            m_pythonProcess->kill();
+        }
+        qInfo() << "[MAIN] Python process terminated.";
+    }
+
     // ✨ [수정] 스레드 종료 전 Close 요청
     // (이미 연결이 끊겼거나 연결되지 않았다면 CloseConnection은 아무것도 하지 않음)
     emit requestCloseConnection();
@@ -238,10 +267,6 @@ MainWindow::~MainWindow()
     // GlobalDrfl.CloseConnection(); // ✨ [삭제] 스레드에서 직접 닫도록 변경
     delete ui;
 }
-
-//
-// --- (showEvent 및 나머지 UI 슬롯, 상태 업데이트 함수들은 변경 없음) ---
-//
 
 void MainWindow::showEvent(QShowEvent *event)
 {
@@ -446,4 +471,48 @@ void MainWindow::onAutomationFinished()
 
     // 시퀀스 완료 시 버튼 다시 활성화
     ui->AutoMoveButton->setEnabled(true);
+}
+
+
+void MainWindow::startPythonServer()
+{
+    // 1. Conda 설치 경로 설정 (!!!사용자 환경에 맞게 이 경로를 반드시 수정하세요!!!)
+    // 사용자 경로: /home/test/anaconda3/envs/dt2 에서 Conda Root는 /home/test/anaconda3 임.
+    QString CONDA_ROOT_PATH = "/home/test/anaconda3";
+
+    // 2. 실행할 Conda 환경 이름
+    QString CONDA_ENV_NAME = "dt2";
+
+    // 3. 실행할 Python 스크립트 경로 설정
+    // 현재 실행 파일과 같은 디렉토리의 'cup_detector_server.py'를 가정합니다.
+    QString SCRIPT_PATH = "/home/test/Desktop/DL/detectron2/cup_detector_server.py";
+
+    // Conda 초기화 후 환경 활성화 및 스크립트 실행 명령
+    // 'source <CONDA_ROOT>/etc/profile.d/conda.sh'를 통해 Conda 기능을 쉘에 로드하고,
+    // 'conda activate' 명령을 사용하여 환경을 활성화합니다.
+    QString command = QString(
+                          "source %1/etc/profile.d/conda.sh && conda activate %2 && python3 %3"
+                          ).arg(CONDA_ROOT_PATH).arg(CONDA_ENV_NAME).arg(SCRIPT_PATH);
+
+    qInfo() << "[MAIN] Launching Python Server via bash -c (Conda method)...";
+    qInfo() << "[MAIN] Command to execute:" << command;
+
+    // QProcess를 사용하여 bash 쉘을 실행하고 명령을 인자로 전달합니다.
+    m_pythonProcess->start("/bin/bash", QStringList() << "-c" << command);
+
+    if (!m_pythonProcess->waitForStarted(5000)) { // 5초 대기
+        qCritical() << "[MAIN] Failed to start Python server process within 5 seconds.";
+        qCritical() << "[MAIN] Error:" << m_pythonProcess->errorString();
+    } else {
+        qInfo() << "[MAIN] Python server process started successfully (PID:" << m_pythonProcess->processId() << ")";
+    }
+}
+// --- ✨ [새 슬롯 구현] Python 서버 종료 처리 ---
+void MainWindow::onPythonServerFinished(int exitCode, QProcess::ExitStatus exitStatus)
+{
+    if (exitStatus == QProcess::NormalExit) {
+        qInfo() << "[PYTHON] Server finished normally with exit code:" << exitCode;
+    } else {
+        qWarning() << "[PYTHON] Server crashed or finished unexpectedly. Exit code:" << exitCode;
+    }
 }

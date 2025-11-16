@@ -13,6 +13,7 @@
 #include "realsensewidget.h"
 #include "robotcontroller.h"
 #include "robotsequencer.h" // ✨ [추가] RobotSequencer 헤더 포함
+#include <QProcess>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -89,7 +90,7 @@ private slots:
 
     // ✨ [추가] UI에 새로 추가한 버튼 슬롯 (AlignHangButton)
     void on_AlignHangButton_clicked();
-
+    void onPythonServerFinished(int exitCode, QProcess::ExitStatus exitStatus);
 
 private:
     Ui::MainWindow *ui;
@@ -100,5 +101,7 @@ private:
 
     // ✨ [오류 수정] 실수로 삭제되었던 멤버 변수 복원
     RobotConnectionState m_robotConnectionState;
+    QProcess* m_pythonProcess;
+    void startPythonServer();
 };
 #endif // MAINWINDOW_H
