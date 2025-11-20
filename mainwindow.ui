@@ -206,7 +206,7 @@
      <string>Vertical Grip</string>
     </property>
    </widget>
-   <widget class="QPushButton" name="HorizonGripButton">
+   <widget class="QPushButton" name="TopViewButton">
     <property name="geometry">
      <rect>
       <x>1070</x>
@@ -216,7 +216,7 @@
      </rect>
     </property>
     <property name="text">
-     <string>Horizon Grip</string>
+     <string>Topview</string>
     </property>
    </widget>
    <widget class="QPushButton" name="AlignHangButton">

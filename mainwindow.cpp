@@ -206,7 +206,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ✨ [이 파일 수정] ICPButton 연결
     connect(ui->ICPButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onShowICPVisualization);
-    connect(ui->HorizonGripButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onShowHorizontalGraspVisualization);
+    connect(ui->TopViewButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onShowHorizontalGraspVisualization);
 
     // --- ✨ [수정] RobotSequencer <-> RealSenseWidget 브릿지 연결 ---
     // (모든 주석 해제 + 필터 3줄 추가)

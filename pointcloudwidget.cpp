@@ -31,6 +31,7 @@ PointCloudWidget::PointCloudWidget(QWidget *parent)
     m_showDebugNormal = false;
     m_showVerticalLine = false; // ✨ [추가]
     m_showGraspToBodyLine = false;
+    m_showHangCenter = false; // ✨ [추가] 초기화
 }
 PointCloudWidget::~PointCloudWidget() {}
 
@@ -214,6 +215,37 @@ void PointCloudWidget::drawRawCentroid()
     }
 }
 
+// ✨ [추가] 봉 걸이 기준 중심점 업데이트 슬롯 구현
+void PointCloudWidget::updateHangCenterPoint(const QVector3D& point, bool show)
+{
+    m_hangCenterViz = point;
+    m_showHangCenter = show;
+    update();
+}
+
+// ✨ [추가] 봉 걸이 기준 중심점 그리기 함수 구현
+void PointCloudWidget::drawHangCenterPoint()
+{
+    if (!m_showHangCenter) return;
+
+    GLUquadric* quadric = gluNewQuadric();
+    if(quadric) {
+        gluQuadricNormals(quadric, GLU_SMOOTH);
+
+        // 검은색 (Black) 구체로 그립니다.
+        // 봉 걸이 기준점과 PCA 중심점(drawRawCentroid)을 확실히 구분하기 위해 사용합니다.
+        glColor3f(0.0f, 0.0f, 0.0f);
+        glPushMatrix();
+        glTranslatef(m_hangCenterViz.x(), m_hangCenterViz.y(), m_hangCenterViz.z());
+        // PCA Centroid(0.002)보다 약간 크게, 명확히 보이도록 0.004 크기로 그립니다.
+        gluSphere(quadric, 0.004, 16, 16);
+        glPopMatrix();
+
+        gluDeleteQuadric(quadric);
+    }
+}
+
+
 // (realsensewidget.cpp 파일의 약 180행 근처)
 void PointCloudWidget::paintGL()
 {
@@ -253,6 +285,7 @@ void PointCloudWidget::paintGL()
         glPointSize(1.5f); // 원래 크기로 복원
 
         drawRawCentroid();
+        drawHangCenterPoint(); // ✨ [추가] 중심점 그리기 (깊이 테스트 ON)
         drawRawGraspPoint();
         drawRawGraspPoseAxis();
 
@@ -307,6 +340,7 @@ void PointCloudWidget::paintGL()
         drawPCAAxes();
         drawDebugNormal();
         drawVerticalLine();
+        drawHangCenterPoint(); // ✨ [추가] 중심점 그리기 (깊이 테스트 OFF)
         drawGraspToBodyLine();
     }
     glEnable(GL_DEPTH_TEST); // 깊이 테스트 다시 켜기
@@ -470,7 +504,8 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event)
             break;
         case Qt::Key_3:
             m_showVerticalLine = !m_showVerticalLine; // Yellow Vertical Line
-            qDebug() << "[ICP Key] Toggle Vertical Line:" << m_showVerticalLine;
+            m_showHangCenter = !m_showHangCenter; // ✨ [추가] 중심점과 연동 토글
+            qDebug() << "[ICP Key] Toggle Vertical Line/Center:" << m_showVerticalLine;
             break;
         case Qt::Key_4:
             m_showGraspToBodyLine = !m_showGraspToBodyLine; // Grasp-to-Body Line (White Line)

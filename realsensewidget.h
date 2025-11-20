@@ -36,7 +36,7 @@
 #include <QDialog>
 #include <QVBoxLayout>
 #include "pointcloudwidget.h"
-#include "projectionplotwidget.h" // ✨ 2D 프로젝션 플롯 헤더
+#include "projectionplotwidget.h"
 
 struct GraspingTarget
 {
@@ -45,8 +45,6 @@ struct GraspingTarget
     QPointF circleCenter;
     QPointF handleCentroid;
 };
-
-
 
 
 class RealSenseWidget : public QWidget
@@ -113,7 +111,6 @@ signals:
     void requestDebugLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
     void requestDebugNormalUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
 
-    // ✨ [추가] 2D 중심점을 관통하는 수직선 시각화 요청
     void requestVerticalLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
     void requestAlignHangSequence(const QVector3D& approach_pos_mm,
                                   const QVector3D& place_pos_mm,
@@ -121,7 +118,8 @@ signals:
                                   const QVector3D& orientation_deg);
     void requestTransformedHandleCloudUpdate(const QVector<QVector3D>& points, bool show);
 
-    // ✨ [추가] 바디 중심-파지점 연결선 시각화 요청 (컴파일 오류 수정)
+    void requestHangCenterPointUpdate(const QVector3D& point, bool show);
+
     void requestGraspToBodyLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
 private:
     struct HandleAnalysisResult {
@@ -201,7 +199,6 @@ private:
     QVector<QVector3D> m_selectedHandlePoints3D;
     QMatrix4x4 m_calculatedHangPose;
     bool m_hasCalculatedHangPose;
-    // ✨ [수정] 선언 1개만 남김
     QDialog* m_icpVizDialog = nullptr;
     PointCloudWidget* m_icpPointCloudWidget = nullptr;
     QDialog* m_projectionPlotDialog = nullptr;
@@ -228,12 +225,11 @@ private:
     QJsonArray receiveResultsFromPython();
     void drawMaskOverlay(QImage &image, const QJsonArray &results);
 
-    // ✨ [요청 사항] Vertical Grip의 3D 중심점을 저장할 멤버 변수 추가
     QVector3D m_verticalGripHandleCenter3D;
     bool m_hasVerticalGripHandleCenter;
     QVector3D m_verticalGripGlobalNormal;
     QVector3D m_bodyCenter3D_bestTarget;
     QVector3D m_handleCentroid3D_bestTarget;
-    bool m_hasGraspPoseCentroidLine = false; // <--- 새 플래그
+    bool m_hasGraspPoseCentroidLine = false;
 };
 #endif // REALSENSEWIDGET_H

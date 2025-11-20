@@ -45,6 +45,9 @@ public slots:
     // ✨ [추가] 2D 중심점을 관통하는 수직선을 업데이트하는 슬롯
     void updateVerticalLine(const QVector3D& p1, const QVector3D& p2, bool show);
 
+    // ✨ [추가] 봉 걸이 기준 중심점 업데이트 슬롯
+    void updateHangCenterPoint(const QVector3D& point, bool show);
+
     // ✨ [추가] 걸기(Hang) 위치로 변환된 핸들 클라우드 시각화용 슬롯
     void updateTransformedHandleCloud(const QVector<QVector3D>& points, bool show);
     void updateGraspToBodyLine(const QVector3D& graspPoint, const QVector3D& bodyCenter, bool show);
@@ -87,6 +90,9 @@ private:
     void drawDebugLine();
     void drawDebugNormal();
     void drawVerticalLine(); // ✨ [추가] 수직선 그리기 함수 선언
+
+    // ✨ [추가] 봉 걸이 기준 중심점 그리기 함수
+    void drawHangCenterPoint();
 
     // ✨ [추가] 변환된 핸들 클라우드 그리기 함수
     void drawTransformedHandleCloud();
@@ -141,6 +147,10 @@ private:
     QVector3D m_verticalLineP1;
     QVector3D m_verticalLineP2;
     bool m_showVerticalLine;
+
+    // ✨ [추가] 봉 걸이 기준 중심점 데이터
+    QVector3D m_hangCenterViz;
+    bool m_showHangCenter;
 
     // ✨ [추가] 변환된 핸들 클라우드 데이터
     QVector<QVector3D> m_transformedHandlePoints;
