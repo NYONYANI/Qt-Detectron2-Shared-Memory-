@@ -37,7 +37,10 @@ private:
     void drawPoints(QPainter& painter);
     void drawFittedCircle(QPainter& painter);
     void drawFittedLine(QPainter& painter);
-    void drawPerpendicularLines(QPainter& painter); // ✨ [추가] 수직선을 그리는 함수 선언
+    void drawPerpendicularLines(QPainter& painter);
+
+    // ✨ [추가] 상단부 원의 지름 정보를 텍스트로 그리는 함수
+    void drawCircleInfo(QPainter& painter);
 
     QVector<PlotData> m_bodyPlotData;
     QVector<PlotData> m_handlePlotData;
@@ -52,7 +55,6 @@ private:
     QLineF m_fittedLine;
     bool m_hasLine;
 
-    // ✨ [추가] 수직선 정보를 저장할 변수
     QLineF m_perpLine1;
     QLineF m_perpLine2;
     bool m_hasPerpLines;

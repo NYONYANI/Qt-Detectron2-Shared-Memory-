@@ -82,6 +82,9 @@ public slots:
     void checkProcessingResult();
     void onAlignHangRequested();
 
+    // ✨ [추가] Top View (Rim/Base) Analysis Slot
+    void onShowTopViewAnalysis();
+    void onMoveToTopViewPose();
 signals:
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
     void requestGripperAction(int action);
@@ -203,6 +206,10 @@ private:
     PointCloudWidget* m_icpPointCloudWidget = nullptr;
     QDialog* m_projectionPlotDialog = nullptr;
     ProjectionPlotWidget* m_projectionPlotWidget = nullptr;
+
+    // ✨ [추가] Top View Analysis용 Dialog & Widget
+    QDialog* m_topViewDialog = nullptr;
+    XYPlotWidget* m_topViewPlotWidget = nullptr;
 
 
     QMatrix4x4 m_calculatedTargetPose; QVector3D m_calculatedTargetPos_m; QVector3D m_calculatedTargetOri_deg;

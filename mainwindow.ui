@@ -128,7 +128,7 @@
      <string>Move</string>
     </property>
    </widget>
-   <widget class="QPushButton" name="HandlePlotButton">
+   <widget class="QPushButton" name="CalcBodyGripButton">
     <property name="geometry">
      <rect>
       <x>410</x>
@@ -138,7 +138,7 @@
      </rect>
     </property>
     <property name="text">
-     <string>Calc Handle Point</string>
+     <string>Calc Body Grip Point</string>
     </property>
    </widget>
    <widget class="QPushButton" name="MoveViewButton">
@@ -230,6 +230,19 @@
     </property>
     <property name="text">
      <string>AlignHang</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="MoveTopButton">
+    <property name="geometry">
+     <rect>
+      <x>1070</x>
+      <y>570</y>
+      <width>121</width>
+      <height>61</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Move Top</string>
     </property>
    </widget>
   </widget>

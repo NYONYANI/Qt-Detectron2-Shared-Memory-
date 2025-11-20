@@ -106,16 +106,25 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
 RealSenseWidget::~RealSenseWidget()
 {
     if (m_timer && m_timer->isActive()) m_timer->stop();
+    // 공유 메모리 종료 신호 전송
     if (data_control) { static_cast<char*>(data_control)[OFFSET_SHUTDOWN] = 1; }
-    qDeleteAll(m_plotWidgets); m_plotWidgets.clear();
+
+    // 기존 플롯 위젯 정리
+    qDeleteAll(m_plotWidgets);
+    m_plotWidgets.clear();
     delete m_handlePlotWidget;
 
+    // 다이얼로그 정리
     if (m_icpVizDialog) {
         m_icpVizDialog->close();
     }
-
     if (m_projectionPlotDialog) {
         m_projectionPlotDialog->close();
+    }
+
+    // ✨ [추가] Top View Dialog 정리
+    if (m_topViewDialog) {
+        m_topViewDialog->close();
     }
 
     try { m_pipeline.stop(); } catch (...) {}
@@ -2156,4 +2165,203 @@ void RealSenseWidget::onHangCupSequenceRequested()
     qWarning() << "[HANG] 'onHangCupSequenceRequested' (Old Hang Cup button) was pressed.";
     qWarning() << "[HANG] This button is deprecated. Retargeting to 'onAlignHangRequested' (Visualize Only).";
     onAlignHangRequested();
+}
+void RealSenseWidget::onShowTopViewAnalysis()
+{
+    qInfo() << "[TopView] Analyzing Cup Rim (Top Only)...";
+
+    // 1. 데이터 유효성 검사
+    if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
+        qWarning() << "[TopView] No detection results or point cloud available. Press 'Capture' first.";
+        return;
+    }
+
+    const rs2::points& currentPoints = m_pointCloudWidget->m_points;
+    const rs2::vertex* vertices = currentPoints.get_vertices();
+    const int width = IMAGE_WIDTH; const int height = IMAGE_HEIGHT;
+    QMatrix4x4 camToBaseTransform = m_baseToTcpTransform * m_tcpToCameraTransform;
+
+    // 2. 가장 가까운 컵의 'Body' 포인트 추출
+    QVector<QVector3D> cupBodyPoints;
+    const QJsonValue &cupValue = m_detectionResults.first();
+    QJsonObject cupResult = cupValue.toObject();
+
+    if (!cupResult.contains("body") || !cupResult["body"].isObject()) {
+        qWarning() << "[TopView] No 'body' detected in the first cup.";
+        return;
+    }
+
+    QJsonObject partData = cupResult["body"].toObject();
+    QJsonArray rle = partData["mask_rle"].toArray();
+    QJsonArray shape = partData["mask_shape"].toArray();
+    QJsonArray offset = partData["offset"].toArray();
+    int H = shape[0].toInt(); int W = shape[1].toInt();
+    int ox = offset[0].toInt(); int oy = offset[1].toInt();
+
+    QVector<uchar> mask_buffer(W * H, 0); int idx = 0; uchar val = 0;
+    for(const QJsonValue& run_val : rle) {
+        int len = run_val.toInt(); if(idx + len > W * H) len = W * H - idx;
+        if(len > 0) memset(mask_buffer.data() + idx, val, len);
+        idx += len; val = (val == 0 ? 255 : 0); if(idx >= W * H) break;
+    }
+
+    for(int y = 0; y < H; ++y) {
+        for(int x = 0; x < W; ++x) {
+            if(mask_buffer[y * W + x] == 255) {
+                int u = ox + x; int v = oy + y;
+                if (u < 0 || u >= width || v < 0 || v >= height) continue;
+                int p_idx = m_uv_to_point_idx[v * width + u];
+                if (p_idx != -1) {
+                    const rs2::vertex& p = vertices[p_idx];
+                    if (p.z > 0) {
+                        QVector3D p_cam(p.x, p.y, p.z);
+                        QVector3D p_base = camToBaseTransform * p_cam;
+                        if (m_pointCloudWidget->m_isZFiltered && p_base.z() <= 0) continue;
+                        cupBodyPoints.append(p_base);
+                    }
+                }
+            }
+        }
+    }
+
+    if (cupBodyPoints.isEmpty()) {
+        qWarning() << "[TopView] Extracted 0 points for cup body.";
+        return;
+    }
+
+    // 3. 높이(Z) 기준으로 정렬 및 상단부 분리
+    std::sort(cupBodyPoints.begin(), cupBodyPoints.end(), [](const QVector3D& a, const QVector3D& b){
+        return a.z() < b.z();
+    });
+
+    float minZ = cupBodyPoints.first().z();
+    float maxZ = cupBodyPoints.last().z();
+    float heightRange = maxZ - minZ;
+
+    qInfo() << "[TopView] Body Height Range:" << minZ << "~" << maxZ << "(Height:" << heightRange << "m)";
+
+    float topThreshold = maxZ - (heightRange * 0.1f);
+
+    QVector<PlotData> topPlotData;
+    // 바닥부 데이터 수집 부분은 제거됨
+
+    for (const QVector3D& p : cupBodyPoints) {
+        if (p.z() > topThreshold) {
+            // 상단부(Top) 데이터만 녹색으로 수집
+            topPlotData.append({p.toPointF(), Qt::green, "Top"});
+        }
+    }
+
+    qInfo() << "[TopView] Points - Top:" << topPlotData.size();
+
+    // 4. 결과 시각화 (XYPlotWidget 재사용)
+    if (m_topViewDialog == nullptr) {
+        m_topViewDialog = new QDialog(this);
+        m_topViewDialog->setWindowTitle("Cup Top Projection");
+        m_topViewDialog->setAttribute(Qt::WA_DeleteOnClose);
+        m_topViewDialog->resize(500, 500);
+
+        QVBoxLayout* layout = new QVBoxLayout(m_topViewDialog);
+        m_topViewPlotWidget = new XYPlotWidget(m_topViewDialog);
+        layout->addWidget(m_topViewPlotWidget);
+
+        connect(m_topViewDialog, &QDialog::finished, [this](){
+            m_topViewDialog = nullptr;
+            m_topViewPlotWidget = nullptr;
+        });
+    }
+
+    // ✨ [수정] 두 번째 인자에 빈 벡터를 전달하여 바닥 데이터 시각화 방지
+    m_topViewPlotWidget->updateData(topPlotData, QVector<PlotData>());
+    m_topViewPlotWidget->setWindowTitle(QString("Top Rim Analysis"));
+
+    m_topViewDialog->show();
+    m_topViewDialog->raise();
+    m_topViewDialog->activateWindow();
+}
+void RealSenseWidget::onMoveToTopViewPose()
+{
+    qInfo() << "[TopView] 'MoveTopButton' pressed. Calculating Camera Pose...";
+
+    // 1. 파지 자세가 계산되어 있는지 확인 (없으면 계산 시도)
+    if (m_calculatedTargetPose.isIdentity()) {
+        qWarning() << "[TopView] Grasp pose not ready. Calculating now...";
+        if (!calculateGraspingPoses(false)) {
+            qWarning() << "[TopView] Failed to calculate grasp pose.";
+            return;
+        }
+    }
+
+    // 2. 오프셋 계산
+    float circleRadius = 0.04f; // 컵의 반지름 (4cm 가정)
+
+    QVector3D graspPoint = m_calculatedTargetPose.column(3).toVector3D();
+    QVector3D bodyCenter = m_bodyCenter3D_bestTarget; // calculateGraspingPoses에서 저장된 컵 중심
+
+    // Body Center 정보가 없을 경우에 대한 안전장치
+    if(bodyCenter.isNull()) {
+        qWarning() << "[TopView] Body center info missing. Using default +Y offset.";
+    }
+
+    // --- [핵심 로직] Y축 동적 오프셋 방향 결정 ---
+    // 파지점(Grasp Point)에서 몸통 중심(Body Center)으로 향하는 벡터 계산
+    QVector3D vecGraspToCenter = (bodyCenter - graspPoint).normalized();
+
+    // 파지 좌표계(TCP)의 Y축 벡터 (Rotation Matrix의 2번째 컬럼)
+    QVector3D graspY_axis_ef = m_calculatedTargetPose.column(1).toVector3D().normalized();
+
+    // 두 벡터의 내적(Dot Product)을 통해 방향 일치 여부 확인
+    float dot_Y = QVector3D::dotProduct(graspY_axis_ef, vecGraspToCenter);
+
+    float offset_y = 0.0f;
+    if (dot_Y > 0) {
+        // 내적이 양수: Y축이 몸통 중심을 향하고 있음 -> +Radius 방향으로 이동
+        offset_y = circleRadius;
+        qInfo() << "[TopView] Dynamic Y Offset: Inward (+Y) (dot=" << dot_Y << ")";
+    } else {
+        // 내적이 음수: Y축이 몸통 바깥을 향하고 있음 -> -Radius 방향으로 이동
+        offset_y = -circleRadius;
+        qInfo() << "[TopView] Dynamic Y Offset: Outward (-Y) (dot=" << dot_Y << ")";
+    }
+
+    // 3. 카메라 목표 좌표계 계산 (파지 좌표계 복사 후 이동)
+    QMatrix4x4 cameraTargetPose = m_calculatedTargetPose;
+
+    // 3-1) 파지 좌표계 기준 Y축으로 반지름만큼 이동 (컵의 중심 위로 이동)
+    cameraTargetPose.translate(0.0f, offset_y, 0.0f);
+
+    // 3-2) 월드 좌표계 기준 Z축(위쪽)으로 10cm 이동 (높이 확보)
+    // (LookAt 회전 없이 위치만 이동)
+    float current_world_z = cameraTargetPose(2, 3);
+    cameraTargetPose(2, 3) = current_world_z + 0.15f; // 0.1m = 10cm
+
+    qInfo() << "[TopView] Applied Z-Axis Offset (+10cm). New Z:" << cameraTargetPose(2, 3);
+
+
+    // 4. 로봇(TCP) 목표 자세 역계산 (T_base_tcp = T_base_camera_target * T_camera_tcp)
+    QMatrix4x4 robotTargetPose = cameraTargetPose * m_tcpToCameraTransform.inverted();
+
+    // 5. 이동 명령 생성 및 전송
+    QVector3D targetPos_m = robotTargetPose.column(3).toVector3D();
+    QVector3D targetPos_mm = targetPos_m * 1000.0f;
+
+    QMatrix3x3 rotMat = robotTargetPose.toGenericMatrix<3,3>();
+    QVector3D targetOri_deg = rotationMatrixToEulerAngles(rotMat, "ZYZ");
+
+    // 로봇 명령어 포맷 (A, B, C) 변환 및 정규화
+    float cmdA = targetOri_deg.x() + 180.0f;
+    float cmdB = -targetOri_deg.y();
+    float cmdC = targetOri_deg.z() + 180.0f;
+
+    while(cmdA > 180.0f) cmdA -= 360.0f; while(cmdA <= -180.0f) cmdA += 360.0f;
+    while(cmdB > 180.0f) cmdB -= 360.0f; while(cmdB <= -180.0f) cmdB += 360.0f;
+    while(cmdC > 180.0f) cmdC -= 360.0f; while(cmdC <= -180.0f) cmdC += 360.0f;
+
+    QVector3D finalOri_deg(cmdA, cmdB, cmdC);
+
+    qInfo() << "[TopView] Sending Robot Move Command.";
+    qInfo() << "  - Target Pos(mm):" << targetPos_mm;
+    qInfo() << "  - Target Ori(deg):" << finalOri_deg;
+
+    emit requestRobotMove(targetPos_mm, finalOri_deg);
 }

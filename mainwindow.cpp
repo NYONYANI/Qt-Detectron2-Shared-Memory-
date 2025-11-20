@@ -5,9 +5,8 @@
 #include <QThread>
 #include <QtMath>
 #include <QTimer>
-#include <QCoreApplication> // applicationDirPath() 사용을 위해 필요
+#include <QCoreApplication>
 
-// 전역 변수 및 콜백 함수
 using namespace DRAFramework;
 
 CDRFLEx GlobalDrfl;
@@ -17,9 +16,6 @@ bool g_TpInitailizingComplted = false;
 QLabel* MainWindow::s_robotStateLabel = nullptr;
 MainWindow* MainWindow::s_instance = nullptr;
 
-//
-// --- (콜백 함수들은 변경 없음) ---
-//
 void OnMonitoringStateCB(const ROBOT_STATE eState) {
     if (!g_bHasControlAuthority) { return; }
     switch (eState) {
@@ -99,7 +95,6 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , m_isGripperOpenPending(false)
-    // ✨ [오류 수정] 실수로 삭제되었던 생성자 초기화 리스트 복원
     , m_robotConnectionState(RobotConnectionState::Disconnected)
 {
     ui->setupUi(this);
@@ -107,135 +102,101 @@ MainWindow::MainWindow(QWidget *parent)
     MainWindow::s_instance = this;
     s_robotStateLabel->setText("Robot Status: Disconnected");
 
-    // --- ✨ [추가] Python Process 초기화 및 연결 ---
     m_pythonProcess = new QProcess(this);
     connect(m_pythonProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &MainWindow::onPythonServerFinished);
-    // Python 프로세스의 표준 출력을 C++ Debug 창으로 리디렉션하여 로그 확인 가능
     connect(m_pythonProcess, &QProcess::readyReadStandardOutput, [this](){
         qDebug() << "[PYTHON STDOUT]" << m_pythonProcess->readAllStandardOutput();
     });
     connect(m_pythonProcess, &QProcess::readyReadStandardError, [this](){
         qWarning() << "[PYTHON STDERR]" << m_pythonProcess->readAllStandardError();
     });
-    // --- Python Process 초기화 끝 ---
 
-    // --- ✨ [수정] RobotController 및 RobotSequencer 스레드 설정 ---
     m_robotController = new RobotController();
     m_robotController->moveToThread(&m_robotControllerThread);
     connect(&m_robotControllerThread, &QThread::finished, m_robotController, &QObject::deleteLater);
 
-    m_robotSequencer = new RobotSequencer(); // ✨ [추가] Sequencer 생성
-    m_robotSequencer->setRobotController(m_robotController); // ✨ [추가] Controller 주입
-    m_robotSequencer->moveToThread(&m_robotControllerThread); // ✨ [추가] 동일 스레드로 이동
+    m_robotSequencer = new RobotSequencer();
+    m_robotSequencer->setRobotController(m_robotController);
+    m_robotSequencer->moveToThread(&m_robotControllerThread);
     connect(m_robotController, &RobotController::moveFinished,
             m_robotSequencer, &RobotSequencer::onMoveTaskComplete, Qt::QueuedConnection);
 
-    // --- MainWindow -> RobotController (기본 명령) ---
-    // connect(this, &MainWindow::requestMoveRobot, m_robotController, &RobotController::onMoveRobot); // ✨ [삭제] 아래 RealSenseWidget 연결에서 대체
     connect(this, &MainWindow::requestResetPosition, m_robotController, &RobotController::onResetPosition);
     connect(this, &MainWindow::requestGripperAction, m_robotController, &RobotController::onGripperAction);
-    // connect(this, &MainWindow::startRobotMonitoring, m_robotController, &RobotController::startMonitoring); // ✨ [삭제]
 
-    // ✨ [추가] Init, Servo, Close 요청 시그널 연결
     connect(this, &MainWindow::requestInitializeRobot, m_robotController, &RobotController::onInitializeRobot);
     connect(this, &MainWindow::requestServoOn, m_robotController, &RobotController::onServoOn);
     connect(this, &MainWindow::requestCloseConnection, m_robotController, &RobotController::onCloseConnection);
 
-
-    // --- MainWindow -> RobotSequencer (시퀀스 명령) ---
-    // (이 시그널들은 this가 아닌 RealSenseWidget에서 발생하지만, 편의상 this를 거침)
     connect(this, &MainWindow::requestRobotPickAndReturn, m_robotSequencer, &RobotSequencer::onRobotPickAndReturn);
     connect(this, &MainWindow::requestLiftRotatePlaceSequence, m_robotSequencer, &RobotSequencer::onLiftRotatePlaceSequence);
 
-    // ✨ [추가] 자동화 시퀀스 시그널/슬롯 연결
     connect(this, &MainWindow::requestFullAutomation, m_robotSequencer, &RobotSequencer::onStartFullAutomation);
     connect(m_robotSequencer, &RobotSequencer::automationFinished, this, &MainWindow::onAutomationFinished);
 
-    // ✨ [추가] 새로운 걸기 시퀀스 연결 (Widget -> Sequencer)
     connect(ui->widget, &RealSenseWidget::requestAlignHangSequence, m_robotSequencer, &RobotSequencer::onAlignHangSequence);
 
-
-    // --- RobotController -> MainWindow (상태 업데이트) ---
     connect(m_robotController, &RobotController::robotStateChanged, this, &MainWindow::updateRobotStateLabel);
     connect(m_robotController, &RobotController::robotPoseUpdated, this, &MainWindow::updateRobotPoseLabel);
     connect(m_robotController, &RobotController::robotTransformUpdated, ui->widget, &RealSenseWidget::onRobotTransformUpdated);
 
-    // ✨ [추가] 초기화 실패 시그널 연결
     connect(m_robotController, &RobotController::initializationFailed, this, &MainWindow::onRobotInitFailed);
-
 
     m_robotControllerThread.start();
 
-    // --- UI 위젯 시그널 연결 ---
-    // (AutoMoveButton 등 .ui에서 이름이 일치하는 슬롯은 자동 연결됨)
-
-    // ✨ [수정] CaptureButton을 수동으로 연결
-    // 람다를 사용해 captureAndProcess(false)를 호출 (isAutoSequence = false)
     connect(ui->CaptureButton, &QPushButton::clicked, ui->widget, [=](){
         ui->widget->captureAndProcess(false);
     });
 
-    // ✨ [추가] 새로 추가한 AlignHangButton 연결 (UI -> Widget)
-    // .ui 파일에 AlignHangButton이 추가되었다고 가정
     if (ui->AlignHangButton) {
         connect(ui->AlignHangButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onAlignHangRequested);
     } else {
         qWarning() << "[SETUP] 'AlignHangButton' not found in .ui file. Please add it.";
     }
 
+    // ✨ [추가] MoveTopButton 연결
+    if (ui->MoveTopButton) {
+        connect(ui->MoveTopButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onMoveToTopViewPose);
+    } else {
+        qWarning() << "[SETUP] 'MoveTopButton' not found in .ui file. Please add it.";
+    }
 
-    // --- RealSenseWidget -> MainWindow (기본 명령 전달용) ---
-
-    // ✨ [수정] RealSenseWidget의 requestRobotMove를 RobotController의 *블로킹* 슬롯에 연결
     connect(ui->widget, &RealSenseWidget::requestRobotMove, m_robotController, &RobotController::moveToPositionAndWait);
-
     connect(ui->widget, &RealSenseWidget::requestGripperAction, this, &MainWindow::requestGripperAction);
 
-    // --- ✨ [수정] RealSenseWidget -> RobotSequencer (시퀀스 명령 전달용) ---
     connect(ui->widget, &RealSenseWidget::requestRobotPickAndReturn, m_robotSequencer, &RobotSequencer::onRobotPickAndReturn);
-
     connect(ui->widget, &RealSenseWidget::requestLiftRotatePlaceSequence,
-            m_robotSequencer, &RobotSequencer::onLiftRotatePlaceSequence); // ✨ [수정] m_robotSequencer로 연결
+            m_robotSequencer, &RobotSequencer::onLiftRotatePlaceSequence);
 
-    // (이 시그널은 this를 거치지 않고 직접 연결)
     connect(ui->widget, &RealSenseWidget::requestFullPickAndPlaceSequence,
-            m_robotSequencer, &RobotSequencer::onFullPickAndPlaceSequence); // ✨ [수정] m_robotSequencer로 연결
+            m_robotSequencer, &RobotSequencer::onFullPickAndPlaceSequence);
     connect(ui->widget, &RealSenseWidget::requestApproachThenGrasp,
-            m_robotSequencer, &RobotSequencer::onApproachThenGrasp); // ✨ [수정] m_robotSequencer로 연결
+            m_robotSequencer, &RobotSequencer::onApproachThenGrasp);
 
-    // ✨ [이 파일 수정] ICPButton 연결
     connect(ui->ICPButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onShowICPVisualization);
-    connect(ui->TopViewButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onShowHorizontalGraspVisualization);
 
-    // --- ✨ [수정] RobotSequencer <-> RealSenseWidget 브릿지 연결 ---
-    // (모든 주석 해제 + 필터 3줄 추가)
+    connect(ui->TopViewButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onShowTopViewAnalysis);
 
-    // Sequencer -> Vision (작업 요청)
-
-    // ✨ [수정] 람다(lambda)를 사용하여 captureAndProcess(true)를 호출 (컴파일 오류 수정)
     connect(m_robotSequencer, &RobotSequencer::requestVisionCapture, ui->widget, [=](){
-        ui->widget->captureAndProcess(true); // 'true'를 전달하여 자동 시퀀스임을 알림
+        ui->widget->captureAndProcess(true);
     });
 
     connect(m_robotSequencer, &RobotSequencer::requestVisionMoveViewpoint, ui->widget, &RealSenseWidget::onCalculateHandleViewPose);
     connect(m_robotSequencer, &RobotSequencer::requestVisionHandlePlot, ui->widget, [=](){
-        ui->widget->onShowHandlePlot(false); // 자동 시퀀스 중에는 창을 띄우지 않음 (false)
+        ui->widget->onShowHandlePlot(false);
     });
     connect(m_robotSequencer, &RobotSequencer::requestMoveToViewpoint, ui->widget, &RealSenseWidget::onMoveToCalculatedHandleViewPose);
     connect(m_robotSequencer, &RobotSequencer::requestGraspHandle, ui->widget, &RealSenseWidget::onMoveToRandomGraspPoseRequested);
 
-    // ✨ [추가] Sequencer -> Vision (필터 요청)
     connect(m_robotSequencer, &RobotSequencer::requestToggleMask, ui->widget, &RealSenseWidget::onToggleMaskedPoints);
     connect(m_robotSequencer, &RobotSequencer::requestToggleDenoise, ui->widget, &RealSenseWidget::onDenoisingToggled);
     connect(m_robotSequencer, &RobotSequencer::requestToggleZFilter, ui->widget, &RealSenseWidget::onZFilterToggled);
 
-    // Vision -> Sequencer (완료 신호)
     connect(ui->widget, &RealSenseWidget::visionTaskComplete, m_robotSequencer, &RobotSequencer::onVisionTaskComplete);
 
     qDebug() << "[SETUP] RobotSequencer <-> RealSenseWidget 연결 완료.";
 
-    // --- ✨ [추가] 애플리케이션 시작과 함께 Python 서버를 실행합니다.
     startPythonServer();
 
     ui->widget->setShowPlot(true);
@@ -243,74 +204,57 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
-    // ✨ [추가] Python 서버에 종료 신호를 보내고 QProcess 종료를 시도합니다.
     if (m_pythonProcess && m_pythonProcess->state() != QProcess::NotRunning) {
         qInfo() << "[MAIN] Attempting to close Python server process...";
-        // Python 서버의 IPC (Shared Memory) 제어 플래그를 변경하여 서버 자체 종료를 유도합니다.
-        // (이 로직은 RealSenseWidget의 소멸자에 구현되어 있습니다. 여기서는 QProcess 객체만 관리합니다.)
-
-        // QProcess 강제 종료
         m_pythonProcess->terminate();
-        if (!m_pythonProcess->waitForFinished(3000)) { // 3초 대기
+        if (!m_pythonProcess->waitForFinished(3000)) {
             m_pythonProcess->kill();
         }
         qInfo() << "[MAIN] Python process terminated.";
     }
 
-    // ✨ [수정] 스레드 종료 전 Close 요청
-    // (이미 연결이 끊겼거나 연결되지 않았다면 CloseConnection은 아무것도 하지 않음)
     emit requestCloseConnection();
-    QThread::msleep(100); // DRFL이 닫힐 시간을 잠시 줌
+    QThread::msleep(100);
 
     m_robotControllerThread.quit();
     m_robotControllerThread.wait();
-    // GlobalDrfl.CloseConnection(); // ✨ [삭제] 스레드에서 직접 닫도록 변경
     delete ui;
 }
 
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
-    // 윈도우가 완전히 표시된 후 카메라 스트림 시작
     QTimer::singleShot(100, ui->widget, &RealSenseWidget::startCameraStream);
 }
 
-
-//
-// ✨ [수정] on_RobotInit_clicked: 실제 로직 대신 시그널 emit
-//
 void MainWindow::on_RobotInit_clicked()
 {
-    switch (m_robotConnectionState) // ✨ [오류 수정] 이제 m_robotConnectionState가 선언되어 있음
+    switch (m_robotConnectionState)
     {
     case RobotConnectionState::Disconnected:
     {
         updateUiForState(RobotConnectionState::Connecting);
         s_robotStateLabel->setText("Robot Status: CONNECTING...");
-        emit requestInitializeRobot(); // ✨ 스레드로 Init 요청
+        emit requestInitializeRobot();
     }
     break;
     case RobotConnectionState::Connected:
     {
         qDebug() << "[ROBOT] 'Servo ON' button clicked.";
-        emit requestServoOn(); // ✨ 스레드로 Servo ON 요청
+        emit requestServoOn();
     }
     break;
 
     case RobotConnectionState::ServoOn:
         qInfo() << "[ROBOT] 'Close' button clicked. Disconnecting from robot.";
-        emit requestCloseConnection(); // ✨ 스레드로 Close 요청
+        emit requestCloseConnection();
         break;
 
     case RobotConnectionState::Connecting:
-        // 연결 중에는 아무것도 하지 않음
         break;
     }
 }
 
-//
-// ✨ [추가] Init 실패 시 GUI를 업데이트하는 슬롯
-//
 void MainWindow::onRobotInitFailed(QString error)
 {
     qWarning() << "[ROBOT] Init failed from thread:" << error;
@@ -321,19 +265,15 @@ void MainWindow::onRobotInitFailed(QString error)
 
 MainWindow::RobotConnectionState MainWindow::getConnectionState() const
 {
-    return m_robotConnectionState; // ✨ [오류 수정] 이제 m_robotConnectionState가 선언되어 있음
+    return m_robotConnectionState;
 }
 
 void MainWindow::updateUiForState(RobotConnectionState state)
 {
-    m_robotConnectionState = state; // ✨ [오류 수정] 이제 m_robotConnectionState가 선언되어 있음
+    m_robotConnectionState = state;
 
-    // ✨ [수정] .ui 파일의 버튼 이름('AutoMoveButton')을 정확히 참조
-    QPushButton* autoButton = ui->AutoMoveButton; // b 소문자 (사용자가 .ui에서 바꿨다고 했지만, 업로드된 파일 기준)
-    //
-    // !!! 만약 .ui 파일을 정말 AutoMoveButton (B 대문자)로 수정했다면,
-    // !!! 아래 4줄의 autoButton 참조를 모두 ui->AutoMoveButton 으로 바꿔야 합니다.
-    //
+    QPushButton* autoButton = ui->AutoMoveButton;
+
     switch (state) {
     case RobotConnectionState::Disconnected:
         ui->RobotInit->setText("Init");
@@ -368,10 +308,11 @@ void MainWindow::on_MoveButton_clicked()
     ui->widget->runFullAutomatedSequence();
 }
 
-void MainWindow::on_HandlePlotButton_clicked()
+// ✨ [수정] 'Calc Body Grip' 버튼 클릭 -> onShowXYPlot 호출 (바디 파지 계산 및 시각화)
+void MainWindow::on_CalcBodyGripButton_clicked()
 {
-    qDebug() << "[MAIN] 'Handle Plot' button clicked. Requesting handle PCA plot.";
-    ui->widget->onShowHandlePlot(true);
+    qDebug() << "[MAIN] 'Calc Body Grip' button clicked. Requesting Body Grasp calculation/plot.";
+    ui->widget->onShowXYPlot();
 }
 
 void MainWindow::on_MoveViewButton_clicked()
@@ -392,17 +333,8 @@ void MainWindow::on_HandleGrapsButton_clicked()
     ui->widget->onMoveToIcpGraspPoseRequested();
 }
 
-// ✨ [추가] .ui 파일에 'AlignHangButton'이 추가되었을 경우를 위한 자동 연결 슬롯
 void MainWindow::on_AlignHangButton_clicked()
 {
-    // 이 함수는 on_AlignHangButton_clicked() 슬롯이 .ui 파일에 정의되어 있을 때
-    // 자동으로 연결됩니다.
-    // 하지만 저희는 위 생성자에서 수동으로 connect(...)를 사용했기 때문에,
-    // 이 함수는 실제로는 호출되지 않습니다.
-    // (만약 수동 connect를 지우고 이 자동 연결을 사용하고 싶다면,
-    //  여기에 qDebug() << "[MAIN] 'Align Hang' button clicked (Auto-Slot).";
-    //  ui->widget->onAlignHangRequested();
-    //  라고 작성해야 합니다.)
     qDebug() << "[MAIN] 'Align Hang' (Auto-Slot) clicked. (Note: Should be handled by manual connect)";
 }
 
@@ -417,7 +349,7 @@ void MainWindow::updateRobotStateLabel(int state)
 
     if (eState != STATE_STANDBY && eState != STATE_MOVING && getConnectionState() == RobotConnectionState::ServoOn) {
         if (eState == STATE_SAFE_OFF || eState == STATE_SAFE_OFF2 || eState == STATE_EMERGENCY_STOP) {
-            updateUiForState(RobotConnectionState::Connected); // 서보가 꺼진 상태로 UI 변경
+            updateUiForState(RobotConnectionState::Connected);
         }
     }
 
@@ -458,56 +390,38 @@ void MainWindow::updateRobotPoseLabel(const float* pose)
 void MainWindow::on_AutoMoveButton_clicked()
 {
     qDebug() << "[MAIN] 'AutoMoveButton' clicked. Starting full sequence.";
-
-    // 버튼 비활성화 (시퀀스 중복 실행 방지)
     ui->AutoMoveButton->setEnabled(false);
-
     emit requestFullAutomation();
 }
 
 void MainWindow::onAutomationFinished()
 {
     qDebug() << "[MAIN] Full automation sequence finished.";
-
-    // 시퀀스 완료 시 버튼 다시 활성화
     ui->AutoMoveButton->setEnabled(true);
 }
 
 
 void MainWindow::startPythonServer()
 {
-    // 1. Conda 설치 경로 설정 (!!!사용자 환경에 맞게 이 경로를 반드시 수정하세요!!!)
-    // 사용자 경로: /home/test/anaconda3/envs/dt2 에서 Conda Root는 /home/test/anaconda3 임.
     QString CONDA_ROOT_PATH = "/home/test/anaconda3";
-
-    // 2. 실행할 Conda 환경 이름
     QString CONDA_ENV_NAME = "dt2";
-
-    // 3. 실행할 Python 스크립트 경로 설정
-    // 현재 실행 파일과 같은 디렉토리의 'cup_detector_server.py'를 가정합니다.
     QString SCRIPT_PATH = "/home/test/Desktop/DL/detectron2/cup_detector_server.py";
 
-    // Conda 초기화 후 환경 활성화 및 스크립트 실행 명령
-    // 'source <CONDA_ROOT>/etc/profile.d/conda.sh'를 통해 Conda 기능을 쉘에 로드하고,
-    // 'conda activate' 명령을 사용하여 환경을 활성화합니다.
     QString command = QString(
                           "source %1/etc/profile.d/conda.sh && conda activate %2 && python3 %3"
                           ).arg(CONDA_ROOT_PATH).arg(CONDA_ENV_NAME).arg(SCRIPT_PATH);
 
     qInfo() << "[MAIN] Launching Python Server via bash -c (Conda method)...";
-    qInfo() << "[MAIN] Command to execute:" << command;
-
-    // QProcess를 사용하여 bash 쉘을 실행하고 명령을 인자로 전달합니다.
     m_pythonProcess->start("/bin/bash", QStringList() << "-c" << command);
 
-    if (!m_pythonProcess->waitForStarted(5000)) { // 5초 대기
+    if (!m_pythonProcess->waitForStarted(5000)) {
         qCritical() << "[MAIN] Failed to start Python server process within 5 seconds.";
         qCritical() << "[MAIN] Error:" << m_pythonProcess->errorString();
     } else {
         qInfo() << "[MAIN] Python server process started successfully (PID:" << m_pythonProcess->processId() << ")";
     }
 }
-// --- ✨ [새 슬롯 구현] Python 서버 종료 처리 ---
+
 void MainWindow::onPythonServerFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
     if (exitStatus == QProcess::NormalExit) {
