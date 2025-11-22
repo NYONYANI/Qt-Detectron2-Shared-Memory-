@@ -14,12 +14,11 @@
 #include <vector>
 #include <GL/glu.h>
 
-// RealSenseWidget에 대한 전방 선언 (friend class용)
 class RealSenseWidget;
 
 class PointCloudWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
-    Q_OBJECT // Q_OBJECT 매크로 유지
+    Q_OBJECT
 
 public:
     explicit PointCloudWidget(QWidget *parent = nullptr);
@@ -37,18 +36,17 @@ public slots:
     void updateRandomGraspPose(const QMatrix4x4& pose, bool show);
     QVector3D setRawBaseFramePoints(const QVector<QVector3D>& points);
     void setRawGraspPose(const QMatrix4x4& pose, bool show);
+
     void setPCAAxes(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal, bool show);
+
+    // ✨ [수정] 원본 PCA 축 설정 (길이 인자 제거, 고정 길이 시각화용)
+    void setOriginalPCAAxes(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal);
+
     void updateDebugLookAtPoint(const QVector3D& point, bool show);
     void updateDebugLine(const QVector3D& p1, const QVector3D& p2, bool show);
-    void updateDebugNormal(const QVector3D& p1, const QVector3D& p2, bool show); // (이전 단계에서 추가됨)
-
-    // ✨ [추가] 2D 중심점을 관통하는 수직선을 업데이트하는 슬롯
+    void updateDebugNormal(const QVector3D& p1, const QVector3D& p2, bool show);
     void updateVerticalLine(const QVector3D& p1, const QVector3D& p2, bool show);
-
-    // ✨ [추가] 봉 걸이 기준 중심점 업데이트 슬롯
     void updateHangCenterPoint(const QVector3D& point, bool show);
-
-    // ✨ [추가] 걸기(Hang) 위치로 변환된 핸들 클라우드 시각화용 슬롯
     void updateTransformedHandleCloud(const QVector<QVector3D>& points, bool show);
     void updateGraspToBodyLine(const QVector3D& graspPoint, const QVector3D& bodyCenter, bool show);
 
@@ -85,20 +83,18 @@ private:
     void drawRawGraspPoint();
     void drawRawGraspPoseAxis();
     void drawPole();
+
     void drawPCAAxes();
+    void drawOriginalPCAAxes(); // ✨ [추가] 원본 PCA 축 그리기 (점선)
+
     void drawDebugLookAtPoint();
     void drawDebugLine();
     void drawDebugNormal();
-    void drawVerticalLine(); // ✨ [추가] 수직선 그리기 함수 선언
-
-    // ✨ [추가] 봉 걸이 기준 중심점 그리기 함수
+    void drawVerticalLine();
     void drawHangCenterPoint();
-
-    // ✨ [추가] 변환된 핸들 클라우드 그리기 함수
     void drawTransformedHandleCloud();
+    void drawGraspToBodyLine();
 
-    // ✨ [추가] 바디 중심-파지점 연결선 그리기 함수
-    void drawGraspToBodyLine(); // <--- 새 함수
     std::vector<float> m_vertexData;
     rs2::points m_points;
     rs2::video_frame m_colorFrame;
@@ -133,8 +129,16 @@ private:
     QVector3D m_pcaPC1Viz;
     QVector3D m_pcaPC2Viz;
     QVector3D m_pcaNormalViz;
-    QVector3D m_debugLookAtPoint;
     bool m_showPCAAxes = false;
+
+    // ✨ [수정] 원본 PCA 데이터
+    QVector3D m_pcaMeanOriginal;
+    QVector3D m_pcaPC1Original;
+    QVector3D m_pcaPC2Original;
+    QVector3D m_pcaNormalOriginal;
+    bool m_showOriginalPCAAxes = false;
+
+    QVector3D m_debugLookAtPoint;
     bool m_showDebugLookAtPoint;
     QVector3D m_debugLineP1;
     QVector3D m_debugLineP2;
@@ -143,22 +147,20 @@ private:
     QVector3D m_debugNormalP2;
     bool m_showDebugNormal;
 
-    // ✨ [추가] 수직선 데이터
     QVector3D m_verticalLineP1;
     QVector3D m_verticalLineP2;
     bool m_showVerticalLine;
 
-    // ✨ [추가] 봉 걸이 기준 중심점 데이터
     QVector3D m_hangCenterViz;
     bool m_showHangCenter;
 
-    // ✨ [추가] 변환된 핸들 클라우드 데이터
     QVector<QVector3D> m_transformedHandlePoints;
     bool m_showTransformedHandleCloud;
 
-    QVector3D m_graspToBodyP1; // 파지점 (Grasp Point)
-    QVector3D m_graspToBodyP2; // 핸들 무게 중심 (PCA Mean/Body Center)
-    bool m_showGraspToBodyLine; // <--- 새 멤버
+    QVector3D m_graspToBodyP1;
+    QVector3D m_graspToBodyP2;
+    bool m_showGraspToBodyLine;
+
     friend class RealSenseWidget;
 
     QMatrix4x4 m_baseToTcpTransform;

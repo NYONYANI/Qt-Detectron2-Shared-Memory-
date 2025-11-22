@@ -20,6 +20,7 @@ SOURCES += \
     realsensewidget.cpp \
     robotcontroller.cpp \
     robotmonitor.cpp \
+    varianceplotwidget.cpp \
     xyplotwidget.cpp \
     robotsequencer.cpp # ✨ [추가]
 
@@ -32,6 +33,7 @@ HEADERS += \
     realsensewidget.h \
     robotcontroller.h \
     robotmonitor.h \
+    varianceplotwidget.h \
     xyplotwidget.h \
     robotsequencer.h # ✨ [추가]
 

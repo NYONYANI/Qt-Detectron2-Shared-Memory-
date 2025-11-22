@@ -37,6 +37,7 @@
 #include <QVBoxLayout>
 #include "pointcloudwidget.h"
 #include "projectionplotwidget.h"
+#include "varianceplotwidget.h"
 
 struct GraspingTarget
 {
@@ -82,7 +83,6 @@ public slots:
     void checkProcessingResult();
     void onAlignHangRequested();
 
-    // ✨ [추가] Top View (Rim/Base) Analysis Slot
     void onShowTopViewAnalysis();
     void onMoveToTopViewPose();
 signals:
@@ -109,6 +109,9 @@ signals:
     void requestRawGraspPoseUpdate(const QMatrix4x4& pose, bool show);
     void requestHangCupSequence(const QVector3D& approach_pos_mm, const QVector3D& place_pos_mm, const QVector3D& retreat_pos_mm, const QVector3D& orientation_deg);
     void requestPCAAxesUpdate(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal, bool show);
+
+    // 원본 PCA 축 업데이트 시그널
+    void requestOriginalPCAAxesUpdate(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal);
 
     void requestDebugLookAtPointUpdate(const QVector3D& point, bool show);
     void requestDebugLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
@@ -138,7 +141,7 @@ private:
         QPointF cupBodyCenter2D;
     };
 
-
+    void drawMaskOverlay(QImage &image, const QJsonArray &results, bool drawLabels = true);
     bool calculateGraspingPoses(bool showPlot);
     bool calculatePCA(const QVector<QVector3D>& points,
                       QVector<QPointF>& projectedPoints,
@@ -207,7 +210,13 @@ private:
     QDialog* m_projectionPlotDialog = nullptr;
     ProjectionPlotWidget* m_projectionPlotWidget = nullptr;
 
-    // ✨ [추가] Top View Analysis용 Dialog & Widget
+    // ✨ [수정] 분산 그래프용 다이얼로그를 Original, Aligned 2개로 분리
+    QDialog* m_varianceDialogOrig = nullptr;
+    VariancePlotWidget* m_varianceWidgetOrig = nullptr;
+
+    QDialog* m_varianceDialogAlign = nullptr;
+    VariancePlotWidget* m_varianceWidgetAlign = nullptr;
+
     QDialog* m_topViewDialog = nullptr;
     XYPlotWidget* m_topViewPlotWidget = nullptr;
 
