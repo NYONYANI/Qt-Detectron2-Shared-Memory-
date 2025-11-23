@@ -823,3 +823,29 @@ void PointCloudWidget::drawTransformedHandleCloud()
         gluDeleteQuadric(quadric);
     }
 }
+void PointCloudWidget::resetVisualizations()
+{
+    // 모든 시각화 플래그 끄기
+    m_showTargetPose = false;
+    m_showTargetPose_Y_Aligned = false;
+    m_showViewPose = false;
+    m_showRandomGraspPose = false;
+    m_showRawCentroid = false;
+    m_showRawGraspPoint = false;
+    m_showRawGraspPose = false;
+    m_showPCAAxes = false;
+    m_showOriginalPCAAxes = false;
+    m_showDebugLookAtPoint = false;
+    m_showDebugLine = false;
+    m_showDebugNormal = false;
+    m_showVerticalLine = false;
+    m_showHangCenter = false;
+    m_showTransformedHandleCloud = false;
+    m_showGraspToBodyLine = false;
+
+    // 데이터도 필요하면 초기화 (선택 사항)
+    // m_graspingPoints.clear();
+
+    // 화면 갱신
+    update();
+}

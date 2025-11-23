@@ -49,7 +49,7 @@ public slots:
     void updateHangCenterPoint(const QVector3D& point, bool show);
     void updateTransformedHandleCloud(const QVector<QVector3D>& points, bool show);
     void updateGraspToBodyLine(const QVector3D& graspPoint, const QVector3D& bodyCenter, bool show);
-
+    void resetVisualizations();
 signals:
     void denoisingToggled();
     void zFilterToggled();

@@ -1351,9 +1351,10 @@ void RealSenseWidget::onShowICPVisualization()
 
 
     // --------------------------------------------------------------------
-    // 2. 다이얼로그 생성
+    // 2. 다이얼로그 생성 (3D 뷰어, 2D 투영) - 분산 그래프 제거됨
     // --------------------------------------------------------------------
 
+    // 2A. 3D ICP Viz Dialog
     if (m_icpVizDialog == nullptr) {
         m_icpVizDialog = new QDialog(this);
         m_icpVizDialog->setWindowTitle("Focused Handle Point Cloud (Base Frame)");
@@ -1387,6 +1388,7 @@ void RealSenseWidget::onShowICPVisualization()
                 m_icpPointCloudWidget, &PointCloudWidget::updateHangCenterPoint);
     }
 
+    // 2B. 2D Projection Dialog
     if (m_projectionPlotDialog == nullptr) {
         m_projectionPlotDialog = new QDialog(this);
         m_projectionPlotDialog->setWindowTitle("PCA XY Projection (Outline)");
@@ -1404,35 +1406,14 @@ void RealSenseWidget::onShowICPVisualization()
         });
     }
 
-    if (m_varianceDialogOrig == nullptr) {
-        m_varianceDialogOrig = new QDialog(this);
-        m_varianceDialogOrig->setWindowTitle("Original PCA Variance");
-        m_varianceDialogOrig->setAttribute(Qt::WA_DeleteOnClose);
-        m_varianceDialogOrig->resize(500, 300);
-        QVBoxLayout* layout = new QVBoxLayout(m_varianceDialogOrig);
-        m_varianceWidgetOrig = new VariancePlotWidget(m_varianceDialogOrig);
-        layout->addWidget(m_varianceWidgetOrig);
-        m_varianceDialogOrig->setLayout(layout);
-        connect(m_varianceDialogOrig, &QDialog::finished, [this](){ m_varianceDialogOrig = nullptr; m_varianceWidgetOrig = nullptr; });
-    }
-
-    if (m_varianceDialogAlign == nullptr) {
-        m_varianceDialogAlign = new QDialog(this);
-        m_varianceDialogAlign->setWindowTitle("Aligned PCA Variance");
-        m_varianceDialogAlign->setAttribute(Qt::WA_DeleteOnClose);
-        m_varianceDialogAlign->resize(500, 300);
-        QVBoxLayout* layout = new QVBoxLayout(m_varianceDialogAlign);
-        m_varianceWidgetAlign = new VariancePlotWidget(m_varianceDialogAlign);
-        layout->addWidget(m_varianceWidgetAlign);
-        m_varianceDialogAlign->setLayout(layout);
-        connect(m_varianceDialogAlign, &QDialog::finished, [this](){ m_varianceDialogAlign = nullptr; m_varianceWidgetAlign = nullptr; });
-    }
+    // (분산 그래프 다이얼로그 생성 코드 제거됨)
 
 
     // --------------------------------------------------------------------
     // 3. PCA 실행 및 파지 좌표계 계산
     // --------------------------------------------------------------------
 
+    // 3a. (글로벌) 원본 PCA 실행
     Eigen::Vector3f global_mean_eigen, global_pc1_eigen, global_pc2_eigen, global_normal_eigen;
     QVector<QPointF> projectedPoints_Legacy;
     bool global_pca_ok = calculatePCA(filteredHandlePoints, projectedPoints_Legacy,
@@ -1444,31 +1425,15 @@ void RealSenseWidget::onShowICPVisualization()
     QVector3D global_pc2(global_pc2_eigen.x(), global_pc2_eigen.y(), global_pc2_eigen.z());
     QVector3D global_normal(global_normal_eigen.x(), global_normal_eigen.y(), global_normal_eigen.z());
 
-    // 3b. 원본 PCA 데이터 시각화 (점선 표시 & 분산 그래프)
+    // 3b. 원본 PCA 데이터 시각화 (점선 표시) - 분산 그래프 데이터 업데이트 제거됨
     if (global_pca_ok) {
         emit requestOriginalPCAAxesUpdate(centroid, global_pc1, global_pc2, global_normal);
-
-        auto calcStdDev = [&](const QVector3D& axis) {
-            float sum_sq = 0.0f;
-            for(const QVector3D& p : filteredHandlePoints) {
-                float proj = QVector3D::dotProduct(p - centroid, axis);
-                sum_sq += proj * proj;
-            }
-            return (filteredHandlePoints.size() > 0) ? std::sqrt(sum_sq / filteredHandlePoints.size()) : 0.0f;
-        };
-
-        if (m_varianceWidgetOrig) {
-            m_varianceWidgetOrig->clear();
-            m_varianceWidgetOrig->addCurve(calcStdDev(global_pc1), QColor(255, 100, 100), Qt::DashLine, 2, "PC1");
-            m_varianceWidgetOrig->addCurve(calcStdDev(global_pc2), QColor(100, 255, 100), Qt::DashLine, 2, "PC2");
-            m_varianceWidgetOrig->addCurve(calcStdDev(global_normal), QColor(100, 100, 255), Qt::DashLine, 2, "Normal");
-        }
     }
 
     if (!graspPoint.isNull() && global_pca_ok)
     {
         // --------------------------------------------------------------------------------------------------
-        // ✨ [수정] 기하학적 제약 조건 + PCA 각도 반영 (Hybrid Construction)
+        // ✨ 기하학적 제약 조건 + PCA 각도 반영 (Hybrid Construction)
         // --------------------------------------------------------------------------------------------------
         QVector3D P_line_start;
         QVector3D P_line_end;
@@ -1489,72 +1454,58 @@ void RealSenseWidget::onShowICPVisualization()
         if (V_line_xy.lengthSquared() < 1e-6f) V_line_xy = QVector3D(1, 0, 0);
         V_line_xy.normalize();
 
-        // 3. 파란색 축 (Normal) 결정
-        // 조건 1: 바닥(XY 평면)과 평행해야 함 (Z=0).
-        // 조건 2: 점선 투영(V_line_xy)과 수직이어야 함.
-        // -> V_line_xy와 Global Z축(0,0,1)을 외적하면, 바닥에 평행하면서 점선에 수직인 벡터가 나옴.
+        // 3. 파란색 축 (Normal) 결정: 바닥(Z=0) 평행 & 점선 수직
         QVector3D V_new_Normal = QVector3D::crossProduct(V_line_xy, QVector3D(0, 0, 1)).normalized();
 
-        // 방향 보정: 원본 Normal과 방향 일관성 유지 (핸들 바깥쪽)
+        // 방향 보정
         if (QVector3D::dotProduct(V_new_Normal, global_normal) < 0) {
             V_new_Normal = -V_new_Normal;
         }
 
-        // 4. 빨간색 축 (PC1) 결정
-        // 조건 1: 파란색 축(V_new_Normal)과 수직이어야 함.
-        // 조건 2: 손잡이의 원래 기울기(PCA Red)를 반영해야 함.
-        // -> 원본 PC1을 파란색 축에 수직인 평면에 투영하여 구함.
-        // (V_new_Normal이 수평이므로, 이 평면은 수직 평면이 됩니다.)
+        // 4. 빨간색 축 (PC1) 결정: 파란색 축 수직 & 원본 기울기 유지
         QVector3D V_new_PC1 = global_pc1 - (QVector3D::dotProduct(global_pc1, V_new_Normal) * V_new_Normal);
         V_new_PC1.normalize();
 
-        // 방향 보정: 원본 PC1과 방향 일관성 유지
+        // 방향 보정
         if (QVector3D::dotProduct(V_new_PC1, global_pc1) < 0) {
             V_new_PC1 = -V_new_PC1;
         }
 
-        // 5. 녹색 축 (PC2) 결정
-        // 조건: 위 두 축(파랑, 빨강)과 모두 수직이어야 함.
-        // -> 파랑 x 빨강
+        // 5. 녹색 축 (PC2) 결정: 위 두 축과 수직
         QVector3D V_new_PC2 = QVector3D::crossProduct(V_new_Normal, V_new_PC1).normalized();
 
-        // 방향 보정: 점선(V_line)과 같은 방향(핸들 안쪽)을 향하도록 함
+        // 방향 보정: 점선과 같은 방향
         if (QVector3D::dotProduct(V_new_PC2, V_line) < 0) {
             V_new_PC2 = -V_new_PC2;
         }
 
         qInfo() << "[ICP] Hybrid Geometric Alignment Applied.";
-        qInfo() << "  - Blue (Normal): Horizontal (Z=" << V_new_Normal.z() << "), Perpendicular to Line Projection.";
+        qInfo() << "  - Blue (Normal): Horizontal (Z=" << V_new_Normal.z() << ")";
         qInfo() << "  - Red (PC1): Tilted (Preserves PCA Pitch).";
-        qInfo() << "  - Green (PC2): Aligned with Line Projection, Tilted via Red Axis.";
+        qInfo() << "  - Green (PC2): Aligned with Line Projection.";
 
 
         // --------------------------------------------------------------------------------------------------
-        // ✨ [수정] 단면(Slice) 추출 및 폭(Width) 계산
+        // ✨ 단면(Slice) 추출 및 폭(Width) 계산
         // --------------------------------------------------------------------------------------------------
         QVector<QVector3D> slicedHandlePoints;
         float slice_threshold = 0.005f; // 중심 기준 ±5mm (총 10mm 두께)
 
         for (const QVector3D& p : filteredHandlePoints) {
-            // 빨간색 축(PC1, 수직방향) 방향으로의 거리 계산
             float dist_from_plane = QVector3D::dotProduct(p - centroid, V_new_PC1);
-
-            // 설정한 두께 범위 내에 있는 점만 추출
             if (std::abs(dist_from_plane) < slice_threshold) {
                 slicedHandlePoints.append(p);
             }
         }
-        qInfo() << "[ICP] Slicing: Used" << slicedHandlePoints.size() << "points (out of" << filteredHandlePoints.size() << ") within +/- 5mm of center plane.";
+        qInfo() << "[ICP] Slicing: Used" << slicedHandlePoints.size() << "points (out of" << filteredHandlePoints.size() << ") within +/- 5mm.";
 
         // 추출된 단면 포인트들로 폭 계산
         float min_proj = std::numeric_limits<float>::max();
         float max_proj = -std::numeric_limits<float>::max();
 
-        // 데이터가 너무 적으면 전체 포인트 사용 (Fallback)
         const QVector<QVector3D>& pointsForWidth = (slicedHandlePoints.size() > 10) ? slicedHandlePoints : filteredHandlePoints;
 
         for (const QVector3D& p : pointsForWidth) {
-            // 파란색 축(Normal) 방향으로 투영
             float proj = QVector3D::dotProduct(p - centroid, V_new_Normal);
             if (proj < min_proj) min_proj = proj;
             if (proj > max_proj) max_proj = proj;
@@ -1563,7 +1514,6 @@ void RealSenseWidget::onShowICPVisualization()
         float handle_width_m = max_proj - min_proj;
         float handle_width_mm = handle_width_m * 1000.0f;
 
-        // 좌우 길이 및 비율 계산
         float left_width_mm = -min_proj * 1000.0f;
         float right_width_mm = max_proj * 1000.0f;
         float left_ratio = (left_width_mm / handle_width_mm) * 100.0f;
@@ -1578,22 +1528,7 @@ void RealSenseWidget::onShowICPVisualization()
         qInfo() << "  - Right (0 to Max):" << right_width_mm << "mm (" << QString::number(right_ratio, 'f', 1) << "%)";
 
 
-        // 3f. 정렬된 축 분산 그래프 업데이트 (전체 데이터 기준 분포)
-        if (m_varianceWidgetAlign) {
-            auto calcStdDev = [&](const QVector3D& axis) {
-                float sum_sq = 0.0f;
-                for(const QVector3D& p : filteredHandlePoints) {
-                    float proj = QVector3D::dotProduct(p - centroid, axis);
-                    sum_sq += proj * proj;
-                }
-                return (filteredHandlePoints.size() > 0) ? std::sqrt(sum_sq / filteredHandlePoints.size()) : 0.0f;
-            };
-
-            m_varianceWidgetAlign->clear();
-            m_varianceWidgetAlign->addCurve(calcStdDev(V_new_PC1), QColor(200, 0, 0), Qt::SolidLine, 3, "PC1");
-            m_varianceWidgetAlign->addCurve(calcStdDev(V_new_PC2), QColor(0, 180, 0), Qt::SolidLine, 3, "PC2");
-            m_varianceWidgetAlign->addCurve(calcStdDev(V_new_Normal), QColor(0, 0, 200), Qt::SolidLine, 3, "Normal");
-        }
+        // (분산 그래프 업데이트 로직 제거됨)
 
         // 3g. EF 좌표계 계산 (그리퍼 방향 설정)
         QVector3D Y_axis = V_new_Normal.normalized();
@@ -1632,7 +1567,6 @@ void RealSenseWidget::onShowICPVisualization()
         pcaProjectedPoints.reserve(filteredHandlePoints.size());
         for (const QVector3D& p : filteredHandlePoints) {
             QVector3D p_centered = p - centroid;
-            // 정렬된 축 기준으로 투영
             pcaProjectedPoints.append(QPointF(QVector3D::dotProduct(p_centered, V_new_PC1),
                                               QVector3D::dotProduct(p_centered, V_new_PC2)));
         }
@@ -1656,9 +1590,6 @@ void RealSenseWidget::onShowICPVisualization()
 
     } else {
         // 실패 시 데이터 리셋
-        if (m_varianceWidgetOrig) m_varianceWidgetOrig->clear();
-        if (m_varianceWidgetAlign) m_varianceWidgetAlign->clear();
-
         emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
         emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false);
         emit requestOriginalPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D()); // 점선 숨김
@@ -1677,23 +1608,14 @@ void RealSenseWidget::onShowICPVisualization()
         if(graspPoint.isNull()) qWarning() << "[ICP] Grasp point calculation failed.";
     }
 
-    // 4. 모든 다이얼로그 표시
+    // 4. 다이얼로그 표시 (분산 그래프 창 제거됨)
     m_icpVizDialog->show();
     m_icpVizDialog->raise();
     m_icpVizDialog->activateWindow();
 
     if (m_projectionPlotDialog) m_projectionPlotDialog->show();
 
-    if (m_varianceDialogOrig) {
-        m_varianceDialogOrig->show();
-        m_varianceDialogOrig->raise();
-    }
-    if (m_varianceDialogAlign) {
-        m_varianceDialogAlign->show();
-        m_varianceDialogAlign->raise();
-    }
-
-    qInfo() << "[ICP] Displayed windows including Variance Plots.";
+    qInfo() << "[ICP] Displayed windows (Viz & Projection).";
 }
 void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 {
