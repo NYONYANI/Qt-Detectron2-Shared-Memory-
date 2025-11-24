@@ -133,10 +133,6 @@ MainWindow::MainWindow(QWidget *parent)
     connect(this, &MainWindow::requestLiftRotatePlaceSequence, m_robotSequencer, &RobotSequencer::onLiftRotatePlaceSequence);
 
     connect(this, &MainWindow::requestFullAutomation, m_robotSequencer, &RobotSequencer::onStartFullAutomation);
-    connect(m_robotSequencer, &RobotSequencer::automationFinished, this, &MainWindow::onAutomationFinished);
-
-    connect(ui->widget, &RealSenseWidget::requestAlignHangSequence, m_robotSequencer, &RobotSequencer::onAlignHangSequence);
-
     connect(m_robotController, &RobotController::robotStateChanged, this, &MainWindow::updateRobotStateLabel);
     connect(m_robotController, &RobotController::robotPoseUpdated, this, &MainWindow::updateRobotPoseLabel);
     connect(m_robotController, &RobotController::robotTransformUpdated, ui->widget, &RealSenseWidget::onRobotTransformUpdated);
@@ -148,12 +144,6 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->CaptureButton, &QPushButton::clicked, ui->widget, [=](){
         ui->widget->captureAndProcess(false);
     });
-
-    if (ui->AlignHangButton) {
-        connect(ui->AlignHangButton, &QPushButton::clicked, ui->widget, &RealSenseWidget::onAlignHangRequested);
-    } else {
-        qWarning() << "[SETUP] 'AlignHangButton' not found in .ui file. Please add it.";
-    }
 
     // ✨ [추가] MoveTopButton 연결
     if (ui->MoveTopButton) {
@@ -272,28 +262,28 @@ void MainWindow::updateUiForState(RobotConnectionState state)
 {
     m_robotConnectionState = state;
 
-    QPushButton* autoButton = ui->AutoMoveButton;
+
 
     switch (state) {
     case RobotConnectionState::Disconnected:
         ui->RobotInit->setText("Init");
         ui->RobotInit->setEnabled(true);
-        if(autoButton) autoButton->setEnabled(false);
+
         break;
     case RobotConnectionState::Connecting:
         ui->RobotInit->setText("Connecting...");
         ui->RobotInit->setEnabled(false);
-        if(autoButton) autoButton->setEnabled(false);
+
         break;
     case RobotConnectionState::Connected:
         ui->RobotInit->setText("Servo ON");
         ui->RobotInit->setEnabled(true);
-        if(autoButton) autoButton->setEnabled(false);
+
         break;
     case RobotConnectionState::ServoOn:
         ui->RobotInit->setText("Close");
         ui->RobotInit->setEnabled(true);
-        if(autoButton) autoButton->setEnabled(true);
+
         break;
     }
 }
@@ -331,11 +321,6 @@ void MainWindow::on_HandleGrapsButton_clicked()
 {
     qDebug() << "[MAIN] 'Grasp Handle' button clicked. Requesting move to *ICP* grasp pose.";
     ui->widget->onMoveToIcpGraspPoseRequested();
-}
-
-void MainWindow::on_AlignHangButton_clicked()
-{
-    qDebug() << "[MAIN] 'Align Hang' (Auto-Slot) clicked. (Note: Should be handled by manual connect)";
 }
 
 
@@ -387,18 +372,6 @@ void MainWindow::updateRobotPoseLabel(const float* pose)
 }
 
 
-void MainWindow::on_AutoMoveButton_clicked()
-{
-    qDebug() << "[MAIN] 'AutoMoveButton' clicked. Starting full sequence.";
-    ui->AutoMoveButton->setEnabled(false);
-    emit requestFullAutomation();
-}
-
-void MainWindow::onAutomationFinished()
-{
-    qDebug() << "[MAIN] Full automation sequence finished.";
-    ui->AutoMoveButton->setEnabled(true);
-}
 
 
 void MainWindow::startPythonServer()

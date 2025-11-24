@@ -52,9 +52,6 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
     m_projectionPlotDialog(nullptr),
     m_projectionPlotWidget(nullptr),
     m_showIcpGraspPose(false),
-    m_hasCalculatedHangPose(false),
-    m_hasVerticalGripHandleCenter(false),
-    m_verticalGripGlobalNormal(QVector3D()),
     m_hasGraspPoseCentroidLine(false)
 {
     initSharedMemory();
@@ -96,10 +93,6 @@ RealSenseWidget::RealSenseWidget(QWidget *parent)
 
     connect(this, &RealSenseWidget::requestTransformedHandleCloudUpdate,
             m_pointCloudWidget, &PointCloudWidget::updateTransformedHandleCloud);
-
-    connect(this, &RealSenseWidget::requestHangCenterPointUpdate,
-            m_pointCloudWidget, &PointCloudWidget::updateHangCenterPoint);
-
     m_pointCloudWidget->setFocus();
 }
 
@@ -1212,10 +1205,6 @@ QJsonArray RealSenseWidget::receiveResultsFromPython() {
 void RealSenseWidget::onShowICPVisualization()
 {
     qInfo() << "[ICP] 'ICPButton' clicked. Finding closest handle from *current* capture...";
-
-    m_hasVerticalGripHandleCenter = false;
-    m_verticalGripGlobalNormal = QVector3D();
-
     // --------------------------------------------------------------------
     // 1. 포인트 클라우드 추출 및 정렬
     // --------------------------------------------------------------------
@@ -1384,8 +1373,7 @@ void RealSenseWidget::onShowICPVisualization()
                 m_icpPointCloudWidget, &PointCloudWidget::updateVerticalLine);
         connect(this, &RealSenseWidget::requestGraspToBodyLineUpdate,
                 m_icpPointCloudWidget, &PointCloudWidget::updateGraspToBodyLine);
-        connect(this, &RealSenseWidget::requestHangCenterPointUpdate,
-                m_icpPointCloudWidget, &PointCloudWidget::updateHangCenterPoint);
+
     }
 
     // 2B. 2D Projection Dialog
@@ -1576,13 +1564,9 @@ void RealSenseWidget::onShowICPVisualization()
             QPointF center2D = m_projectionPlotWidget->getDataCenter();
             QVector3D P_3D_center = centroid + (center2D.x() * V_new_PC1) + (center2D.y() * V_new_PC2);
 
-            m_verticalGripHandleCenter3D = P_3D_center;
-            m_hasVerticalGripHandleCenter = true;
-            m_verticalGripGlobalNormal = V_new_Normal.normalized();
-
             float line_half = 0.1f;
             emit requestVerticalLineUpdate(P_3D_center - (V_new_Normal * line_half), P_3D_center + (V_new_Normal * line_half), true);
-            emit requestHangCenterPointUpdate(m_verticalGripHandleCenter3D, true);
+
         }
 
         m_selectedHandlePoints3D = filteredHandlePoints;
@@ -1601,7 +1585,6 @@ void RealSenseWidget::onShowICPVisualization()
 
         if (m_projectionPlotWidget) m_projectionPlotWidget->updateData({});
         emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false);
-        emit requestHangCenterPointUpdate(QVector3D(), false);
         emit requestGraspToBodyLineUpdate(QVector3D(), QVector3D(), false);
 
         if(!global_pca_ok) qWarning() << "[ICP] PCA calculation failed.";
@@ -1679,7 +1662,7 @@ void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 
     // 5. 시그널 발생
     // ✨ [오류 수정] 4번째 인자로 빈 QMatrix4x4()를 전달하여 인자 개수 맞춤
-    emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg, QMatrix4x4());
+    emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg);
 }
 
 void RealSenseWidget::onMoveToIcpGraspPoseRequested()
@@ -1720,15 +1703,6 @@ void RealSenseWidget::onMoveToIcpGraspPoseRequested()
     QMatrix4x4 hang_pose_to_send;
     hang_pose_to_send.setToIdentity(); // 기본값은 Identity
 
-    if (m_hasCalculatedHangPose) {
-        qInfo() << "[GRASP ICP] Found a pre-calculated Hang Pose. Bundling it with the request.";
-        hang_pose_to_send = m_calculatedHangPose;
-    } else {
-        qWarning() << "[GRASP ICP] No Hang Pose found. (Did you press 'AlignHang' first?)";
-        qWarning() << "[GRASP ICP] The robot will grasp and lift, but NOT proceed to hang.";
-    }
-
-
     // --- 4. 이동 요청 전 IK 체크 수행 ---
     qDebug() << "[GRASP ICP] Checking reachability before emitting move request...";
 
@@ -1756,8 +1730,7 @@ void RealSenseWidget::onMoveToIcpGraspPoseRequested()
     qInfo() << "  - Cmd Rot (A, B, C deg):" << robotCmdOri_deg;
 
     // 5. 시그널 발생 (✨ 수정됨)
-    emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg,
-                                  hang_pose_to_send); // ✨ [추가] hang_pose_to_send 전달
+    emit requestApproachThenGrasp(robotApproachPos_mm, robotGraspPos_mm, robotCmdOri_deg); // ✨ [추가] hang_pose_to_send 전달
 }
 
 
@@ -2046,151 +2019,7 @@ void RealSenseWidget::onShowHorizontalGraspVisualization()
     qInfo() << "[ICP-H] Displayed" << (filteredHandlePoints.isEmpty() ? 0 : filteredHandlePoints.size()) << " points in new window.";
 }
 
-void RealSenseWidget::onAlignHangRequested()
-{
-    qInfo() << "[ALIGN HANG] 'Align Hang Pose' (start of pole) VISUALIZE requested.";
 
-    // 1. Vertical Grip 자세, 원본 포인트, *외곽선 중심 및 방향*이 유효한지 확인
-    if (!m_showIcpGraspPose || m_icpGraspPose.isIdentity() ||
-        m_selectedHandlePoints3D.isEmpty() || !m_hasVerticalGripHandleCenter ||
-        m_verticalGripGlobalNormal.isNull())
-    {
-        qWarning() << "[ALIGN HANG] Viz failed: No ICP grasp pose, points, outline center, or outline normal found.";
-        qWarning() << "Please press 'Vertical Grip' first to capture all required data.";
-
-        m_hasCalculatedHangPose = false;
-        m_calculatedHangPose.setToIdentity();
-        emit requestTransformedHandleCloudUpdate({}, false);
-        return;
-    }
-
-    // 2. 봉(Pole) 위치 정의 (사용자 요청 기반으로 수정)
-    const float POLE_X = 0.68f;  // 68cm
-    const float POLE_Z = 0.34f;  // 34cm
-    const float POLE_Y_START = -0.27f; // Y 시작점: -27cm
-    const float POLE_LEN = 0.15f;  // Y 방향 길이: 15cm
-    const float POLE_Y_END = POLE_Y_START + POLE_LEN; // Y 끝점: -0.12m (-12cm)
-
-    // 3. 목표 (Target) 정의
-    // 3a. '외곽선 중심'이 위치할 최종 목표 지점 (봉의 끝점)
-    QVector3D P_target_world(POLE_X, POLE_Y_END, POLE_Z);
-
-    // 3b. '노란선'(Global Normal)이 정렬될 최종 목표 방향
-    // --------------------------------------------------------------------------------------------------
-    // ✨ [수정] 핸들 노멀이 월드 좌표계의 -Y 방향을 Z축 기준 -30도 회전한 방향을 바라보도록 목표 방향을 설정
-    // --------------------------------------------------------------------------------------------------
-
-    QQuaternion Rz_30_quat = QQuaternion::fromAxisAndAngle(0.0f, 0.0f, 1.0f, -30.0f);
-    // 베이스 벡터를 월드 -Y 방향으로 설정 (베이스의 중앙부)
-    QVector3D V_base_target(0.0f, -1.0f, 0.0f);
-
-    QVector3D V_target_world = Rz_30_quat.rotatedVector(V_base_target);
-    qInfo() << "[ALIGN HANG] Target Normal Dir (-Y + Rz-30deg):" << V_target_world;
-    // --------------------------------------------------------------------------------------------------
-
-
-    // 4. 현재 (Current) 상태 정의 (파지 시점)
-    QMatrix4x4 T_grasp_world = m_icpGraspPose;
-    QVector3D P_center_world_grasp = m_verticalGripHandleCenter3D;
-    QVector3D V_center_world_grasp = m_verticalGripGlobalNormal;
-
-    // --------------------------------------------------------------------------------------------------
-    // ✨ [추가] V_center_world_grasp (손잡이 관통 축)의 방향을 강제로 로봇 베이스 쪽으로 향하도록 조정
-    // --------------------------------------------------------------------------------------------------
-    // 로봇 베이스(원점)를 향하는 벡터 (XY 평면에서만 비교)
-    QVector3D V_to_base = -P_center_world_grasp;
-    V_to_base.setZ(0.0f); // 수평 성분만 사용
-    V_to_base.normalize();
-
-    // V_center_world_grasp는 이미 수평화 되어 있음. XY 평면에서 V_to_base와 비교.
-    // 내적이 음수면 V_center_world_grasp가 베이스에서 멀어지는 방향이므로 뒤집어야 함.
-    if (QVector3D::dotProduct(V_center_world_grasp, V_to_base) < 0.0f) {
-        V_center_world_grasp = -V_center_world_grasp;
-        qInfo() << "[ALIGN HANG] Flipped current Handle Normal (V_center_world_grasp) to face the robot base.";
-    } else {
-        qInfo() << "[ALIGN HANG] Current Handle Normal (V_center_world_grasp) already faces the robot base.";
-    }
-    // --------------------------------------------------------------------------------------------------
-
-
-    qInfo() << "[ALIGN HANG] Target Center Pos (Pole End):" << P_target_world;
-    qInfo() << "[ALIGN HANG] Target Normal Dir (Rotated):" << V_target_world;
-    qInfo() << "[ALIGN HANG] Current Center Pos:" << P_center_world_grasp;
-    qInfo() << "[ALIGN HANG] Current Normal Dir (Adjusted):" << V_center_world_grasp;
-
-    // 5. '걸기(Hang) 자세' 계산
-    // 5a. '외곽선 중심'의 *EF 좌표계 기준* 위치 계산 (불변)
-    QVector3D P_center_ef = T_grasp_world.inverted() * P_center_world_grasp;
-
-    // 5b. '노란선 방향'의 *EF 좌표계 기준* 방향 계산 (불변)
-    // 조정된 V_center_world_grasp를 사용하여 V_center_ef를 다시 계산해야 함
-    QVector3D V_center_ef = T_grasp_world.inverted().mapVector(V_center_world_grasp);
-
-    // 5c. 필요한 월드 회전(Q_rot) 계산: V_center_world_grasp -> V_target_world
-    QQuaternion Q_rot = QQuaternion::rotationTo(V_center_world_grasp, V_target_world);
-    qInfo() << "[ALIGN HANG] Required World Rotation:" << Q_rot;
-
-    // 5d. 최종 '걸기'시의 EF 방향(R_hang) 계산
-    QMatrix3x3 R_grasp = T_grasp_world.toGenericMatrix<3,3>();
-    QMatrix3x3 R_hang = Q_rot.toRotationMatrix() * R_grasp;
-
-    // 5e. 최종 '걸기'시의 EF 위치(P_hang_world) 계산
-    QVector3D P_hang_world = P_target_world - (QQuaternion::fromRotationMatrix(R_hang) * P_center_ef);
-
-    // 6. 최종 '걸기 자세' 행렬 생성
-    QMatrix4x4 hangPoseMatrix(R_hang);
-    hangPoseMatrix.setColumn(3, QVector4D(P_hang_world, 1.0f));
-
-    qInfo() << "[ALIGN HANG] Calculated Hang EF Pos (Final):" << P_hang_world;
-
-    // 7. (30도 로컬 회전은 3b의 글로벌 회전으로 대체됨)
-
-    // 8. 계산된 걸기 자세를 멤버 변수에 저장
-    m_calculatedHangPose = hangPoseMatrix;
-    m_hasCalculatedHangPose = true;
-
-
-    // --- 핸들 클라우드 포인트 변환 ---
-    // 1. 변환 행렬 계산: T_hang_world * T_world_grasp
-    QMatrix4x4 transform = m_calculatedHangPose * m_icpGraspPose.inverted();
-
-    // 2. 원본 포인트(m_selectedHandlePoints3D)에 변환 적용
-    QVector<QVector3D> transformedPoints;
-    transformedPoints.reserve(m_selectedHandlePoints3D.size());
-    for (const QVector3D& p_world_original : m_selectedHandlePoints3D) {
-        QVector3D p_world_new = transform * p_world_original;
-        transformedPoints.append(p_world_new);
-    }
-    qInfo() << "[ALIGN HANG] Transformed" << transformedPoints.size() << "handle points to hang location.";
-
-    // 3. 3D 뷰어에 그리도록 시그널 전송 (자홍색)
-    emit requestTransformedHandleCloudUpdate(transformedPoints, true);
-
-    qInfo() << "[ALIGN HANG] Calculated Final Hang Pose (m):" << hangPoseMatrix.column(3).toVector3D();
-
-    // 9. 3D 뷰어에 자세 표시 (Cyan Pose)
-    const QMatrix4x4& existingTargetPose = m_pointCloudWidget->m_targetTcpTransform;
-    bool showExistingTargetPose = m_pointCloudWidget->m_showTargetPose;
-    const QMatrix4x4& existingViewPose = m_pointCloudWidget->m_viewPoseTransform;
-    bool showExistingViewPose = m_pointCloudWidget->m_showViewPose;
-
-    m_pointCloudWidget->updateTargetPoses(
-        existingTargetPose,
-        showExistingTargetPose,
-        hangPoseMatrix,         // Cyan Pose
-        true,
-        existingViewPose,
-        showExistingViewPose
-        );
-
-    qInfo() << "[ALIGN HANG] ✅ Visualization sent to PointCloudWidget (Cyan Pose + Magenta Points).";
-}
-void RealSenseWidget::onHangCupSequenceRequested()
-{
-    qWarning() << "[HANG] 'onHangCupSequenceRequested' (Old Hang Cup button) was pressed.";
-    qWarning() << "[HANG] This button is deprecated. Retargeting to 'onAlignHangRequested' (Visualize Only).";
-    onAlignHangRequested();
-}
 void RealSenseWidget::onShowTopViewAnalysis()
 {
     qInfo() << "[TopView] Analyzing Cup Body Only (Top Rim Only)...";

@@ -24,20 +24,21 @@
 #include <vector>
 #include <sys/mman.h>
 #include <semaphore.h>
-#include "xyplotwidget.h"
 #include <GL/glu.h>
-#include "DBSCAN.h"
-#include "handleplotwidget.h"
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 #include <QMatrix3x3>
-#include "DRFLEx.h"
 #include <QElapsedTimer>
 #include <QDialog>
 #include <QVBoxLayout>
+
+// 사용자 정의 헤더
+#include "xyplotwidget.h"
+#include "DBSCAN.h"
+#include "handleplotwidget.h"
 #include "pointcloudwidget.h"
 #include "projectionplotwidget.h"
-#include "varianceplotwidget.h"
+#include "DRFLEx.h"
 
 struct GraspingTarget
 {
@@ -46,7 +47,6 @@ struct GraspingTarget
     QPointF circleCenter;
     QPointF handleCentroid;
 };
-
 
 class RealSenseWidget : public QWidget
 {
@@ -78,13 +78,13 @@ public slots:
     void onMoveToIcpGraspPoseRequested();
     void onShowICPVisualization();
     void onShowHorizontalGraspVisualization();
-    void onHangCupSequenceRequested();
+
     void updateFrame();
     void checkProcessingResult();
-    void onAlignHangRequested();
 
     void onShowTopViewAnalysis();
     void onMoveToTopViewPose();
+
 signals:
     void requestRobotMove(const QVector3D& position_mm, const QVector3D& orientation_deg);
     void requestGripperAction(int action);
@@ -102,12 +102,11 @@ signals:
     void requestHandleCenterlineUpdate(const QVector<QVector3D>& centerline, const QVector<int>& segmentIds);
     void requestRandomGraspPoseUpdate(const QMatrix4x4& pose, bool show);
 
-    void requestApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg,
-                                  const QMatrix4x4& hang_pose_matrix);
+    void requestApproachThenGrasp(const QVector3D& approach_pos_mm, const QVector3D& final_pos_mm, const QVector3D& orientation_deg);
+
     void visionTaskComplete();
 
     void requestRawGraspPoseUpdate(const QMatrix4x4& pose, bool show);
-    void requestHangCupSequence(const QVector3D& approach_pos_mm, const QVector3D& place_pos_mm, const QVector3D& retreat_pos_mm, const QVector3D& orientation_deg);
     void requestPCAAxesUpdate(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal, bool show);
 
     // 원본 PCA 축 업데이트 시그널
@@ -118,15 +117,10 @@ signals:
     void requestDebugNormalUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
 
     void requestVerticalLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
-    void requestAlignHangSequence(const QVector3D& approach_pos_mm,
-                                  const QVector3D& place_pos_mm,
-                                  const QVector3D& retreat_pos_mm,
-                                  const QVector3D& orientation_deg);
+
     void requestTransformedHandleCloudUpdate(const QVector<QVector3D>& points, bool show);
-
-    void requestHangCenterPointUpdate(const QVector3D& point, bool show);
-
     void requestGraspToBodyLineUpdate(const QVector3D& p1, const QVector3D& p2, bool show);
+
 private:
     struct HandleAnalysisResult {
         int cupIndex = -1;
@@ -165,7 +159,6 @@ private:
 
     bool checkPoseReachable(const QVector3D& pos_mm, const QVector3D& ori_deg);
 
-
     QHBoxLayout *m_layout;
     QLabel *m_colorLabel;
     PointCloudWidget *m_pointCloudWidget;
@@ -203,23 +196,14 @@ private:
     QMatrix4x4 m_icpGraspPose;
     bool m_showIcpGraspPose = false;
     QVector<QVector3D> m_selectedHandlePoints3D;
-    QMatrix4x4 m_calculatedHangPose;
-    bool m_hasCalculatedHangPose;
+
     QDialog* m_icpVizDialog = nullptr;
     PointCloudWidget* m_icpPointCloudWidget = nullptr;
     QDialog* m_projectionPlotDialog = nullptr;
     ProjectionPlotWidget* m_projectionPlotWidget = nullptr;
 
-    // ✨ [수정] 분산 그래프용 다이얼로그를 Original, Aligned 2개로 분리
-    QDialog* m_varianceDialogOrig = nullptr;
-    VariancePlotWidget* m_varianceWidgetOrig = nullptr;
-
-    QDialog* m_varianceDialogAlign = nullptr;
-    VariancePlotWidget* m_varianceWidgetAlign = nullptr;
-
     QDialog* m_topViewDialog = nullptr;
     XYPlotWidget* m_topViewPlotWidget = nullptr;
-
 
     QMatrix4x4 m_calculatedTargetPose; QVector3D m_calculatedTargetPos_m; QVector3D m_calculatedTargetOri_deg;
     QMatrix4x4 m_calculatedTargetPose_Y_Aligned; QVector3D m_calculatedTargetOri_deg_Y_Aligned;
@@ -239,11 +223,7 @@ private:
     bool initSharedMemory();
     void sendImageToPython(const cv::Mat &mat);
     QJsonArray receiveResultsFromPython();
-    void drawMaskOverlay(QImage &image, const QJsonArray &results);
 
-    QVector3D m_verticalGripHandleCenter3D;
-    bool m_hasVerticalGripHandleCenter;
-    QVector3D m_verticalGripGlobalNormal;
     QVector3D m_bodyCenter3D_bestTarget;
     QVector3D m_handleCentroid3D_bestTarget;
     bool m_hasGraspPoseCentroidLine = false;

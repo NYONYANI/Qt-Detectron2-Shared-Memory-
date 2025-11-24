@@ -31,7 +31,6 @@ PointCloudWidget::PointCloudWidget(QWidget *parent)
     m_showDebugNormal = false;
     m_showVerticalLine = false;
     m_showGraspToBodyLine = false;
-    m_showHangCenter = false;
     m_showOriginalPCAAxes = false; // ✨ [추가] 초기화
 }
 PointCloudWidget::~PointCloudWidget() {}
@@ -182,27 +181,7 @@ void PointCloudWidget::drawRawCentroid()
     }
 }
 
-void PointCloudWidget::updateHangCenterPoint(const QVector3D& point, bool show)
-{
-    m_hangCenterViz = point;
-    m_showHangCenter = show;
-    update();
-}
 
-void PointCloudWidget::drawHangCenterPoint()
-{
-    if (!m_showHangCenter) return;
-    GLUquadric* quadric = gluNewQuadric();
-    if(quadric) {
-        gluQuadricNormals(quadric, GLU_SMOOTH);
-        glColor3f(0.0f, 0.0f, 0.0f);
-        glPushMatrix();
-        glTranslatef(m_hangCenterViz.x(), m_hangCenterViz.y(), m_hangCenterViz.z());
-        gluSphere(quadric, 0.004, 16, 16);
-        glPopMatrix();
-        gluDeleteQuadric(quadric);
-    }
-}
 
 // ✨ [수정] 원본 PCA 축 설정 (길이 인자 제거)
 void PointCloudWidget::setOriginalPCAAxes(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal)
@@ -269,9 +248,6 @@ void PointCloudWidget::paintGL()
     drawGrid(2.0f, 20);
     drawAxes(0.2f);
 
-    if (!m_isRawVizMode) {
-        drawPole();
-    }
 
     if (m_isRawVizMode) {
         glPointSize(3.0f);
@@ -285,7 +261,7 @@ void PointCloudWidget::paintGL()
         glPointSize(1.5f);
 
         drawRawCentroid();
-        drawHangCenterPoint();
+
         drawRawGraspPoint();
         drawRawGraspPoseAxis();
 
@@ -335,7 +311,7 @@ void PointCloudWidget::paintGL()
         drawPCAAxes();
         drawDebugNormal();
         drawVerticalLine();
-        drawHangCenterPoint();
+
         drawGraspToBodyLine();
     }
     glEnable(GL_DEPTH_TEST);
@@ -482,7 +458,6 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event)
             break;
         case Qt::Key_3:
             m_showVerticalLine = !m_showVerticalLine;
-            m_showHangCenter = !m_showHangCenter;
             qDebug() << "[ICP Key] Toggle Vertical Line/Center:" << m_showVerticalLine;
             break;
         case Qt::Key_4:
@@ -660,40 +635,7 @@ void PointCloudWidget::drawRawGraspPoseAxis()
     glPopMatrix();
 }
 
-void PointCloudWidget::drawPole()
-{
-    GLUquadric* quadric = gluNewQuadric();
-    if(quadric) {
-        gluQuadricNormals(quadric, GLU_SMOOTH);
-        const float pole_x = 0.68f; const float pole_z = 0.34f;
-        const float pole_y_start = -0.27f; const float pole_len = 0.15f; const float pole_radius = 0.003f;
 
-        glColor3f(0.3f, 0.3f, 0.3f);
-        glPushMatrix();
-        glTranslatef(pole_x, pole_y_start, pole_z);
-        glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
-        gluCylinder(quadric, pole_radius, pole_radius, pole_len, 16, 16);
-        glPopMatrix();
-
-        glColor3f(0.2f, 0.2f, 0.2f);
-        const float plate_width = 0.30f; const float plate_height = 0.50f;
-        const float plate_half_width = plate_width / 2.0f;
-        const float new_bottom_z = 0.0f; const float new_top_z = new_bottom_z + plate_height;
-
-        QVector3D p1(pole_x - plate_half_width, pole_y_start, new_top_z);
-        QVector3D p2(pole_x + plate_half_width, pole_y_start, new_top_z);
-        QVector3D p3(pole_x + plate_half_width, pole_y_start, new_bottom_z);
-        QVector3D p4(pole_x - plate_half_width, pole_y_start, new_bottom_z);
-
-        glBegin(GL_QUADS);
-        glVertex3f(p1.x(), p1.y(), p1.z()); glVertex3f(p2.x(), p2.y(), p2.z());
-        glVertex3f(p3.x(), p3.y(), p3.z()); glVertex3f(p4.x(), p4.y(), p4.z());
-        glVertex3f(p4.x(), p4.y(), p4.z()); glVertex3f(p3.x(), p3.y(), p3.z());
-        glVertex3f(p2.x(), p2.y(), p2.z()); glVertex3f(p1.x(), p1.y(), p1.z());
-        glEnd();
-        gluDeleteQuadric(quadric);
-    }
-}
 
 void PointCloudWidget::setPCAAxes(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal, bool show)
 {
@@ -839,7 +781,6 @@ void PointCloudWidget::resetVisualizations()
     m_showDebugLine = false;
     m_showDebugNormal = false;
     m_showVerticalLine = false;
-    m_showHangCenter = false;
     m_showTransformedHandleCloud = false;
     m_showGraspToBodyLine = false;
 

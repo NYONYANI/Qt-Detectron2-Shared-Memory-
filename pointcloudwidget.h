@@ -46,7 +46,7 @@ public slots:
     void updateDebugLine(const QVector3D& p1, const QVector3D& p2, bool show);
     void updateDebugNormal(const QVector3D& p1, const QVector3D& p2, bool show);
     void updateVerticalLine(const QVector3D& p1, const QVector3D& p2, bool show);
-    void updateHangCenterPoint(const QVector3D& point, bool show);
+
     void updateTransformedHandleCloud(const QVector<QVector3D>& points, bool show);
     void updateGraspToBodyLine(const QVector3D& graspPoint, const QVector3D& bodyCenter, bool show);
     void resetVisualizations();
@@ -151,8 +151,7 @@ private:
     QVector3D m_verticalLineP2;
     bool m_showVerticalLine;
 
-    QVector3D m_hangCenterViz;
-    bool m_showHangCenter;
+
 
     QVector<QVector3D> m_transformedHandlePoints;
     bool m_showTransformedHandleCloud;
