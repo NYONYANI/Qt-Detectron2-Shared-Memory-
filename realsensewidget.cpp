@@ -498,7 +498,6 @@ bool RealSenseWidget::calculateRandomGraspPoseOnSegment(int targetSegmentId,
 
     return true;
 }
-
 bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
 {
     qDebug() << "[CALC] Calculating grasping poses... (ShowPlot: " << showPlot << ")";
@@ -532,8 +531,7 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
         }
         if(body3D.isEmpty()) continue;
 
-        // ✨ [수정됨] Top View 필터링 로직 적용 시작
-        // 1. Z축(높이) 범위 및 최대 높이 계산
+        // Top View 필터링 로직
         float min_z = std::numeric_limits<float>::max();
         float max_z = -std::numeric_limits<float>::max();
         for(const auto& p : body3D) {
@@ -541,25 +539,20 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
             if(p.z() > max_z) max_z = p.z();
         }
 
-        // 2. 상단부 임계값 설정 (상위 10% 높이만 사용)
         float heightRange = max_z - min_z;
         float topThreshold = max_z - (heightRange * 0.1f);
 
         QVector<QPointF> body2D;
-        QVector<PlotData> bodyPlot; // 시각화용
+        QVector<PlotData> bodyPlot;
 
-        // 3. 임계값보다 높은 점만 원 피팅 데이터(body2D)에 추가
         for(const auto& p3d : body3D) {
             if (p3d.z() > topThreshold) {
                 body2D.append(p3d.toPointF());
-                // 시각화 시 필터링된 점을 녹색으로 표시
                 if(showPlot) bodyPlot.append({p3d.toPointF(), Qt::green, "Top"});
             }
         }
 
-        // 4. 데이터가 너무 적으면(노이즈 등) 전체 포인트 사용 (Fallback)
         if (body2D.size() < 10) {
-            qWarning() << "[CALC] Too few top points (" << body2D.size() << "). Using all points.";
             body2D.clear();
             if(showPlot) bodyPlot.clear();
             for(const auto& p3d : body3D) {
@@ -567,7 +560,6 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
                 if(showPlot) bodyPlot.append({p3d.toPointF(), Qt::green, "Body(Fallback)"});
             }
         }
-        // ✨ [수정됨] Top View 필터링 로직 적용 끝
 
         CircleResult circle = CircleFitter::fitCircleLeastSquares(body2D);
         if (circle.radius > 0 && circle.radius < 1.0) {
@@ -599,7 +591,7 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
             m_plotWidgets[i]->setWindowTitle(QString("Cup %1 Fitting Result (Top Only)").arg(i + 1));
             m_plotWidgets[i]->show(); m_plotWidgets[i]->activateWindow();
         }
-    } else if (showPlot) qDebug() << "[CALC] No body points for plotting.";
+    }
 
     if (m_graspingTargets.isEmpty()) {
         qDebug() << "[CALC] No grasping points calculated.";
@@ -607,24 +599,34 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
         return false;
     }
 
+    // --------------------------------------------------------------------------------
+    // [데이터 저장 및 좌표계 표시 설정]
+    // --------------------------------------------------------------------------------
+
     QVector3D currentTcpPos = m_baseToTcpTransform.column(3).toVector3D(); float minDist = std::numeric_limits<float>::max();
     GraspingTarget bestTarget = m_graspingTargets[0];
     for (const auto& target : m_graspingTargets) { float dist = currentTcpPos.distanceToPoint(target.point); if (dist < minDist) { minDist = dist; bestTarget = target; } }
-    float best_grasp_z = bestTarget.point.z(); // Grasping Z-level
+
+    float best_grasp_z = bestTarget.point.z();
+
+    // 핵심 데이터 업데이트
     m_bodyCenter3D_bestTarget = QVector3D(bestTarget.circleCenter.x(), bestTarget.circleCenter.y(), best_grasp_z);
     m_handleCentroid3D_bestTarget = QVector3D(bestTarget.handleCentroid.x(), bestTarget.handleCentroid.y(), best_grasp_z);
     m_hasGraspPoseCentroidLine = true;
-    qDebug() << "[CALC] Stored Grasp Pose Centroid Line: Body=" << m_bodyCenter3D_bestTarget << "Handle=" << m_handleCentroid3D_bestTarget;
-    m_calculatedTargetPos_m = bestTarget.point + QVector3D(0, 0, GRIPPER_Z_OFFSET); // Use constant
+
+    qDebug() << "[CALC] Saved Body Center:" << m_bodyCenter3D_bestTarget << " Handle Center:" << m_handleCentroid3D_bestTarget;
+
+    m_calculatedTargetPos_m = bestTarget.point + QVector3D(0, 0, GRIPPER_Z_OFFSET);
     const QVector3D& N = bestTarget.direction;
-    float target_rz_rad = atan2(N.y(), N.x()) - (M_PI / 2.0f); // Align Y with N
+    float target_rz_rad = atan2(N.y(), N.x()) - (M_PI / 2.0f);
     while (target_rz_rad > M_PI) target_rz_rad -= 2*M_PI; while (target_rz_rad <= -M_PI) target_rz_rad += 2*M_PI;
 
     QVector3D euler_RxRyRz_deg(0.0f, 179.9f, qRadiansToDegrees(target_rz_rad));
     m_calculatedTargetPose.setToIdentity(); m_calculatedTargetPose.translate(m_calculatedTargetPos_m);
-    m_calculatedTargetPose.rotate(euler_RxRyRz_deg.z(), 0, 0, 1); // Z
-    m_calculatedTargetPose.rotate(euler_RxRyRz_deg.y(), 0, 1, 0); // Y
-    m_calculatedTargetPose.rotate(euler_RxRyRz_deg.x(), 1, 0, 0); // X
+    m_calculatedTargetPose.rotate(euler_RxRyRz_deg.z(), 0, 0, 1);
+    m_calculatedTargetPose.rotate(euler_RxRyRz_deg.y(), 0, 1, 0);
+    m_calculatedTargetPose.rotate(euler_RxRyRz_deg.x(), 1, 0, 0);
+
     QMatrix3x3 rotMat = m_calculatedTargetPose.toGenericMatrix<3,3>();
     QVector3D graspOri_deg_ZYZ = rotationMatrixToEulerAngles(rotMat, "ZYZ");
     float cmd_A = graspOri_deg_ZYZ.x() + 180.0f; float cmd_B = -graspOri_deg_ZYZ.y(); float cmd_C = graspOri_deg_ZYZ.z() + 180.0f;
@@ -634,8 +636,12 @@ bool RealSenseWidget::calculateGraspingPoses(bool showPlot)
     m_calculatedTargetOri_deg = QVector3D(cmd_A, cmd_B, cmd_C);
 
     qDebug() << "[CALC] Target Grasp Pose | Pos(m):" << m_calculatedTargetPos_m << "| Ori(A,B,C deg):" << m_calculatedTargetOri_deg;
-    bool show = !m_pointCloudWidget->m_showTargetPose;
-    m_pointCloudWidget->updateTargetPoses(m_calculatedTargetPose, show, QMatrix4x4(), false, QMatrix4x4(), false);
+
+    // ✨ [수정] 항상 좌표계 축을 표시하지 않음 (false)
+    bool showAxis = false;
+
+    m_pointCloudWidget->updateTargetPoses(m_calculatedTargetPose, showAxis, QMatrix4x4(), false, QMatrix4x4(), false);
+
     return true;
 }
 
@@ -735,100 +741,86 @@ void RealSenseWidget::onMoveToYAlignedPoseRequested()
 }
 void RealSenseWidget::onCalculateHandleViewPose()
 {
-    qInfo() << "[VIEW] 'Move View' requested. Calculating Look-At Pose...";
+    qInfo() << "[VIEW] 'Move View' requested. Calculating Look-At Pose (Geometric Method)...";
 
-    // 1. 파지 자세 및 타겟 리스트 계산
-    if (!calculateGraspingPoses(false)) { qWarning() << "[VIEW] Grasp Pose calc failed."; m_hasCalculatedViewPose=false; emit visionTaskComplete(); return; }
-    if (m_calculatedTargetPose.isIdentity()) { qWarning() << "[VIEW] Grasp pose invalid."; m_hasCalculatedViewPose=false; emit visionTaskComplete(); return; }
-    if (m_graspingTargets.isEmpty()) { qWarning() << "[VIEW] No grasping targets."; m_hasCalculatedViewPose=false; emit visionTaskComplete(); return; }
+    // 1. 데이터 유효성 검사 (기존 데이터 활용 우선)
+    bool hasValidData = !m_bodyCenter3D_bestTarget.isNull() && !m_handleCentroid3D_bestTarget.isNull();
 
-    // 2. bestTarget 찾기
-    QVector3D graspTargetPos_m = m_calculatedTargetPos_m - QVector3D(0, 0, GRIPPER_Z_OFFSET);
-    GraspingTarget* bestTarget = nullptr;
-    float minDistToCalculated = std::numeric_limits<float>::max();
+    if (!hasValidData) {
+        qInfo() << "[VIEW] No existing grasp data found. Attempting to calculate...";
 
-    for (GraspingTarget& target : m_graspingTargets) {
-        float dist = target.point.distanceToPoint(graspTargetPos_m);
-        if (dist < minDistToCalculated) {
-            minDistToCalculated = dist;
-            bestTarget = &target;
+        if (!calculateGraspingPoses(false)) {
+            qWarning() << "[VIEW] Grasp Pose calc failed.";
+            m_hasCalculatedViewPose = false;
+            emit visionTaskComplete();
+            return;
         }
-    }
 
-    if (bestTarget == nullptr || minDistToCalculated > 0.001f) {
-        qWarning() << "[VIEW] Failed to find the original bestTarget. Using m_graspingTargets[0] as fallback.";
-        if(m_graspingTargets.isEmpty()) { emit visionTaskComplete(); return; }
-        bestTarget = &m_graspingTargets[0];
+        if (m_bodyCenter3D_bestTarget.isNull() || m_handleCentroid3D_bestTarget.isNull()) {
+            qWarning() << "[VIEW] Body/Handle center data missing even after calculation.";
+            m_hasCalculatedViewPose = false;
+            emit visionTaskComplete();
+            return;
+        }
     } else {
-        qInfo() << "[VIEW] Found matching bestTarget for view calculation.";
+        qInfo() << "[VIEW] Using existing valid Body/Handle data from previous step.";
     }
 
-    // 3. bestTarget 정보 추출
-    QPointF bodyCenter2D = bestTarget->circleCenter;
-    QPointF handleCentroid2D = bestTarget->handleCentroid;
-    QVector3D graspPoint = bestTarget->point;
-    float circleRadius = 0.0f; // 원의 반지름 (calculateGraspingPoses에서 계산된 값)
+    // ----------------------------------------------------------------------------------
+    // [기하학적 이동 로직]
 
-    // CircleResult를 다시 찾아야 함 (임시로 0.04m 가정, 실제로는 저장된 값 사용)
-    // TODO: m_graspingTargets에 circleRadius도 저장하도록 수정 필요
-    circleRadius = 0.04f; // 4cm (임시값)
+    // 1. 기준점: 컵 바디 중심
+    QVector3D bodyCenter = m_bodyCenter3D_bestTarget;
 
-    // 6a. (Y축 계산을 위해 6a를 미리 당겨옴) 바디 중심 (3D)
-    QVector3D bodyCenter3D(bodyCenter2D.x(), bodyCenter2D.y(), graspPoint.z());
+    // 2. 손잡이 방향 벡터 계산
+    QVector3D handleCenter = m_handleCentroid3D_bestTarget;
+    QVector3D dirBodyToHandle = (handleCenter - bodyCenter);
+    dirBodyToHandle.setZ(0.0f); // 수평 방향만 고려
 
-
-    // --- 4. 동적 오프셋 계산 ---
-    QVector3D graspX_axis_ef = m_calculatedTargetPose.column(0).toVector3D().normalized();
-    QVector3D handlePos3D(handleCentroid2D.x(), handleCentroid2D.y(), graspPoint.z());
-    QVector3D vecGraspToHandle = handlePos3D - graspPoint;
-    float dot_X = QVector3D::dotProduct(vecGraspToHandle, graspX_axis_ef);
-
-    const float EF_OFF_X_AMOUNT = 0.25f;
-    const float EF_OFF_Z = -0.04f;
-
-    float DYNAMIC_EF_OFF_X;
-    if (dot_X > 0) {
-        DYNAMIC_EF_OFF_X = EF_OFF_X_AMOUNT;
-        qInfo() << "[VIEW] Handle is on +EF_X side (dot=" << dot_X << "). Setting EF_OFF_X to +" << EF_OFF_X_AMOUNT;
+    if (dirBodyToHandle.length() < 0.001f) {
+        qWarning() << "[VIEW] Handle/Body centers are too close. Using default X-axis.";
+        dirBodyToHandle = QVector3D(1, 0, 0);
     } else {
-        DYNAMIC_EF_OFF_X = -EF_OFF_X_AMOUNT;
-        qInfo() << "[VIEW] Handle is on -EF_X side (dot=" << dot_X << "). Setting EF_OFF_X to -" << EF_OFF_X_AMOUNT;
+        dirBodyToHandle.normalize();
     }
 
-    // --- 동적 Y 오프셋 계산 ---
-    QVector3D vecGraspToCenter = (bodyCenter3D - graspPoint).normalized();
-    QVector3D graspY_axis_ef = m_calculatedTargetPose.column(1).toVector3D().normalized();
+    // 3. 카메라 목표 위치 계산 (이동)
+    //    - 손잡이 방향으로 25cm, Z축으로 4cm
+    float move_handle_dir_m = 0.25f;
+    float move_z_dir_m = 0.2f;
 
-    float dot_Y = QVector3D::dotProduct(graspY_axis_ef, vecGraspToCenter);
+    QVector3D cameraTargetPos = bodyCenter + (dirBodyToHandle * move_handle_dir_m) + QVector3D(0.0f, 0.0f, move_z_dir_m);
 
-    float DYNAMIC_EF_OFF_Y;
-    if (dot_Y > 0) {
-        DYNAMIC_EF_OFF_Y = circleRadius;
-        qInfo() << "[VIEW] Grasp +Y points INWARD (dot=" << dot_Y << "). Setting EF_OFF_Y to +" << DYNAMIC_EF_OFF_Y;
+    // 컵 반지름 동적 계산
+    QVector3D surfacePoint = m_calculatedTargetPos_m - QVector3D(0, 0, GRIPPER_Z_OFFSET);
+    float cupRadius = QVector2D(bodyCenter.toVector2D() - surfacePoint.toVector2D()).length();
+
+    if (cupRadius < 0.01f || cupRadius > 0.15f) {
+        qWarning() << "[VIEW] Calculated radius" << cupRadius << "m seems invalid. Using default 0.04m.";
+        cupRadius = 0.04f;
     } else {
-        DYNAMIC_EF_OFF_Y = -circleRadius;
-        qInfo() << "[VIEW] Grasp +Y points OUTWARD (dot=" << dot_Y << "). Setting EF_OFF_Y to " << DYNAMIC_EF_OFF_Y;
+        qInfo() << "[VIEW] Calculated Cup Radius:" << cupRadius << "m";
     }
 
-    // --- 5. 오프셋 적용하여 카메라 목표 위치 계산 ---
-    QMatrix4x4 offsetPoseInGraspFrame = m_calculatedTargetPose;
-    offsetPoseInGraspFrame.translate(DYNAMIC_EF_OFF_X, DYNAMIC_EF_OFF_Y, EF_OFF_Z);
+    // 바라보는 지점 (Look At Target) 계산: 교점
+    QVector3D intersectionPoint = bodyCenter + (dirBodyToHandle * cupRadius);
+    QVector3D lookAtTarget = intersectionPoint;
 
-    QVector3D cameraTargetPos = offsetPoseInGraspFrame.column(3).toVector3D();
+    qInfo() << "[VIEW] --- Geometric Calculation ---";
+    qInfo() << "  - Body Center:" << bodyCenter;
+    qInfo() << "  - Handle Dir:" << dirBodyToHandle;
+    qInfo() << "  - Camera Pos:" << cameraTargetPos;
+    qInfo() << "  - LookAt Target (Intersection):" << lookAtTarget;
 
-    // --- 6. [새로운 기능] 카메라가 바라볼 교점 계산 ---
-    QVector3D dirBodyToHandle = (handlePos3D - bodyCenter3D).normalized();
-    QVector3D intersectionPoint = bodyCenter3D + dirBodyToHandle * circleRadius;
 
+    // 4. LookAt 로직
+    QVector3D cameraZ = (lookAtTarget - cameraTargetPos).normalized();
+    QVector3D worldUp(0.0f, 0.0f, -1.0f);
 
-    // --- 7. LookAt 적용 (*** [사용자 요청 수정] ***) ---
-    QVector3D cameraZ = (intersectionPoint - cameraTargetPos).normalized();
-    QVector3D worldUp(0.0f, 0.0f, -1.0f); // <--- [수정] (1.0 -> -1.0)
     QVector3D cameraX = QVector3D::crossProduct(worldUp, cameraZ).normalized();
-
     if (cameraX.length() < 0.01f) {
-        qWarning() << "[VIEW] Gimbal lock detected. Using alternative Up vector (Y-axis).";
-        worldUp = QVector3D(0.0f, -1.0f, 0.0f); // <--- [수정] (1.0 -> -1.0)
+        qWarning() << "[VIEW] Gimbal lock detected. Using alternative Up vector.";
+        worldUp = QVector3D(0.0f, -1.0f, 0.0f);
         cameraX = QVector3D::crossProduct(worldUp, cameraZ).normalized();
     }
     QVector3D cameraY = QVector3D::crossProduct(cameraZ, cameraX).normalized();
@@ -839,17 +831,20 @@ void RealSenseWidget::onCalculateHandleViewPose()
     lookAtCameraPose.setColumn(2, QVector4D(cameraZ, 0.0f));
     lookAtCameraPose.setColumn(3, QVector4D(cameraTargetPos, 1.0f));
 
-    // --- 8~13. (기존 코드 동일) ---
+    // 5. 로봇 TCP 포즈 역계산
     QMatrix4x4 cameraToTcpTransform = m_tcpToCameraTransform.inverted();
     QMatrix4x4 required_EF_Pose = lookAtCameraPose * cameraToTcpTransform;
 
-    QMatrix4x4 verifyCamera = required_EF_Pose * m_tcpToCameraTransform;
+    // 6. 시각화 업데이트
+    emit requestDebugLookAtPointUpdate(lookAtTarget, true);
 
+    // ✨ [수정] 긴 직선 대신 축 길이(10cm)만큼만 파란색 선(Look At Vector) 표시
+    QVector3D dirView = (lookAtTarget - cameraTargetPos).normalized();
+    QVector3D shortLineEnd = cameraTargetPos + (dirView * 0.1f); // 10cm 길이
+    //emit requestDebugLineUpdate(cameraTargetPos, shortLineEnd, true);
 
-    emit requestDebugLookAtPointUpdate(intersectionPoint, true);
-    emit requestDebugLineUpdate(cameraTargetPos, intersectionPoint, true);
-
-    m_pointCloudWidget->updateTargetPoses(m_calculatedTargetPose, m_pointCloudWidget->m_showTargetPose,
+    // 파지 좌표계(Body Grip Pose)는 그리지 않음 (false)
+    m_pointCloudWidget->updateTargetPoses(m_calculatedTargetPose, false,
                                           QMatrix4x4(), false,
                                           required_EF_Pose, true);
 
@@ -857,13 +852,6 @@ void RealSenseWidget::onCalculateHandleViewPose()
     m_calculatedViewPos_mm = viewPos_ef * 1000.0f;
     m_calculatedViewMatrix = required_EF_Pose;
     m_hasCalculatedViewPose = true;
-
-    QVector3D grasp_ef_pos = m_calculatedTargetPose.column(3).toVector3D();
-    QVector3D delta_pos = viewPos_ef - grasp_ef_pos;
-
-    qInfo() << "[DEBUG-VIEW] 파지점 EF:                 X=" << grasp_ef_pos.x() << " Y=" << grasp_ef_pos.y() << " Z=" << grasp_ef_pos.z();
-    qInfo() << "[DEBUG-VIEW] 최종 뷰 EF:                X=" << viewPos_ef.x() << " Y=" << viewPos_ef.y() << " Z=" << viewPos_ef.z();
-    qInfo() << "[DEBUG-VIEW] 차이 (View EF - Grasp EF): dX=" << delta_pos.x() << " dY=" << delta_pos.y() << " dZ=" << delta_pos.z();
 
     qInfo() << "[VIEW] Pose ready for movement (Press MovepointButton).";
     emit visionTaskComplete();

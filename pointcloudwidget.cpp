@@ -697,7 +697,8 @@ void PointCloudWidget::drawDebugLine()
 {
     if (!m_showDebugLine) return;
     glLineWidth(3.0f);
-    glColor3f(1.0f, 0.0f, 1.0f);
+    // ✨ [수정] 파란색 (Blue)으로 변경
+    glColor3f(0.0f, 0.0f, 1.0f);
     glBegin(GL_LINES);
     glVertex3f(m_debugLineP1.x(), m_debugLineP1.y(), m_debugLineP1.z());
     glVertex3f(m_debugLineP2.x(), m_debugLineP2.y(), m_debugLineP2.z());
