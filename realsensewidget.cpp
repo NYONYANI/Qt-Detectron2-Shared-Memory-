@@ -1192,10 +1192,9 @@ QJsonArray RealSenseWidget::receiveResultsFromPython() {
 
 void RealSenseWidget::onShowICPVisualization()
 {
-    qInfo() << "[ICP] 'ICPButton' clicked. Finding closest handle from *current* capture...";
-    // --------------------------------------------------------------------
+    qInfo() << "[ICP] 'ICPButton' clicked. Visualizing Heatmap (Height * Proximity) & Centroid...";
+
     // 1. 포인트 클라우드 추출 및 정렬
-    // --------------------------------------------------------------------
     if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
         qWarning() << "[ICP] No detection results or point cloud available. Press 'Capture' first.";
         return;
@@ -1326,12 +1325,7 @@ void RealSenseWidget::onShowICPVisualization()
         return;
     }
 
-
-    // --------------------------------------------------------------------
-    // 2. 다이얼로그 생성 (3D 뷰어, 2D 투영) - 분산 그래프 제거됨
-    // --------------------------------------------------------------------
-
-    // 2A. 3D ICP Viz Dialog
+    // 2. 다이얼로그 생성 (3D 뷰어만 생성)
     if (m_icpVizDialog == nullptr) {
         m_icpVizDialog = new QDialog(this);
         m_icpVizDialog->setWindowTitle("Focused Handle Point Cloud (Base Frame)");
@@ -1351,242 +1345,41 @@ void RealSenseWidget::onShowICPVisualization()
 
         connect(this, &RealSenseWidget::requestRawGraspPoseUpdate,
                 m_icpPointCloudWidget, &PointCloudWidget::setRawGraspPose);
-        connect(this, &RealSenseWidget::requestPCAAxesUpdate,
-                m_icpPointCloudWidget, &PointCloudWidget::setPCAAxes);
-        connect(this, &RealSenseWidget::requestOriginalPCAAxesUpdate,
-                m_icpPointCloudWidget, &PointCloudWidget::setOriginalPCAAxes);
-        connect(this, &RealSenseWidget::requestDebugNormalUpdate,
-                m_icpPointCloudWidget, &PointCloudWidget::updateDebugNormal);
-        connect(this, &RealSenseWidget::requestVerticalLineUpdate,
-                m_icpPointCloudWidget, &PointCloudWidget::updateVerticalLine);
-        connect(this, &RealSenseWidget::requestGraspToBodyLineUpdate,
-                m_icpPointCloudWidget, &PointCloudWidget::updateGraspToBodyLine);
-
     }
 
-    // 2B. 2D Projection Dialog
-    if (m_projectionPlotDialog == nullptr) {
-        m_projectionPlotDialog = new QDialog(this);
-        m_projectionPlotDialog->setWindowTitle("PCA XY Projection (Outline)");
-        m_projectionPlotDialog->setAttribute(Qt::WA_DeleteOnClose);
-        m_projectionPlotDialog->resize(500, 500);
-        m_projectionPlotWidget = new ProjectionPlotWidget(m_projectionPlotDialog);
-        QVBoxLayout* layout = new QVBoxLayout(m_projectionPlotDialog);
-        layout->addWidget(m_projectionPlotWidget);
-        m_projectionPlotDialog->setLayout(layout);
+    // 3. 시각화 데이터 설정
+    // setRawBaseFramePoints 내부에서:
+    // 1) 무게중심 계산 및 표시 (Centroid)
+    // 2) 높이 * 근접도 기반 색상(Heatmap) 계산
+    // 3) 최고 점수 포인트(Grasp Point) 표시
+    m_icpPointCloudWidget->setRawBaseFramePoints(filteredHandlePoints);
 
-        connect(m_projectionPlotDialog, &QDialog::finished, [this](){
-            m_projectionPlotDialog = nullptr;
-            m_projectionPlotWidget = nullptr;
-            qDebug() << "[ProjPlot] Projection plot dialog closed.";
-        });
+    // 4. 나머지 시각화 요소 초기화 (Delete the rest)
+    emit requestRawGraspPoseUpdate(QMatrix4x4(), false); // 파지 좌표계 숨김
+    emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false); // PCA 축 숨김
+    emit requestOriginalPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D()); // 원본 PCA 숨김
+    emit requestDebugNormalUpdate(QVector3D(), QVector3D(), false); // 법선 벡터 숨김
+    emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false); // 수직선 숨김
+    emit requestGraspToBodyLineUpdate(QVector3D(), QVector3D(), false); // 바디 연결선 숨김
+
+    // 내부 상태 초기화 (PCA, 파지 포즈 등은 계산하지 않음)
+    m_icpGraspPose.setToIdentity();
+    m_showIcpGraspPose = false;
+
+    // 포인트 데이터 저장 (이후 작업용)
+    m_selectedHandlePoints3D = filteredHandlePoints;
+
+    // 2D 플롯 창이 있다면 숨기기
+    if (m_projectionPlotDialog) {
+        m_projectionPlotDialog->hide();
     }
 
-    // (분산 그래프 다이얼로그 생성 코드 제거됨)
-
-
-    // --------------------------------------------------------------------
-    // 3. PCA 실행 및 파지 좌표계 계산
-    // --------------------------------------------------------------------
-
-    // 3a. (글로벌) 원본 PCA 실행
-    Eigen::Vector3f global_mean_eigen, global_pc1_eigen, global_pc2_eigen, global_normal_eigen;
-    QVector<QPointF> projectedPoints_Legacy;
-    bool global_pca_ok = calculatePCA(filteredHandlePoints, projectedPoints_Legacy,
-                                      global_mean_eigen, global_pc1_eigen, global_pc2_eigen, global_normal_eigen);
-
-    QVector3D graspPoint = m_icpPointCloudWidget->setRawBaseFramePoints(filteredHandlePoints);
-    QVector3D centroid(global_mean_eigen.x(), global_mean_eigen.y(), global_mean_eigen.z());
-    QVector3D global_pc1(global_pc1_eigen.x(), global_pc1_eigen.y(), global_pc1_eigen.z());
-    QVector3D global_pc2(global_pc2_eigen.x(), global_pc2_eigen.y(), global_pc2_eigen.z());
-    QVector3D global_normal(global_normal_eigen.x(), global_normal_eigen.y(), global_normal_eigen.z());
-
-    // 3b. 원본 PCA 데이터 시각화 (점선 표시) - 분산 그래프 데이터 업데이트 제거됨
-    if (global_pca_ok) {
-        emit requestOriginalPCAAxesUpdate(centroid, global_pc1, global_pc2, global_normal);
-    }
-
-    if (!graspPoint.isNull() && global_pca_ok)
-    {
-        // --------------------------------------------------------------------------------------------------
-        // ✨ 기하학적 제약 조건 + PCA 각도 반영 (Hybrid Construction)
-        // --------------------------------------------------------------------------------------------------
-        QVector3D P_line_start;
-        QVector3D P_line_end;
-
-        if (m_hasGraspPoseCentroidLine) {
-            P_line_start = m_bodyCenter3D_bestTarget;
-            P_line_end = m_handleCentroid3D_bestTarget;
-        } else {
-            P_line_start = graspPoint;
-            P_line_end = centroid;
-        }
-
-        // 1. 목표 방향 벡터 (Target Line)
-        QVector3D V_line = (P_line_start - P_line_end);
-
-        // 2. 점선의 XY 평면 투영 벡터 (녹색 축의 수평 기준)
-        QVector3D V_line_xy(V_line.x(), V_line.y(), 0.0f);
-        if (V_line_xy.lengthSquared() < 1e-6f) V_line_xy = QVector3D(1, 0, 0);
-        V_line_xy.normalize();
-
-        // 3. 파란색 축 (Normal) 결정: 바닥(Z=0) 평행 & 점선 수직
-        QVector3D V_new_Normal = QVector3D::crossProduct(V_line_xy, QVector3D(0, 0, 1)).normalized();
-
-        // 방향 보정
-        if (QVector3D::dotProduct(V_new_Normal, global_normal) < 0) {
-            V_new_Normal = -V_new_Normal;
-        }
-
-        // 4. 빨간색 축 (PC1) 결정: 파란색 축 수직 & 원본 기울기 유지
-        QVector3D V_new_PC1 = global_pc1 - (QVector3D::dotProduct(global_pc1, V_new_Normal) * V_new_Normal);
-        V_new_PC1.normalize();
-
-        // 방향 보정
-        if (QVector3D::dotProduct(V_new_PC1, global_pc1) < 0) {
-            V_new_PC1 = -V_new_PC1;
-        }
-
-        // 5. 녹색 축 (PC2) 결정: 위 두 축과 수직
-        QVector3D V_new_PC2 = QVector3D::crossProduct(V_new_Normal, V_new_PC1).normalized();
-
-        // 방향 보정: 점선과 같은 방향
-        if (QVector3D::dotProduct(V_new_PC2, V_line) < 0) {
-            V_new_PC2 = -V_new_PC2;
-        }
-
-        qInfo() << "[ICP] Hybrid Geometric Alignment Applied.";
-        qInfo() << "  - Blue (Normal): Horizontal (Z=" << V_new_Normal.z() << ")";
-        qInfo() << "  - Red (PC1): Tilted (Preserves PCA Pitch).";
-        qInfo() << "  - Green (PC2): Aligned with Line Projection.";
-
-
-        // --------------------------------------------------------------------------------------------------
-        // ✨ 단면(Slice) 추출 및 폭(Width) 계산
-        // --------------------------------------------------------------------------------------------------
-        QVector<QVector3D> slicedHandlePoints;
-        float slice_threshold = 0.005f; // 중심 기준 ±5mm (총 10mm 두께)
-
-        for (const QVector3D& p : filteredHandlePoints) {
-            float dist_from_plane = QVector3D::dotProduct(p - centroid, V_new_PC1);
-            if (std::abs(dist_from_plane) < slice_threshold) {
-                slicedHandlePoints.append(p);
-            }
-        }
-        qInfo() << "[ICP] Slicing: Used" << slicedHandlePoints.size() << "points (out of" << filteredHandlePoints.size() << ") within +/- 5mm.";
-
-        // 추출된 단면 포인트들로 폭 계산
-        float min_proj = std::numeric_limits<float>::max();
-        float max_proj = -std::numeric_limits<float>::max();
-
-        const QVector<QVector3D>& pointsForWidth = (slicedHandlePoints.size() > 10) ? slicedHandlePoints : filteredHandlePoints;
-
-        for (const QVector3D& p : pointsForWidth) {
-            float proj = QVector3D::dotProduct(p - centroid, V_new_Normal);
-            if (proj < min_proj) min_proj = proj;
-            if (proj > max_proj) max_proj = proj;
-        }
-
-        float handle_width_m = max_proj - min_proj;
-        float handle_width_mm = handle_width_m * 1000.0f;
-
-        float left_width_mm = -min_proj * 1000.0f;
-        float right_width_mm = max_proj * 1000.0f;
-        float left_ratio = (left_width_mm / handle_width_mm) * 100.0f;
-        float right_ratio = (right_width_mm / handle_width_mm) * 100.0f;
-
-        QVector3D p_width_start = centroid + (V_new_Normal * min_proj);
-        QVector3D p_width_end = centroid + (V_new_Normal * max_proj);
-
-        qInfo() << "[ICP] Handle Width Calculation (Blue Axis Range, Sliced):";
-        qInfo() << "  - Total Width:" << handle_width_mm << "mm";
-        qInfo() << "  - Left (Min to 0):" << left_width_mm << "mm (" << QString::number(left_ratio, 'f', 1) << "%)";
-        qInfo() << "  - Right (0 to Max):" << right_width_mm << "mm (" << QString::number(right_ratio, 'f', 1) << "%)";
-
-
-        // (분산 그래프 업데이트 로직 제거됨)
-
-        // 3g. EF 좌표계 계산 (그리퍼 방향 설정)
-        QVector3D Y_axis = V_new_Normal.normalized();
-        QVector3D Z_axis = V_new_PC2.normalized();
-        QVector3D X_axis = QVector3D::crossProduct(Y_axis, Z_axis).normalized();
-
-        // 방향 보정 (그리퍼가 뒤집히지 않도록, X축이 위를 향하면 반전)
-        if (X_axis.z() > 0.0f) {
-            X_axis = -X_axis;
-            Y_axis = -Y_axis;
-        }
-
-        QVector3D ef_position = graspPoint - Z_axis * GRIPPER_Z_OFFSET;
-
-        QMatrix4x4 graspPose;
-        graspPose.setColumn(0, QVector4D(X_axis, 0.0f));
-        graspPose.setColumn(1, QVector4D(Y_axis, 0.0f));
-        graspPose.setColumn(2, QVector4D(Z_axis, 0.0f));
-        graspPose.setColumn(3, QVector4D(ef_position, 1.0f));
-
-        emit requestRawGraspPoseUpdate(graspPose, true);
-        m_icpGraspPose = graspPose;
-        m_showIcpGraspPose = true;
-
-        // 3h. 3D 시각화 업데이트
-        float normal_viz_length = 0.15f;
-        QVector3D line_start = graspPoint;
-        QVector3D line_end = graspPoint + (Z_axis * normal_viz_length);
-        emit requestDebugNormalUpdate(line_start, line_end, true);
-
-        // 정렬된 축 시각화 (실선)
-        emit requestPCAAxesUpdate(centroid, V_new_PC1, V_new_PC2, V_new_Normal, true);
-
-        // 3i. 2D 프로젝션 업데이트
-        QVector<QPointF> pcaProjectedPoints;
-        pcaProjectedPoints.reserve(filteredHandlePoints.size());
-        for (const QVector3D& p : filteredHandlePoints) {
-            QVector3D p_centered = p - centroid;
-            pcaProjectedPoints.append(QPointF(QVector3D::dotProduct(p_centered, V_new_PC1),
-                                              QVector3D::dotProduct(p_centered, V_new_PC2)));
-        }
-
-        if (m_projectionPlotWidget) {
-            m_projectionPlotWidget->updateData(pcaProjectedPoints);
-            QPointF center2D = m_projectionPlotWidget->getDataCenter();
-            QVector3D P_3D_center = centroid + (center2D.x() * V_new_PC1) + (center2D.y() * V_new_PC2);
-
-            float line_half = 0.1f;
-            emit requestVerticalLineUpdate(P_3D_center - (V_new_Normal * line_half), P_3D_center + (V_new_Normal * line_half), true);
-
-        }
-
-        m_selectedHandlePoints3D = filteredHandlePoints;
-        emit requestGraspToBodyLineUpdate(P_line_start, P_line_end, true);
-
-    } else {
-        // 실패 시 데이터 리셋
-        emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
-        emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false);
-        emit requestOriginalPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D()); // 점선 숨김
-        emit requestDebugNormalUpdate(QVector3D(), QVector3D(), false);
-
-        m_icpGraspPose.setToIdentity();
-        m_showIcpGraspPose = false;
-        m_selectedHandlePoints3D.clear();
-
-        if (m_projectionPlotWidget) m_projectionPlotWidget->updateData({});
-        emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false);
-        emit requestGraspToBodyLineUpdate(QVector3D(), QVector3D(), false);
-
-        if(!global_pca_ok) qWarning() << "[ICP] PCA calculation failed.";
-        if(graspPoint.isNull()) qWarning() << "[ICP] Grasp point calculation failed.";
-    }
-
-    // 4. 다이얼로그 표시 (분산 그래프 창 제거됨)
+    // 5. 다이얼로그 표시
     m_icpVizDialog->show();
     m_icpVizDialog->raise();
     m_icpVizDialog->activateWindow();
 
-    if (m_projectionPlotDialog) m_projectionPlotDialog->show();
-
-    qInfo() << "[ICP] Displayed windows (Viz & Projection).";
+    qInfo() << "[ICP] Displayed Heatmap, Centroid, and Grasp Point only.";
 }
 void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 {

@@ -9,6 +9,7 @@
 #include <limits>
 #include <QMetaObject>
 #include <cmath>
+#include <algorithm>
 
 // ===================================================================
 // PointCloudWidget 구현
@@ -31,8 +32,12 @@ PointCloudWidget::PointCloudWidget(QWidget *parent)
     m_showDebugNormal = false;
     m_showVerticalLine = false;
     m_showGraspToBodyLine = false;
-    m_showOriginalPCAAxes = false; // ✨ [추가] 초기화
+    m_showOriginalPCAAxes = false;
+
+    // 히트맵 모드 기본값 설정 (1번 모드)
+    m_heatmapMode = HeatmapMode::CentroidOnly;
 }
+
 PointCloudWidget::~PointCloudWidget() {}
 
 void PointCloudWidget::setTransforms(const QMatrix4x4& baseToTcp, const QMatrix4x4& tcpToCam)
@@ -51,6 +56,7 @@ void PointCloudWidget::drawAxes(float length, float lineWidth)
     glEnd();
     glLineWidth(1.0f);
 }
+
 void PointCloudWidget::drawGrid(float size, int divisions)
 {
     glLineWidth(1.0f); glColor3f(0.8f, 0.8f, 0.8f);
@@ -64,55 +70,98 @@ void PointCloudWidget::drawGrid(float size, int divisions)
     glEnd();
 }
 
+// ✨ [수정] Raw 포인트 설정 (데이터 저장 후 업데이트 호출)
 QVector3D PointCloudWidget::setRawBaseFramePoints(const QVector<QVector3D>& points)
 {
-    makeCurrent();
-    m_rawBaseFramePoints.clear();
+    m_storedRawPoints = points; // 데이터 멤버 변수에 저장
     m_isRawVizMode = !points.isEmpty();
+
+    // 초기화
     m_showRawCentroid = false;
     m_showRawGraspPoint = false;
-    m_showRawGraspPose = false;
     m_rawGraspPoint = QVector3D();
 
     if (points.isEmpty()) {
+        makeCurrent();
+        m_rawBaseFramePoints.clear();
         doneCurrent();
         update();
         return QVector3D();
     }
 
-    m_rawBaseFramePoints.reserve(points.size() * 6);
+    // 저장된 데이터로 히트맵 생성 (현재 모드 적용)
+    updateHeatmap();
 
+    return m_rawGraspPoint;
+}
+
+// pointcloudwidget.cpp
+
+void PointCloudWidget::updateHeatmap()
+{
+    if (m_storedRawPoints.isEmpty()) return;
+
+    makeCurrent();
+    m_rawBaseFramePoints.clear();
+    m_rawBaseFramePoints.reserve(m_storedRawPoints.size() * 6);
+
+    // 1. 무게중심(Centroid) 계산
     QVector3D sum(0.0f, 0.0f, 0.0f);
-    for (const auto& p : points) sum += p;
-    m_rawCentroid = sum / points.size();
+    for (const auto& p : m_storedRawPoints) sum += p;
+    m_rawCentroid = sum / m_storedRawPoints.size();
     m_showRawCentroid = true;
 
-    float minDist = FLT_MAX; float maxDist = -FLT_MAX;
-    float minZ = FLT_MAX; float maxZ = -FLT_MAX;
-    QVector<float> distances(points.size());
+    // 2. 거리 및 높이 데이터 처리 & Reference Point(방향 기준점) 찾기
+    float minDist = std::numeric_limits<float>::max();
+    float maxDist = -std::numeric_limits<float>::max();
+    float minZ = std::numeric_limits<float>::max();
+    float maxZ = -std::numeric_limits<float>::max();
 
-    for (int i = 0; i < points.size(); ++i) {
-        float dist = (points[i] - m_rawCentroid).length();
+    int refPointIndex = -1; // 방향 계산을 위한 고정 기준점 (가장 가까운 점)
+    float min_ref_dist = std::numeric_limits<float>::max();
+
+    QVector<float> distances(m_storedRawPoints.size());
+
+    for (int i = 0; i < m_storedRawPoints.size(); ++i) {
+        float dist = (m_storedRawPoints[i] - m_rawCentroid).length();
         distances[i] = dist;
+
         if (dist < minDist) minDist = dist;
         if (dist > maxDist) maxDist = dist;
-        float z = points[i].z();
+        float z = m_storedRawPoints[i].z();
         if (z < minZ) minZ = z;
         if (z > maxZ) maxZ = z;
+
+        // 무게중심에 가장 가까운 점을 찾음 (핸들의 배꼽 위치, 불변)
+        if (dist < min_ref_dist) {
+            min_ref_dist = dist;
+            refPointIndex = i;
+        }
     }
 
     float distRange = maxDist - minDist; if (distRange < 1e-6f) distRange = 1.0f;
     float zRange = maxZ - minZ; if (zRange < 1e-6f) zRange = 1.0f;
 
-    QVector<float> raw_intensities(points.size());
-    float min_raw_intensity = FLT_MAX; float max_raw_intensity = -FLT_MAX;
+    // 3. 점수(Intensity) 계산 (EF 위치 결정용)
+    QVector<float> raw_intensities(m_storedRawPoints.size());
+    float min_raw_intensity = std::numeric_limits<float>::max();
+    float max_raw_intensity = -std::numeric_limits<float>::max();
     int bestPointIndex = -1;
 
-    for (int i = 0; i < points.size(); ++i) {
+    const float W_HEIGHT = 0.7f;
+    const float W_PROX = 0.3f;
+
+    for (int i = 0; i < m_storedRawPoints.size(); ++i) {
         float norm_dist = (distances[i] - minDist) / distRange;
         float intensity_prox = 1.0f - norm_dist;
-        float norm_height = (points[i].z() - minZ) / zRange;
-        float raw_intensity = intensity_prox * norm_height;
+        float norm_height = (m_storedRawPoints[i].z() - minZ) / zRange;
+
+        float raw_intensity = 0.0f;
+        if (m_heatmapMode == HeatmapMode::CentroidOnly) {
+            raw_intensity = intensity_prox; // 모드 1: 거리만
+        } else {
+            raw_intensity = (W_PROX * intensity_prox) + (W_HEIGHT * norm_height); // 모드 2: 높이 가중치
+        }
 
         raw_intensities[i] = raw_intensity;
         if (raw_intensity < min_raw_intensity) min_raw_intensity = raw_intensity;
@@ -122,15 +171,114 @@ QVector3D PointCloudWidget::setRawBaseFramePoints(const QVector<QVector3D>& poin
         }
     }
 
+    // 4. 좌표계 생성
     if (bestPointIndex != -1) {
-        m_rawGraspPoint = points[bestPointIndex];
+        m_rawGraspPoint = m_storedRawPoints[bestPointIndex]; // 파지 위치 (모드에 따라 변함)
         m_showRawGraspPoint = true;
+
+        // (A) 로컬 노멀 벡터 계산 (파지점 주변)
+        QVector<QVector3D> neighbors;
+        float radius = 0.01f;
+        for(const auto& p : m_storedRawPoints) {
+            if (p.distanceToPoint(m_rawGraspPoint) <= radius) {
+                neighbors.append(p);
+            }
+        }
+
+        QVector3D localNormal(0, 0, 1);
+        if (neighbors.size() >= 3) {
+            Eigen::MatrixXf pointsMat(neighbors.size(), 3);
+            Eigen::Vector3f localCentroid(0,0,0);
+            for(int k=0; k<neighbors.size(); ++k) {
+                pointsMat.row(k) << neighbors[k].x(), neighbors[k].y(), neighbors[k].z();
+                localCentroid += pointsMat.row(k);
+            }
+            localCentroid /= neighbors.size();
+            pointsMat.rowwise() -= localCentroid.transpose();
+
+            Eigen::JacobiSVD<Eigen::MatrixXf> svd(pointsMat, Eigen::ComputeThinV);
+            Eigen::Vector3f normal = svd.matrixV().col(2);
+            localNormal = QVector3D(normal.x(), normal.y(), normal.z());
+
+            m_debugNormalP1 = m_rawGraspPoint;
+            m_debugNormalP2 = m_rawGraspPoint + localNormal * 0.05f;
+            m_showDebugNormal = true;
+        } else {
+            m_showDebugNormal = false;
+        }
+
+        // -----------------------------------------------------------
+        // (B) 좌표계 축 생성 (Y축 고정 로직)
+        // -----------------------------------------------------------
+
+        // 1. Y축: 무조건 Handle-Body 직선과 수직 & 수평 유지
+        QVector3D Y_axis(0, 1, 0);
+
+        if (m_showGraspToBodyLine) {
+            // (1순위) 명시적인 Handle-Body Line 사용 (가장 정확함)
+            QVector3D dirBodyToHandle = m_graspToBodyP2 - m_graspToBodyP1;
+            dirBodyToHandle.setZ(0.0f);
+            if (dirBodyToHandle.lengthSquared() > 1e-6f) {
+                dirBodyToHandle.normalize();
+                Y_axis = QVector3D::crossProduct(dirBodyToHandle, QVector3D(0, 0, 1)).normalized();
+            }
+        } else if (refPointIndex != -1) {
+            // (2순위) 고정 기준점(RefPoint) 사용 -> 파지점이 바뀌어도 Y축은 안 변함!
+            QVector3D dirRadialFixed = (m_storedRawPoints[refPointIndex] - m_rawCentroid);
+            dirRadialFixed.setZ(0.0f);
+            if (dirRadialFixed.lengthSquared() > 1e-6f) {
+                dirRadialFixed.normalize();
+                Y_axis = QVector3D::crossProduct(dirRadialFixed, QVector3D(0, 0, 1)).normalized();
+            }
+        }
+
+        // 2. Z축: 노멀 벡터 반영 & Y축과 직교 & 안쪽 방향
+        QVector3D Z_axis = localNormal.normalized();
+        Z_axis = (Z_axis - (QVector3D::dotProduct(Z_axis, Y_axis) * Y_axis)).normalized(); // 직교화
+
+        QVector3D dirInward = (m_rawCentroid - m_rawGraspPoint).normalized();
+        if (QVector3D::dotProduct(Z_axis, dirInward) < 0) {
+            Z_axis = -Z_axis;
+        }
+
+        // 3. X축: Y와 Z의 외적
+        QVector3D X_axis = QVector3D::crossProduct(Y_axis, Z_axis).normalized();
+
+        // X축 방향 보정 (아래쪽)
+        if (X_axis.z() > 0.0f) {
+            X_axis = -X_axis;
+            Y_axis = -Y_axis;
+        }
+
+        // 4. EF 위치 계산
+        const float GRIPPER_Z_OFFSET = 0.146f;
+        QVector3D efPosition = m_rawGraspPoint - (Z_axis * GRIPPER_Z_OFFSET);
+
+        // 5. 최종 행렬
+        QMatrix4x4 pose;
+        pose.setToIdentity();
+        pose.setColumn(0, QVector4D(X_axis, 0.0f));
+        pose.setColumn(1, QVector4D(Y_axis, 0.0f));
+        pose.setColumn(2, QVector4D(Z_axis, 0.0f));
+        pose.setColumn(3, QVector4D(efPosition, 1.0f));
+
+        m_rawGraspPose = pose;
+        m_showRawGraspPose = true;
+
+        qDebug() << "[GraspPose] Frame Stabilized.";
+        qDebug() << "  Y(Green):" << Y_axis << " (Should be constant)";
+
+    } else {
+        m_showRawGraspPoint = false;
+        m_showDebugNormal = false;
+        m_showRawGraspPose = false;
     }
 
+    // 5. 색상 매핑
     float raw_intensity_range = max_raw_intensity - min_raw_intensity;
     if (raw_intensity_range < 1e-6f) raw_intensity_range = 1.0f;
 
-    auto getStandardColor = [](float norm_val) -> QVector3D {
+    auto getHeatmapColor = [](float norm_val) -> QVector3D {
         float r = 0.0f, g = 0.0f, b = 0.0f;
         if (norm_val < 0.5f) {
             float t = norm_val * 2.0f;
@@ -144,14 +292,14 @@ QVector3D PointCloudWidget::setRawBaseFramePoints(const QVector<QVector3D>& poin
                          std::max(0.0f, std::min(1.0f, b)));
     };
 
-    for (int i = 0; i < points.size(); ++i) {
-        const auto& p = points[i];
+    for (int i = 0; i < m_storedRawPoints.size(); ++i) {
+        const auto& p = m_storedRawPoints[i];
         m_rawBaseFramePoints.push_back(p.x());
         m_rawBaseFramePoints.push_back(p.y());
         m_rawBaseFramePoints.push_back(p.z());
 
         float final_intensity = (raw_intensities[i] - min_raw_intensity) / raw_intensity_range;
-        QVector3D final_color = getStandardColor(final_intensity);
+        QVector3D final_color = getHeatmapColor(final_intensity);
 
         m_rawBaseFramePoints.push_back(final_color.x());
         m_rawBaseFramePoints.push_back(final_color.y());
@@ -160,10 +308,7 @@ QVector3D PointCloudWidget::setRawBaseFramePoints(const QVector<QVector3D>& poin
 
     doneCurrent();
     update();
-
-    return m_rawGraspPoint;
 }
-
 
 void PointCloudWidget::drawRawCentroid()
 {
@@ -181,9 +326,7 @@ void PointCloudWidget::drawRawCentroid()
     }
 }
 
-
-
-// ✨ [수정] 원본 PCA 축 설정 (길이 인자 제거)
+// 원본 PCA 축 설정
 void PointCloudWidget::setOriginalPCAAxes(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal)
 {
     m_pcaMeanOriginal = mean;
@@ -194,7 +337,7 @@ void PointCloudWidget::setOriginalPCAAxes(const QVector3D& mean, const QVector3D
     update();
 }
 
-// ✨ [수정] 원본 PCA 축 그리기 (점선, 고정 길이)
+// 원본 PCA 축 그리기 (점선)
 void PointCloudWidget::drawOriginalPCAAxes()
 {
     if (!m_showOriginalPCAAxes) return;
@@ -248,7 +391,6 @@ void PointCloudWidget::paintGL()
     drawGrid(2.0f, 20);
     drawAxes(0.2f);
 
-
     if (m_isRawVizMode) {
         glPointSize(3.0f);
         if (!m_rawBaseFramePoints.empty()) {
@@ -261,15 +403,14 @@ void PointCloudWidget::paintGL()
         glPointSize(1.5f);
 
         drawRawCentroid();
-
         drawRawGraspPoint();
         drawRawGraspPoseAxis();
 
         drawPCAAxes();
-        drawOriginalPCAAxes(); // ✨ [추가]
+        drawOriginalPCAAxes();
 
         drawVerticalLine();
-        //drawGraspToBodyLine();
+        drawGraspToBodyLine();
 
     } else {
         glPushMatrix();
@@ -311,17 +452,18 @@ void PointCloudWidget::paintGL()
         drawPCAAxes();
         drawDebugNormal();
         drawVerticalLine();
-
         drawGraspToBodyLine();
     }
     glEnable(GL_DEPTH_TEST);
 }
+
 void PointCloudWidget::setRawGraspPose(const QMatrix4x4& pose, bool show)
 {
     m_rawGraspPose = pose;
     m_showRawGraspPose = show;
     update();
 }
+
 void PointCloudWidget::initializeGL()
 {
     initializeOpenGLFunctions();
@@ -443,30 +585,38 @@ void PointCloudWidget::mouseMoveEvent(QMouseEvent *event)
     update();
 }
 
+// ✨ [수정] 키 입력 처리 (모드 전환 및 시각화 토글)
 void PointCloudWidget::keyPressEvent(QKeyEvent *event)
 {
     if (m_isRawVizMode)
     {
         switch (event->key()) {
         case Qt::Key_1:
-            m_showPCAAxes = !m_showPCAAxes;
-            qDebug() << "[ICP Key] Toggle PCA Axes:" << m_showPCAAxes;
+            // ✨ 1번 키: 무게 중심 거리만 사용 (Centroid Only)
+            m_heatmapMode = HeatmapMode::CentroidOnly;
+            updateHeatmap();
             break;
         case Qt::Key_2:
-            m_showDebugNormal = !m_showDebugNormal;
-            qDebug() << "[ICP Key] Toggle Normal Vector:" << m_showDebugNormal;
+            // ✨ 2번 키: 거리(0.3) + 높이(0.7) 가중치 사용 (Weighted Sum)
+            m_heatmapMode = HeatmapMode::Product;
+            updateHeatmap();
             break;
+
+        // 기존 1~5번 기능은 3번 이후로 이동하여 충돌 방지
         case Qt::Key_3:
-            m_showVerticalLine = !m_showVerticalLine;
-            qDebug() << "[ICP Key] Toggle Vertical Line/Center:" << m_showVerticalLine;
+            m_showPCAAxes = !m_showPCAAxes;
             break;
         case Qt::Key_4:
-            m_showGraspToBodyLine = !m_showGraspToBodyLine;
-            qDebug() << "[ICP Key] Toggle Grasp-to-Body Line:" << m_showGraspToBodyLine;
+            m_showDebugNormal = !m_showDebugNormal;
             break;
         case Qt::Key_5:
             m_showOriginalPCAAxes = !m_showOriginalPCAAxes;
-            qDebug() << "[ICP Key] Toggle Original PCA Axes:" << m_showOriginalPCAAxes;
+            break;
+        case Qt::Key_6:
+            m_showVerticalLine = !m_showVerticalLine;
+            break;
+        case Qt::Key_7:
+            m_showGraspToBodyLine = !m_showGraspToBodyLine;
             break;
         default:
             QOpenGLWidget::keyPressEvent(event);
@@ -476,6 +626,7 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event)
         return;
     }
 
+    // 일반 모드 키 바인딩 (변경 없음)
     switch (event->key()) {
     case Qt::Key_1: if (RealSenseWidget* rs = qobject_cast<RealSenseWidget*>(parentWidget())) rs->onToggleMaskedPoints(); break;
     case Qt::Key_2: emit denoisingToggled(); break;
@@ -487,8 +638,10 @@ void PointCloudWidget::keyPressEvent(QKeyEvent *event)
     default: QOpenGLWidget::keyPressEvent(event);
     }
 }
+
 void PointCloudWidget::updateGraspingPoints(const QVector<QVector3D> &points)
 { m_graspingPoints = points; update(); }
+
 void PointCloudWidget::drawGraspingSpheres()
 {
     if (m_graspingPoints.isEmpty()) return;
@@ -500,6 +653,7 @@ void PointCloudWidget::drawGraspingSpheres()
     }
     gluDeleteQuadric(quadric);
 }
+
 void PointCloudWidget::drawGraspToBodyLine()
 {
     if (!m_showGraspToBodyLine) return;
@@ -514,6 +668,7 @@ void PointCloudWidget::drawGraspToBodyLine()
     glDisable(GL_LINE_STIPPLE);
     glLineWidth(1.0f);
 }
+
 void PointCloudWidget::updateGraspToBodyLine(const QVector3D& graspPoint, const QVector3D& bodyCenter, bool show)
 {
     m_graspToBodyP1 = graspPoint;
@@ -521,6 +676,7 @@ void PointCloudWidget::updateGraspToBodyLine(const QVector3D& graspPoint, const 
     m_showGraspToBodyLine = show;
     update();
 }
+
 void PointCloudWidget::drawGripper()
 {
     const float z_off=0.140f, hw=0.040f, jaw_l=0.05f; glLineWidth(3.0f); glColor3f(0.0f,0.0f,0.0f);
@@ -529,18 +685,21 @@ void PointCloudWidget::drawGripper()
     glVertex3f(-jaw_l/2, -hw, z_off); glVertex3f(jaw_l/2, -hw, z_off);
     glEnd(); glLineWidth(1.0f);
 }
+
 void PointCloudWidget::drawTargetPose()
 {
     if (!m_showTargetPose) return; glPushMatrix(); glMultMatrixf(m_targetTcpTransform.constData());
     glPushAttrib(GL_CURRENT_BIT); glColor3f(0.5f, 0.0f, 0.8f); drawAxes(0.1f, 4.0f); glPopAttrib();
     glPopMatrix();
 }
+
 void PointCloudWidget::drawTargetPose_Y_Aligned()
 {
     if (!m_showTargetPose_Y_Aligned) return; glPushMatrix(); glMultMatrixf(m_targetTcpTransform_Y_Aligned.constData());
     glPushAttrib(GL_CURRENT_BIT); glColor3f(0.0f, 1.0f, 1.0f); drawAxes(0.1f, 4.0f); glPopAttrib();
     glPopMatrix();
 }
+
 void PointCloudWidget::drawViewPose()
 {
     if (!m_showViewPose) return;
@@ -556,6 +715,7 @@ void PointCloudWidget::drawViewPose()
     glPopMatrix();
     glPopMatrix();
 }
+
 void PointCloudWidget::updateTargetPoses(const QMatrix4x4 &pose, bool show,
                                          const QMatrix4x4 &pose_y_aligned, bool show_y_aligned,
                                          const QMatrix4x4 &view_pose, bool show_view_pose)
@@ -635,8 +795,6 @@ void PointCloudWidget::drawRawGraspPoseAxis()
     glPopMatrix();
 }
 
-
-
 void PointCloudWidget::setPCAAxes(const QVector3D& mean, const QVector3D& pc1, const QVector3D& pc2, const QVector3D& normal, bool show)
 {
     m_pcaMeanViz = mean;
@@ -672,6 +830,7 @@ void PointCloudWidget::updateDebugLookAtPoint(const QVector3D& point, bool show)
     m_showDebugLookAtPoint = show;
     update();
 }
+
 void PointCloudWidget::drawDebugLookAtPoint()
 {
     if (!m_showDebugLookAtPoint) return;
@@ -686,6 +845,7 @@ void PointCloudWidget::drawDebugLookAtPoint()
         gluDeleteQuadric(quadric);
     }
 }
+
 void PointCloudWidget::updateDebugLine(const QVector3D& p1, const QVector3D& p2, bool show)
 {
     m_debugLineP1 = p1;
@@ -693,11 +853,11 @@ void PointCloudWidget::updateDebugLine(const QVector3D& p1, const QVector3D& p2,
     m_showDebugLine = show;
     update();
 }
+
 void PointCloudWidget::drawDebugLine()
 {
     if (!m_showDebugLine) return;
     glLineWidth(3.0f);
-    // ✨ [수정] 파란색 (Blue)으로 변경
     glColor3f(0.0f, 0.0f, 1.0f);
     glBegin(GL_LINES);
     glVertex3f(m_debugLineP1.x(), m_debugLineP1.y(), m_debugLineP1.z());
@@ -705,6 +865,7 @@ void PointCloudWidget::drawDebugLine()
     glEnd();
     glLineWidth(1.0f);
 }
+
 void PointCloudWidget::updateDebugNormal(const QVector3D& p1, const QVector3D& p2, bool show)
 {
     m_debugNormalP1 = p1;
@@ -712,6 +873,7 @@ void PointCloudWidget::updateDebugNormal(const QVector3D& p1, const QVector3D& p
     m_showDebugNormal = show;
     update();
 }
+
 void PointCloudWidget::drawDebugNormal()
 {
     if (!m_showDebugNormal) return;
@@ -723,6 +885,7 @@ void PointCloudWidget::drawDebugNormal()
     glEnd();
     glLineWidth(1.0f);
 }
+
 void PointCloudWidget::updateVerticalLine(const QVector3D& p1, const QVector3D& p2, bool show)
 {
     m_verticalLineP1 = p1;
@@ -730,6 +893,7 @@ void PointCloudWidget::updateVerticalLine(const QVector3D& p1, const QVector3D& 
     m_showVerticalLine = show;
     update();
 }
+
 void PointCloudWidget::drawVerticalLine()
 {
     if (!m_showVerticalLine) return;
@@ -744,12 +908,14 @@ void PointCloudWidget::drawVerticalLine()
     glDisable(GL_LINE_STIPPLE);
     glLineWidth(1.0f);
 }
+
 void PointCloudWidget::updateTransformedHandleCloud(const QVector<QVector3D>& points, bool show)
 {
     m_transformedHandlePoints = points;
     m_showTransformedHandleCloud = show;
     update();
 }
+
 void PointCloudWidget::drawTransformedHandleCloud()
 {
     if (!m_showTransformedHandleCloud || m_transformedHandlePoints.isEmpty()) return;
@@ -766,9 +932,9 @@ void PointCloudWidget::drawTransformedHandleCloud()
         gluDeleteQuadric(quadric);
     }
 }
+
 void PointCloudWidget::resetVisualizations()
 {
-    // 모든 시각화 플래그 끄기
     m_showTargetPose = false;
     m_showTargetPose_Y_Aligned = false;
     m_showViewPose = false;
@@ -785,9 +951,5 @@ void PointCloudWidget::resetVisualizations()
     m_showTransformedHandleCloud = false;
     m_showGraspToBodyLine = false;
 
-    // 데이터도 필요하면 초기화 (선택 사항)
-    // m_graspingPoints.clear();
-
-    // 화면 갱신
     update();
 }
