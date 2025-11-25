@@ -264,7 +264,7 @@ void PointCloudWidget::updateHeatmap()
 
         m_rawGraspPose = pose;
         m_showRawGraspPose = true;
-
+        emit graspPoseUpdated(m_rawGraspPose);
         qDebug() << "[GraspPose] Frame Stabilized.";
         qDebug() << "  Y(Green):" << Y_axis << " (Should be constant)";
 

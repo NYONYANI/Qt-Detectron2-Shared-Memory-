@@ -62,6 +62,7 @@ signals:
     void calculateTargetPoseRequested();
     void moveRobotToPreGraspPoseRequested();
     void pickAndReturnRequested();
+    void graspPoseUpdated(const QMatrix4x4& pose);
 
 protected:
     void initializeGL() override;

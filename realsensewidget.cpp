@@ -1192,9 +1192,11 @@ QJsonArray RealSenseWidget::receiveResultsFromPython() {
 
 void RealSenseWidget::onShowICPVisualization()
 {
-    qInfo() << "[ICP] 'ICPButton' clicked. Visualizing Heatmap (Height * Proximity) & Centroid...";
+    qInfo() << "[ICP] 'ICPButton' clicked. Press '1' for Centroid Map, '2' for Product Map.";
 
-    // 1. 포인트 클라우드 추출 및 정렬
+    // --------------------------------------------------------------------
+    // 1. 포인트 클라우드 추출 및 정렬 (가장 가까운 핸들 찾기)
+    // --------------------------------------------------------------------
     if (m_detectionResults.isEmpty() || !m_pointCloudWidget->m_points) {
         qWarning() << "[ICP] No detection results or point cloud available. Press 'Capture' first.";
         return;
@@ -1271,7 +1273,9 @@ void RealSenseWidget::onShowICPVisualization()
             << allHandleResults[0].cupIndex << ", " << focusedHandlePoints.size() << " points).";
 
 
-    // --- 노이즈 필터링 (DBSCAN) ---
+    // --------------------------------------------------------------------
+    // 2. 노이즈 필터링 (DBSCAN)
+    // --------------------------------------------------------------------
     qInfo() << "[ICP] Applying noise filter to" << focusedHandlePoints.size() << "handle points...";
     std::vector<Point3D> dbscanPoints;
     dbscanPoints.reserve(focusedHandlePoints.size());
@@ -1325,17 +1329,31 @@ void RealSenseWidget::onShowICPVisualization()
         return;
     }
 
-    // 2. 다이얼로그 생성 (3D 뷰어만 생성)
+    // --------------------------------------------------------------------
+    // 3. 다이얼로그 생성 및 시그널 연결
+    // --------------------------------------------------------------------
     if (m_icpVizDialog == nullptr) {
         m_icpVizDialog = new QDialog(this);
-        m_icpVizDialog->setWindowTitle("Focused Handle Point Cloud (Base Frame)");
+        m_icpVizDialog->setWindowTitle("Focused Handle Heatmap (Press 1 or 2)");
         m_icpVizDialog->setAttribute(Qt::WA_DeleteOnClose);
         m_icpVizDialog->resize(640, 480);
+
         m_icpPointCloudWidget = new PointCloudWidget(m_icpVizDialog);
         m_icpPointCloudWidget->setTransforms(QMatrix4x4(), QMatrix4x4());
+
         QVBoxLayout* layout = new QVBoxLayout(m_icpVizDialog);
         layout->addWidget(m_icpPointCloudWidget);
         m_icpVizDialog->setLayout(layout);
+
+        // ✨ [핵심] PointCloudWidget의 좌표계 변경 시그널을 연결
+        // 사용자가 키보드 1(무게중심) 또는 2(가중치 곱)를 누르면 이 슬롯이 호출되어
+        // 메인 클래스의 파지 목표 지점(m_icpGraspPose)이 업데이트됩니다.
+        connect(m_icpPointCloudWidget, &PointCloudWidget::graspPoseUpdated,
+                this, [this](const QMatrix4x4& pose){
+                    m_icpGraspPose = pose;
+                    m_showIcpGraspPose = true;
+                    qDebug() << "[ICP] Main Grasp Pose Updated from Visualizer.";
+                });
 
         connect(m_icpVizDialog, &QDialog::finished, [this](){
             m_icpVizDialog = nullptr;
@@ -1347,26 +1365,22 @@ void RealSenseWidget::onShowICPVisualization()
                 m_icpPointCloudWidget, &PointCloudWidget::setRawGraspPose);
     }
 
-    // 3. 시각화 데이터 설정
-    // setRawBaseFramePoints 내부에서:
-    // 1) 무게중심 계산 및 표시 (Centroid)
-    // 2) 높이 * 근접도 기반 색상(Heatmap) 계산
-    // 3) 최고 점수 포인트(Grasp Point) 표시
+    // --------------------------------------------------------------------
+    // 4. 데이터 설정 및 시각화
+    // --------------------------------------------------------------------
+
+    // 이 함수 호출 시 내부적으로 updateHeatmap() -> emit graspPoseUpdated()가 실행되어
+    // 초기 파지 자세(기본 모드)가 자동으로 m_icpGraspPose에 설정됩니다.
     m_icpPointCloudWidget->setRawBaseFramePoints(filteredHandlePoints);
 
-    // 4. 나머지 시각화 요소 초기화 (Delete the rest)
-    emit requestRawGraspPoseUpdate(QMatrix4x4(), false); // 파지 좌표계 숨김
-    emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false); // PCA 축 숨김
-    emit requestOriginalPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D()); // 원본 PCA 숨김
-    emit requestDebugNormalUpdate(QVector3D(), QVector3D(), false); // 법선 벡터 숨김
-    emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false); // 수직선 숨김
-    emit requestGraspToBodyLineUpdate(QVector3D(), QVector3D(), false); // 바디 연결선 숨김
+    // 불필요한 기존 시각화 요소 숨기기
+    emit requestRawGraspPoseUpdate(QMatrix4x4(), false);
+    emit requestPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D(), false);
+    emit requestOriginalPCAAxesUpdate(QVector3D(), QVector3D(), QVector3D(), QVector3D());
+    emit requestDebugNormalUpdate(QVector3D(), QVector3D(), false);
+    emit requestVerticalLineUpdate(QVector3D(), QVector3D(), false);
+    emit requestGraspToBodyLineUpdate(QVector3D(), QVector3D(), false);
 
-    // 내부 상태 초기화 (PCA, 파지 포즈 등은 계산하지 않음)
-    m_icpGraspPose.setToIdentity();
-    m_showIcpGraspPose = false;
-
-    // 포인트 데이터 저장 (이후 작업용)
     m_selectedHandlePoints3D = filteredHandlePoints;
 
     // 2D 플롯 창이 있다면 숨기기
@@ -1374,12 +1388,12 @@ void RealSenseWidget::onShowICPVisualization()
         m_projectionPlotDialog->hide();
     }
 
-    // 5. 다이얼로그 표시
+    // 다이얼로그 표시
     m_icpVizDialog->show();
     m_icpVizDialog->raise();
     m_icpVizDialog->activateWindow();
 
-    qInfo() << "[ICP] Displayed Heatmap, Centroid, and Grasp Point only.";
+    qInfo() << "[ICP] Displayed Heatmap and Grasp Pose Visualizer.";
 }
 void RealSenseWidget::onMoveToRandomGraspPoseRequested()
 {
